@@ -47,7 +47,7 @@ fi
 public_key="$(< "${SSH_KEY_PATH}.pub")"
 
 echo 'Clearing build tree...'
-rm -rf "${output_directory:?}" "${work_directory:?}" "${profile_directory:?}"
+sudo rm -rf "${output_directory:?}" "${work_directory:?}" "${profile_directory:?}"
 mkdir -p "${output_directory}" "${work_directory}" "${profile_directory}"
 
 echo "Copying profile: '${profile}'"
