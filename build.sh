@@ -84,6 +84,12 @@ file_permissions+=(
 )
 END
 
+echo 'Disabling GRUB menu...'
+sed -i \
+    -e 's/^timeout=15$/timeout=0/' \
+    -e 's/^timeout_style=menu$/timeout_style=hidden/' \
+    "${profile_directory}/grub/grub.cfg"
+
 add-package() {
   if ! grep -qxF "${1}" "${packages_file}"; then
     echo "${1}" >> "${packages_file}"
