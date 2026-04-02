@@ -74,8 +74,15 @@ patch-profile-definition iso_name "${image_name}"
 patch-profile-definition iso_version "${image_version}"
 patch-profile-definition iso_application "${image_application}"
 
-chmod 644 "${profile_directory}"/airootfs/etc/systemd/system/archinstall-auto.service
-chmod 600 "${profile_directory}"/airootfs/root/archinstall/*.json
+echo 'Patching file permissions map...'
+cat >> "${profile_directory}/profiledef.sh" <<'END'
+
+file_permissions+=(
+  ["/root/archinstall/install.sh"]="0:0:755"
+  ["/root/archinstall/config.json"]="0:0:600"
+  ["/root/archinstall/creds.json"]="0:0:600"
+)
+END
 
 add-package() {
   if ! grep -qxF "${1}" "${packages_file}"; then
