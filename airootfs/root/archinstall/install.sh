@@ -109,7 +109,6 @@ archinstall                 \
 # Post-install steps
 
 arch-chroot /mnt systemctl enable systemd-networkd systemd-resolved sshd
-arch-chroot /mnt ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
 # Lock password-based login on all accounts
 arch-chroot /mnt passwd -l root
