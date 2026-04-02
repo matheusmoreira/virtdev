@@ -59,7 +59,7 @@ cp -r airootfs/. "${profile_directory}/airootfs/"
 echo 'Injecting SSH public key into installation image...'
 config_json="${profile_directory}/airootfs/root/archinstall/config.json"
 jq --arg key "${pubkey}"                          \
-   '."!users"[0].ssh_authorized_keys = [$key]'    \
+   '.users[0].ssh_authorized_keys = [$key]'       \
    "${config_json}" > "${config_json}.tmp"
 mv "${config_json}.tmp" "${config_json}"
 
