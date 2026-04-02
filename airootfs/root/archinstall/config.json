@@ -16,7 +16,7 @@
               "unit": "MiB",
               "sector_size": null
             },
-            "length": {
+            "size": {
               "value": 512,
               "unit": "MiB",
               "sector_size": null
@@ -39,7 +39,7 @@
               "unit": "MiB",
               "sector_size": null
             },
-            "length": {
+            "size": {
               "value": 0,
               "unit": "B",
               "sector_size": null
@@ -65,7 +65,7 @@
               "unit": "MiB",
               "sector_size": null
             },
-            "length": {
+            "size": {
               "value": 0,
               "unit": "B",
               "sector_size": null

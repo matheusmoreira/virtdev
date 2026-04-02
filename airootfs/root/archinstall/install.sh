@@ -82,15 +82,15 @@ jq                                                          \
     --argjson vdb_sector_size "${vdb_sector_size}"          \
     '
     (.disk_config.device_modifications[0].partitions[].start.sector_size,
-     .disk_config.device_modifications[0].partitions[].length.sector_size) |= {"value": $vda_sector_size, "unit": "B"} |
+     .disk_config.device_modifications[0].partitions[].size.sector_size) |= {"value": $vda_sector_size, "unit": "B"} |
     (.disk_config.device_modifications[1].partitions[].start.sector_size,
-     .disk_config.device_modifications[1].partitions[].length.sector_size) |= {"value": $vdb_sector_size, "unit": "B"} |
-    .disk_config.device_modifications[0].partitions[0].start  |= (.value = $esp_start   | .unit = "B") |
-    .disk_config.device_modifications[0].partitions[0].length |= (.value = $esp_length  | .unit = "B") |
-    .disk_config.device_modifications[0].partitions[1].start  |= (.value = $root_start  | .unit = "B") |
-    .disk_config.device_modifications[0].partitions[1].length |= (.value = $root_length | .unit = "B") |
-    .disk_config.device_modifications[1].partitions[0].start  |= (.value = $home_start  | .unit = "B") |
-    .disk_config.device_modifications[1].partitions[0].length |= (.value = $home_length | .unit = "B")
+     .disk_config.device_modifications[1].partitions[].size.sector_size) |= {"value": $vdb_sector_size, "unit": "B"} |
+    .disk_config.device_modifications[0].partitions[0].start |= (.value = $esp_start   | .unit = "B") |
+    .disk_config.device_modifications[0].partitions[0].size  |= (.value = $esp_length  | .unit = "B") |
+    .disk_config.device_modifications[0].partitions[1].start |= (.value = $root_start  | .unit = "B") |
+    .disk_config.device_modifications[0].partitions[1].size  |= (.value = $root_length | .unit = "B") |
+    .disk_config.device_modifications[1].partitions[0].start |= (.value = $home_start  | .unit = "B") |
+    .disk_config.device_modifications[1].partitions[0].size  |= (.value = $home_length | .unit = "B")
     ' "${config}" > "${tmp}" && mv "${tmp}" "${config}"
 
 printf 'virtdev: disk layout patched\n'
