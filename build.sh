@@ -91,6 +91,7 @@ add-packages() {
 }
 
 added_packages=(
+  jq
 )
 
 echo 'Adding packages...'
