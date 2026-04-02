@@ -32,8 +32,15 @@ disk_size() {
   lsblk --bytes --nodeps --noheadings --output SIZE "${1}" | tr -d ' '
 }
 
+sector_size() {
+  lsblk --bytes --nodeps --noheadings --output PHY-SEC "${1}" | tr -d ' '
+}
+
 vda_bytes="$(disk_size /dev/vda)"
 vdb_bytes="$(disk_size /dev/vdb)"
+
+vda_sector_size="$(sector_size /dev/vda)"
+vdb_sector_size="$(sector_size /dev/vdb)"
 
 mib=$(( 1024 * 1024 ))
 
@@ -64,14 +71,20 @@ if ((root_length <= 0 || home_length <= 0)); then
 fi
 
 tmp=$(mktemp)
-jq                                            \
-    --argjson esp_start   "${esp_start}"      \
-    --argjson esp_length  "${esp_length}"     \
-    --argjson root_start  "${root_start}"     \
-    --argjson root_length "${root_length}"    \
-    --argjson home_start  "${home_start}"     \
-    --argjson home_length "${home_length}"    \
+jq                                                          \
+    --argjson esp_start       "${esp_start}"                \
+    --argjson esp_length      "${esp_length}"               \
+    --argjson root_start      "${root_start}"               \
+    --argjson root_length     "${root_length}"              \
+    --argjson home_start      "${home_start}"               \
+    --argjson home_length     "${home_length}"              \
+    --argjson vda_sector_size "${vda_sector_size}"          \
+    --argjson vdb_sector_size "${vdb_sector_size}"          \
     '
+    (.disk_config.device_modifications[0].partitions[].start.sector_size,
+     .disk_config.device_modifications[0].partitions[].length.sector_size) |= {"value": $vda_sector_size, "unit": "B"} |
+    (.disk_config.device_modifications[1].partitions[].start.sector_size,
+     .disk_config.device_modifications[1].partitions[].length.sector_size) |= {"value": $vdb_sector_size, "unit": "B"} |
     .disk_config.device_modifications[0].partitions[0].start  |= (.value = $esp_start   | .unit = "B") |
     .disk_config.device_modifications[0].partitions[0].length |= (.value = $esp_length  | .unit = "B") |
     .disk_config.device_modifications[0].partitions[1].start  |= (.value = $root_start  | .unit = "B") |
@@ -80,8 +93,11 @@ jq                                            \
     .disk_config.device_modifications[1].partitions[0].length |= (.value = $home_length | .unit = "B")
     ' "${config}" > "${tmp}" && mv "${tmp}" "${config}"
 
-printf 'virtdev: disk layout patched: vda(esp=%d root=%d), vdb(home=%d)\n' \
-       "${esp_length}" "${root_length}" "${home_length}"
+printf 'virtdev: disk layout patched'
+printf 'virtdev: vda(esp=%d root=%d sector_size=%d)' \
+       "${esp_length}" "${root_length}" "${vda_sector_size}"
+printf 'virtdev: vdb(home=%d sector_size=%d)\n' \
+       "${home_length}" "${vdb_sector_size}"
 
 # Run archinstall
 
