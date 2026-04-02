@@ -24,10 +24,7 @@ ConditionPathExists=!/root/archinstall/disable
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/archinstall                \
-    --config /root/archinstall/config.json    \
-    --creds /root/archinstall/creds.json      \
-    --silent
+ExecStart=/root/archinstall/install.sh
 ExecStartPost=/usr/bin/systemctl poweroff
 StandardOutput=journal+console
 StandardError=journal+console
