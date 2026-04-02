@@ -1,0 +1,38 @@
+# This systemd unit only powers off the system
+# if the installation is successful.
+# Otherwise, user can access the shell.
+# Fails automatically after 15 minutes.
+# No reboots to prevent loops on failures.
+#
+# Logs can be inspected with:
+#
+#     journalctl -u archinstall-auto
+#     cat /var/log/archinstall/install.log
+#
+# It is possible to disable the automatic
+# archinstall unit in order to work manually
+# without rebuilding the installation image:
+#
+#     touch /root/archinstall/disable
+#
+
+[Unit]
+Description=Unattended archinstall
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/root/archinstall/disable
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/archinstall                \
+    --config /root/archinstall/config.json    \
+    --creds /root/archinstall/creds.json      \
+    --silent
+ExecStartPost=/usr/bin/systemctl poweroff
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=archinstall-auto
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
