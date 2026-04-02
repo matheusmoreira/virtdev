@@ -19,7 +19,7 @@ fi
 
 if [[ ! -d "${profile}" ]]; then
   echo "missing archiso profile: '${profile}'" >&2
-  exit 2
+  exit 3
 fi
 
 echo 'Clearing build tree...'
@@ -53,7 +53,7 @@ iso="${output_directory}"/"${image_name}"-"${image_version}"-x86_64.iso
 
 if [[ ! -r "${iso}" ]]; then
   echo "Failed to create Arch Linux installation media: '${iso}'" >&2
-  exit 3
+  exit 4
 fi
 
 echo "Created Arch Linux installation media: '${iso}'"
