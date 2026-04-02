@@ -16,6 +16,7 @@ build_directory="${repository_root}"/build
 output_directory="${build_directory}"/output
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile
+packages_file="${profile_directory}"/packages.x86_64
 
 profile=/usr/share/archiso/configs/releng
 image_name=virtdev
@@ -75,6 +76,25 @@ patch-profile-definition iso_application "${image_application}"
 
 chmod 644 "${profile_directory}"/airootfs/etc/systemd/system/archinstall-auto.service
 chmod 600 "${profile_directory}"/airootfs/root/archinstall/*.json
+
+add-package() {
+  if ! grep -qxF "${1}" "${packages_file}"; then
+    echo "${1}" >> "${packages_file}"
+    echo "Added package: ${1}"
+  fi
+}
+
+add-packages() {
+  for package in "${@}"; do
+    add-package "${package}"
+  done
+}
+
+added_packages=(
+)
+
+echo 'Adding packages...'
+add-packages "${added_packages[@]}"
 
 echo 'Creating Arch Linux installation media...'
 sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_directory}"
