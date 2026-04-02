@@ -46,7 +46,7 @@ patch-profile-definition iso_application "${image_application}"
 chmod 644 "${profile_directory}"/airootfs/etc/systemd/system/archinstall-auto.service
 chmod 600 "${profile_directory}"/airootfs/root/archinstall/*.json
 
-echo "Creating Arch Linux installation media..."
+echo 'Creating Arch Linux installation media...'
 sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_directory}"
 
 iso="${output_directory}"/"${image_name}"-"${image_version}"-x86_64.iso
