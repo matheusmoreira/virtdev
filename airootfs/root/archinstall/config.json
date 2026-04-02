@@ -1,0 +1,123 @@
+{
+  "bootloader": "Systemd-boot",
+  "disk_config": {
+    "config_type": "manual_partitioning",
+    "device_modifications": [
+      {
+        "device": "/dev/vda",
+        "wipe": true,
+        "partitions": [
+          {
+            "obj_id": "a1b2c3d4-0001-0001-0001-000000000001",
+            "status": "create",
+            "type": "primary",
+            "start": {
+              "value": 1,
+              "unit": "MiB",
+              "sector_size": null
+            },
+            "length": {
+              "value": 512,
+              "unit": "MiB",
+              "sector_size": null
+            },
+            "mountpoint": "/efi",
+            "mount_options": [],
+            "flags": [
+              "Boot",
+              "ESP"
+            ],
+            "fs_type": "fat32",
+            "btrfs": []
+          },
+          {
+            "obj_id": "a1b2c3d4-0001-0001-0001-000000000002",
+            "status": "create",
+            "type": "primary",
+            "start": {
+              "value": 513,
+              "unit": "MiB",
+              "sector_size": null
+            },
+            "length": {
+              "value": 0,
+              "unit": "B",
+              "sector_size": null
+            },
+            "mountpoint": "/",
+            "mount_options": [],
+            "flags": [],
+            "fs_type": "ext4",
+            "btrfs": []
+          }
+        ]
+      },
+      {
+        "device": "/dev/vdb",
+        "wipe": true,
+        "partitions": [
+          {
+            "obj_id": "a1b2c3d4-0002-0002-0002-000000000001",
+            "status": "create",
+            "type": "primary",
+            "start": {
+              "value": 1,
+              "unit": "MiB",
+              "sector_size": null
+            },
+            "length": {
+              "value": 0,
+              "unit": "B",
+              "sector_size": null
+            },
+            "mountpoint": "/home",
+            "mount_options": [],
+            "flags": [],
+            "fs_type": "ext4",
+            "btrfs": []
+          }
+        ]
+      }
+    ]
+  },
+  "hostname": "virtdev",
+  "kernels": [
+    "linux"
+  ],
+  "locale_config": {
+    "kb_layout": "us",
+    "sys_enc": "UTF-8",
+    "sys_lang": "en_US"
+  },
+  "network_config": {
+    "type": "manual",
+    "nics": [
+      {
+        "iface": null,
+        "ip": null,
+        "dhcp": true,
+        "gateway": null,
+        "dns": []
+      }
+    ]
+  },
+  "packages": [
+    "base-devel",
+    "git",
+    "openssh",
+    "python",
+    "rustup"
+  ],
+  "profile_config": null,
+  "swap": false,
+  "timezone": "America/Sao_Paulo",
+  "users": [
+    {
+      "username": "dev",
+      "enc_password": "!",
+      "sudo": true,
+      "groups": [],
+      "ssh_authorized_keys": []
+    }
+  ]
+}
