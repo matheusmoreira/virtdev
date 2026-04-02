@@ -2,7 +2,17 @@
 
 set -euo pipefail
 
-build_directory="$(dirname "${0}")"/build
+repository_root="$(cd "$(dirname "${0}")" && pwd)"
+
+if [[ ! -f "${repository_root}/user.conf" ]]; then
+  echo 'user.conf not found' >&2
+  exit 1
+fi
+
+# shellcheck source=user.conf
+source "${repository_root}/user.conf"
+
+build_directory="${repository_root}"/build
 output_directory="${build_directory}"/output
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile
@@ -14,7 +24,9 @@ image_application='Arch Linux automated installer for virtual development machin
 
 if ! command -v mkarchiso &>/dev/null; then
   echo 'mkarchiso not found, install archiso' >&2
-  exit 1
+  exit 2
+fi
+
 fi
 
 if [[ ! -d "${profile}" ]]; then
