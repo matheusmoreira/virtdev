@@ -43,6 +43,8 @@ if [[ ! -d "${profile}" ]]; then
   exit 5
 fi
 
+pubkey="$(< "${SSH_KEY_PATH}.pub")"
+
 echo 'Clearing build tree...'
 rm -rf "${output_directory:?}" "${work_directory:?}" "${profile_directory:?}"
 mkdir -p "${output_directory}" "${work_directory}" "${profile_directory}"
@@ -52,6 +54,13 @@ cp -r "${profile}/." "${profile_directory}/"
 
 echo 'Overlaying airootfs...'
 cp -r airootfs/. "${profile_directory}/airootfs/"
+
+echo 'Injecting SSH public key into installation image...'
+config_json="${profile_directory}/airootfs/root/archinstall/config.json"
+jq --arg key "${pubkey}"                          \
+   '."!users"[0].ssh_authorized_keys = [$key]'    \
+   "${config_json}" > "${config_json}.tmp"
+mv "${config_json}.tmp" "${config_json}"
 
 patch-profile-definition() {
   sed -i \
