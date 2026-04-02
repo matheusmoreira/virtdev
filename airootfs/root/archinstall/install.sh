@@ -93,8 +93,8 @@ jq                                                          \
     .disk_config.device_modifications[1].partitions[0].length |= (.value = $home_length | .unit = "B")
     ' "${config}" > "${tmp}" && mv "${tmp}" "${config}"
 
-printf 'virtdev: disk layout patched'
-printf 'virtdev: vda(esp=%d root=%d sector_size=%d)' \
+printf 'virtdev: disk layout patched\n'
+printf 'virtdev: vda(esp=%d root=%d sector_size=%d)\n' \
        "${esp_length}" "${root_length}" "${vda_sector_size}"
 printf 'virtdev: vdb(home=%d sector_size=%d)\n' \
        "${home_length}" "${vdb_sector_size}"
