@@ -32,12 +32,33 @@
             "btrfs": []
           },
           {
-            "obj_id": "a1b2c3d4-0001-0001-0001-000000000002",
+            "obj_id": "a1b2c3d4-0001-0001-0001-000000000003",
             "status": "create",
             "type": "primary",
             "dev_path": null,
             "start": {
               "value": 513,
+              "unit": "MiB",
+              "sector_size": null
+            },
+            "size": {
+              "value": 1024,
+              "unit": "MiB",
+              "sector_size": null
+            },
+            "mountpoint": "/boot",
+            "mount_options": [],
+            "flags": [],
+            "fs_type": "fat32",
+            "btrfs": []
+          },
+          {
+            "obj_id": "a1b2c3d4-0001-0001-0001-000000000002",
+            "status": "create",
+            "type": "primary",
+            "dev_path": null,
+            "start": {
+              "value": 1537,
               "unit": "MiB",
               "sector_size": null
             },
