@@ -10,8 +10,8 @@
 #       b. /dev/vdb = home
 #   2. Compute actual virtual disk sizes
 #   3. Patch sentinel values in config.json
-#   3. Run archinstall
-#   4. Run post-install steps
+#   4. Run archinstall
+#   5. Run post-install steps
 #
 # config.json stores 0 B as a sentinel for dynamic partition lengths.
 # Bypassing this script and running archinstall directly
