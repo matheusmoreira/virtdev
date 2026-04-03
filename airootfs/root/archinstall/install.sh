@@ -6,7 +6,7 @@
 # This script will:
 #
 #   1. Assume two disks exist
-#       a. /dev/vda = root
+#       a. /dev/vda = system
 #       b. /dev/vdb = home
 #   2. Compute actual virtual disk sizes
 #   3. Patch sentinel values in config.json
