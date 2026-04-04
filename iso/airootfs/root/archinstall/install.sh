@@ -165,6 +165,10 @@ arch-chroot /mnt passwd -l root
 arch-chroot /mnt passwd -l dev
 printf 'virtdev: accounts locked\n'
 
+# Install the virtdev hardened sshd configuration file
+cp /etc/ssh/sshd_config /mnt/etc/ssh/sshd_config
+printf 'virtdev: sshd configured\n'
+
 # Set up sudo for the dev user
 printf 'dev ALL=(ALL:ALL) NOPASSWD: ALL\n' > /mnt/etc/sudoers.d/dev
 chmod 440 /mnt/etc/sudoers.d/dev
