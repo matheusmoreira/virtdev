@@ -81,7 +81,7 @@ fi
 public_key="$(< "${VIRTDEV_SSH_KEY}.pub")"
 
 build_directory="${XDG_CACHE_HOME:-${HOME}/.cache}"/virtdev
-output_directory="${PWD}"
+output_directory="${build_directory}"
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile
 
@@ -109,12 +109,18 @@ mv "${config_json}.tmp" "${config_json}"
 printf 'Creating Arch Linux installation media...\n'
 sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_directory}"
 
-image_name=virtdev
-image_version="$(date +%Y-%m-%d)"
-iso="${output_directory}/${image_name}-${image_version}-x86_64.iso"
 
-if [[ ! -r "${iso}" ]]; then
-  error 7 <<<"Failed to create installation media: '${iso}'"
+mapfile -t built_isos < <(find "${output_directory}" -maxdepth 1 -name '*-x86_64.iso')
+
+if [[ ${#built_isos[@]} -eq 0 ]]; then
+  error 7 <<<"Failed to create installation media in '${output_directory}'"
 fi
+
+if [[ ${#built_isos[@]} -gt 1 ]]; then
+  error 8 <<<"Multiple ISOs found in '${output_directory}'"
+fi
+
+iso="${output_directory}/virtdev.iso"
+mv "${built_isos[0]}" "${iso}"
 
 printf "Created Arch Linux installation media: '%s'\n" "${iso}"
