@@ -164,7 +164,8 @@ mkdir -p "${maintenance_project}"
 printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
 
 monitor_sock="${maintenance_project}/monitor.sock"
-rm -f "${monitor_sock}"
+console_sock="${maintenance_project}/console.sock"
+rm -f "${monitor_sock}" "${console_sock}"
 
 printf 'Starting maintenance VM (virtdev-maintenance)...\n'
 
@@ -187,9 +188,10 @@ systemd-run \
         -device virtio-net-pci,netdev=net0 \
         -device virtio-rng-pci \
         -display none \
-        -serial none \
         -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
-        -monitor chardev:monitor
+        -monitor chardev:monitor \
+        -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
+        -serial chardev:serial
 
 # Poll until SSH is up or the unit exits early.
 printf 'Waiting for SSH on port %d with timeout %ds...' \
@@ -226,7 +228,7 @@ if [[ "${ssh_up}" -eq 0 ]]; then
   printf ' failed.\n'
   systemctl --user stop "${unit}" 2>/dev/null || true
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
-  rm -f "${maintenance_project}/port" "${monitor_sock}"
+  rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
   rmdir "${maintenance_project}" 2>/dev/null || true
   error 9 <<MESSAGE
 SSH did not become available within ${VIRTDEV_WAIT_TIMEOUT}s.
@@ -259,7 +261,7 @@ qemu_exit="$(systemctl --user show "${unit}" \
     --property=ExecMainStatus --value 2>/dev/null || echo 1)"
 
 systemctl --user reset-failed "${unit}" 2>/dev/null || true
-rm -f "${maintenance_project}/port" "${monitor_sock}"
+rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
 rmdir "${maintenance_project}" 2>/dev/null || true
 
 printf '\n'
