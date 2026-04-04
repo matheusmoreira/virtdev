@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# virtdev-console <project>
+#
+# Attaches to the serial console of a running project virtual machine.
+# Useful for debugging boot failures or networking issues
+# before SSH becomes available.
+#
+# Detach with Ctrl-].
+#
+# Requires socat.
+#
+#     pacman -S socat
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+if [[ $# -ne 1 ]]; then
+  error 1 <<<'usage: virtdev-console <project>'
+fi
+
+project="${1}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 2 <<<"Project virtual machine not found: ${project}"
+fi
+
+console_sock="${project_directory}/console.sock"
+if [[ ! -S "${console_sock}" ]]; then
+  error 3 <<MESSAGE
+Project virtual machine is not running: ${project}
+Start it with: virtdev-start ${project}
+MESSAGE
+fi
+
+if ! command -v socat &>/dev/null; then
+  error 4 <<<'socat not found, install with: pacman -S socat'
+fi
+
+printf 'Attaching to serial console of %s.\nDetach with Ctrl-].\n\n' "${project}"
+exec socat - UNIX-CONNECT:"${console_sock}"
