@@ -51,6 +51,10 @@ Allowed: a-z A-Z 0-9 _ -
 MESSAGE
 fi
 
+if [[ "${project}" == "maintenance" ]]; then
+  error 2 <<<"Project name 'maintenance' is reserved by virtdev-maintain"
+fi
+
 system_directory="${VIRTDEV_HOME}/system"
 projects_directory="${VIRTDEV_HOME}/projects"
 project_directory="${projects_directory}/${project}"
