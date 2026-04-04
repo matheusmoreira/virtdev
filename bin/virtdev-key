@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# virtdev-key
+#
+# Generates the ed25519 key pair used to authenticate
+# into virtdev virtual machines.
+#
+# The public key is included into the ISO at build time by virtdev-build.
+# The private key is used at runtime by virtdev-ssh.
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME     Base directory for virtdev data.
+#                    Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#
+#   VIRTDEV_SSH_KEY  Path where the key pair is generated.
+#                    Default: ${VIRTDEV_HOME}/id
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+
+if [[ $# -ne 0 ]]; then
+  error 1 <<<'usage: virtdev-key'
+fi
+
+key_directory="$(dirname "${VIRTDEV_SSH_KEY}")"
+
+if [[ ! -d "${key_directory}" ]]; then
+  printf "Creating key directory: '%s'\n" "${key_directory}"
+  mkdir -p "${key_directory}"
+  chmod 700 "${key_directory}"
+fi
+
+if [[ -f "${VIRTDEV_SSH_KEY}" ]]; then
+  printf "SSH key already exists: '%s'\n" "${VIRTDEV_SSH_KEY}"
+else
+  ssh-keygen -t ed25519 -N '' -C 'virtdev' -f "${VIRTDEV_SSH_KEY}"
+  printf "SSH key generated: '%s'\n" "${VIRTDEV_SSH_KEY}"
+fi
