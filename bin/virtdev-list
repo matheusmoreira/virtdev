@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# virtdev-list
+#
+# Lists all project virtual machines with their SSH port and status.
+#
+# Output columns:
+#
+#   PROJECT   Name of the project virtual machine
+#   PORT      Host-side SSH forwarding port
+#   STATUS    running | stopped
+#
+
+set -euo pipefail
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+projects_directory="${VIRTDEV_HOME}/projects"
+
+if [[ ! -d "${projects_directory}" ]]; then
+  printf 'No projects found.\n'
+  exit 0
+fi
+
+mapfile -t projects < <(
+  find "${projects_directory}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
+    | sort
+)
+
+if [[ ${#projects[@]} -eq 0 ]]; then
+  printf 'No projects found.\n'
+  exit 0
+fi
+
+printf '%-24s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS'
+printf '%-24s %-8s %s\n' '-------' '----' '------'
+
+for project in "${projects[@]}"; do
+  project_directory="${projects_directory}"/"${project}"
+  port_file="${project_directory}"/port
+
+  if [[ -f "${port_file}" ]]; then
+    port="$(< "${port_file}")"
+  else
+    port='?'
+  fi
+
+  if systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+    status='running'
+  else
+    status='stopped'
+  fi
+
+  printf '%-24s %-8s %s\n' "${project}" "${port}" "${status}"
+done
