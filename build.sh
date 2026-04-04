@@ -84,10 +84,11 @@ file_permissions+=(
 )
 END
 
-echo 'Disabling GRUB menu...'
+echo 'Patching GRUB...'
 sed -i \
     -e 's/^timeout=15$/timeout=0/' \
     -e 's/^timeout_style=menu$/timeout_style=hidden/' \
+    -e 's/^\([ \t]*linux .*\)$/\1 console=ttyS0/' \
     "${profile_directory}/grub/grub.cfg"
 
 add-package() {
