@@ -298,15 +298,24 @@ if ! qemu-img check -q "${home_disk}"; then
   error 13 <<<"Home disk integrity check failed: '${home_disk}'"
 fi
 
+# Reseal:
+#
+#     1. Rename old system directory aside
+#     2. Rename maintenance/ directory to system/
+#     3. Remove old directory
+#
+# If interrupted between the rename and completion,
+# the old images survive as system.old for recovery.
+#
 printf "Resealing base system images to: '%s'\n" "${system_directory}"
-rm -f "${system_directory:?}"/*
-mv "${system_disk}" "${system_directory}"/
-mv "${home_disk}"   "${system_directory}"/
-mv "${nvram}"       "${system_directory}"/
-rmdir "${maintenance_directory}"
+old_system_directory="${VIRTDEV_HOME}/system.old"
+mv "${system_directory}" "${old_system_directory}"
+mv "${maintenance_directory}" "${system_directory}"
 
 printf 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
+
+rm -rf "${old_system_directory}"
 
 printf 'Base system resealed: %s\n' "${system_directory}"
 printf '\n'
