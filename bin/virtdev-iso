@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# virtdev-iso [repository]
+# virtdev-iso
 #
 # Builds the virtdev Arch Linux installation ISO.
 # The resulting ISO is written to the current directory.
