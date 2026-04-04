@@ -80,14 +80,14 @@ fi
 
 public_key="$(< "${VIRTDEV_SSH_KEY}.pub")"
 
-build_directory="${repository_root}/build"
-output_directory="${build_directory}/output"
-work_directory="${build_directory}/work"
-profile_directory="${build_directory}/profile"
+build_directory="${XDG_CACHE_HOME:-${HOME}/.cache}"/virtdev
+output_directory="${PWD}"
+work_directory="${build_directory}"/work
+profile_directory="${build_directory}"/profile
 
 printf 'Clearing build tree...\n'
-sudo rm -rf "${output_directory:?}" "${work_directory:?}" "${profile_directory:?}"
-mkdir -p "${output_directory}" "${work_directory}" "${profile_directory}"
+sudo rm -rf "${work_directory:?}" "${profile_directory:?}"
+mkdir -p "${work_directory}" "${profile_directory}"
 
 printf "Copying profile: '%s'\n" "${profile}"
 cp -r "${profile}/." "${profile_directory}/"

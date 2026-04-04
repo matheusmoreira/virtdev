@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# virtdev-install <iso>
+# virtdev-install [iso]
 #
 # Boots the virtdev ISO in a temporary QEMU process to install
 # the base system into fresh qcow2 disks. Does not daemonize,
@@ -8,9 +8,22 @@
 # on successful installation. Serial output is attached
 # to the terminal so that progress is visible.
 #
+# If no ISO path is given, defaults to the ISO produced by virtdev-iso.
+#
 # Resulting disk images are placed in ${VIRTDEV_HOME}/installation.
 # Use virtdev-seal to promote them to sealed base system images
 # from which project virtual machines may be derived.
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME              Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_ISO               Default: ${XDG_CACHE_HOME:-~/.cache}/virtdev/virtdev.iso
+#   VIRTDEV_SYSTEM_DISK_SIZE  Default: 24G
+#   VIRTDEV_HOME_DISK_SIZE    Default: 48G
+#   VIRTDEV_VM_MEMORY         Default: 4096
+#   VIRTDEV_VM_CPUS           Default: 4
+#   OVMF_CODE                 Default: /usr/share/edk2/x64/OVMF_CODE.4m.fd
+#   OVMF_VARS                 Default: /usr/share/edk2/x64/OVMF_VARS.4m.fd
 #
 
 set -euo pipefail
@@ -22,6 +35,7 @@ error() {
 }
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_ISO:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev/virtdev.iso"}"
 : "${VIRTDEV_SYSTEM_DISK_SIZE:=24G}"
 : "${VIRTDEV_HOME_DISK_SIZE:=48G}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -29,28 +43,30 @@ error() {
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 : "${OVMF_VARS:="/usr/share/edk2/x64/OVMF_VARS.4m.fd"}"
 
-if [[ $# -ne 1 ]]; then
-  error 2 <<<'usage: virtdev-install <iso>'
+if [[ $# -gt 1 ]]; then
+  error 1 <<<'usage: virtdev-install [iso]'
 fi
 
-iso="${1}"
+if [[ $# -eq 1 ]]; then
+  VIRTDEV_ISO="${1}"
+fi
 
-if [[ ! -f "${iso}" ]]; then
-  error 3 <<<"Arch Linux ISO not found: '${iso}'"
+if [[ ! -f "${VIRTDEV_ISO}" ]]; then
+  error 2 <<<"ISO not found: '${VIRTDEV_ISO}'"
 fi
 
 if [[ ! -f "${OVMF_CODE}" ]]; then
-  error 4 <<<"OVMF_CODE not found: '${OVMF_CODE}'"
+  error 3 <<<"OVMF_CODE not found: '${OVMF_CODE}'"
 fi
 
 if [[ ! -f "${OVMF_VARS}" ]]; then
-  error 5 <<<"OVMF_VARS not found: '${OVMF_VARS}'"
+  error 4 <<<"OVMF_VARS not found: '${OVMF_VARS}'"
 fi
 
 installation_directory="${VIRTDEV_HOME}"/installation
 
 if [[ -d "${installation_directory}" ]]; then
-  error 6 <<MESSAGE
+  error 5 <<MESSAGE
 Installation directory already exists: '${installation_directory}'
 Use virtdev-seal to seal the installation, or remove it manually to reinstall.
 MESSAGE
@@ -59,7 +75,7 @@ fi
 system_directory="${VIRTDEV_HOME}"/system
 
 if [[ -d "${system_directory}" ]]; then
-  error 7 <<MESSAGE
+  error 6 <<MESSAGE
 Sealed base system images already present: '${system_directory}'
 Remove the system directory manually to reinstall.
 MESSAGE
@@ -95,7 +111,7 @@ qemu-system-x86_64 \
     -drive if=pflash,format=raw,file="${nvram}" \
     -drive file="${system_disk}",if=virtio,format=qcow2 \
     -drive file="${home_disk}",if=virtio,format=qcow2 \
-    -cdrom "${iso}" \
+    -cdrom "${VIRTDEV_ISO}" \
     -boot order=d,menu=off \
     -netdev user,id=net0 \
     -device virtio-net-pci,netdev=net0 \
