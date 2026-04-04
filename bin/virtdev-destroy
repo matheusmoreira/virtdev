@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+#
+# virtdev-destroy <project>
+#
+# Permanently deletes a project virtual machine and all its disk images.
+# The project must not be running.
+#
+# Requires typing the project name to confirm.
+# This operation is irreversible.
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+if [[ $# -ne 1 ]]; then
+  error 1 <<<'usage: virtdev-destroy <project>'
+fi
+
+project="${1}"
+
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+if systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+  error 4 <<MESSAGE
+Project virtual machine is running: ${project}
+Stop it with: virtdev-stop ${project}
+MESSAGE
+fi
+
+printf 'This will permanently delete:\n\n'
+printf '\t%s\n' "${project_directory}"
+find "${project_directory}" -type f \
+  | sort \
+  | while IFS= read -r f; do
+      printf '\t\t%s\t%s\n' "$(du -sh "${f}" | cut -f1)" "$(basename "${f}")"
+    done
+printf '\nThis operation is irreversible.\n'
+printf 'Type the project name to confirm: '
+read -r confirmation
+
+if [[ "${confirmation}" != "${project}" ]]; then
+  error 5 <<<"Aborted."
+fi
+
+rm -rf "${project_directory}"
+printf "Project destroyed: %s\n" "${project}"
