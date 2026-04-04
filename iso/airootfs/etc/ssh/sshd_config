@@ -20,7 +20,7 @@ KbdInteractiveAuthentication no
 KerberosAuthentication       no
 GSSAPIAuthentication         no
 HostbasedAuthentication      no
-UsePAM                       no
+UsePAM                       yes
 
 AuthenticationMethods publickey
 
