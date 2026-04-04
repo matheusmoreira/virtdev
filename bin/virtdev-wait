@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+#
+# virtdev-wait <project>
+#
+# Polls until SSH is accepting authenticated connections
+# on the project's forwarded port, then exits 0.
+# Useful after virtdev-start for scripted start -> provision flows:
+#
+#     virtdev-start myproject && virtdev-wait myproject && virtdev-ssh myproject ./provision.sh
+#
+# Polls every 2 seconds. Fails if SSH is not up within the timeout.
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME          Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_SSH_KEY       Default: ${VIRTDEV_HOME}/ssh/id
+#   VIRTDEV_WAIT_TIMEOUT  Default: 120
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+: "${VIRTDEV_WAIT_TIMEOUT:=120}"
+
+if [[ $# -ne 1 ]]; then
+  error 1 <<<'usage: virtdev-wait <project>'
+fi
+
+project="${1}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 2 <<<"Project not found: ${project}"
+fi
+
+port_file="${project_directory}/port"
+if [[ ! -f "${port_file}" ]]; then
+  error 3 <<<"Project port file not found: '${port_file}'"
+fi
+
+port="$(< "${port_file}")"
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
+  error 4 <<MESSAGE
+SSH key not found: '${VIRTDEV_SSH_KEY}'
+Generate it with virtdev-key then recreate and reinstall base system,
+or set VIRTDEV_SSH_KEY.
+MESSAGE
+fi
+
+printf 'Waiting for %s to bind SSH on port %d with timeout %ds...\n' \
+       "${project}" "${port}" "${VIRTDEV_WAIT_TIMEOUT}"
+
+deadline=$(( SECONDS + VIRTDEV_WAIT_TIMEOUT ))
+
+while (( SECONDS < deadline )); do
+  if ssh \
+      -i "${VIRTDEV_SSH_KEY}" \
+      -p "${port}" \
+      -o BatchMode=yes \
+      -o ConnectTimeout=3 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR \
+      dev@127.0.0.1 \
+      true 2>/dev/null
+  then
+    printf 'SSH is up: %s port %d\n' "${project}" "${port}"
+    exit 0
+  fi
+  sleep 2
+done
+
+error 5 <<MESSAGE
+Timed out after ${VIRTDEV_WAIT_TIMEOUT}s waiting for SSH: ${project}
+Is the virtual machine running? Start it with: virtdev-start ${project}
+MESSAGE
