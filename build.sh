@@ -52,9 +52,12 @@ mkdir -p "${output_directory}" "${work_directory}" "${profile_directory}"
 
 echo "Copying profile: '${profile}'"
 cp -r "${profile}/." "${profile_directory}/"
+rm -rf "${profile_directory}"/grub \
+       "${profile_directory}"/syslinux \
+       "${profile_directory}"/efiboot/loader/entries/*.conf
 
-echo 'Overlaying airootfs...'
-cp -r airootfs/. "${profile_directory}/airootfs/"
+echo 'Overlaying ISO configuration files...'
+cp -r iso/. "${profile_directory}/"
 
 echo 'Injecting SSH public key into installation image...'
 config_json="${profile_directory}/airootfs/root/archinstall/config.json"
@@ -62,54 +65,6 @@ jq --arg key "${public_key}"                      \
    '.users[0].ssh_authorized_keys = [$key]'       \
    "${config_json}" > "${config_json}.tmp"
 mv "${config_json}.tmp" "${config_json}"
-
-patch-profile-definition() {
-  sed -i \
-    "s/^${1}=.*/${1}=\"${2}\"/" \
-    "${profile_directory}"/profiledef.sh
-}
-
-echo 'Patching profile definition...'
-patch-profile-definition iso_name "${image_name}"
-patch-profile-definition iso_version "${image_version}"
-patch-profile-definition iso_application "${image_application}"
-
-echo 'Patching file permissions map...'
-cat >> "${profile_directory}/profiledef.sh" <<'END'
-
-file_permissions+=(
-  ["/root/archinstall/install.sh"]="0:0:755"
-  ["/root/archinstall/config.json"]="0:0:600"
-  ["/root/archinstall/creds.json"]="0:0:600"
-)
-END
-
-echo 'Patching GRUB...'
-sed -i \
-    -e 's/^timeout=15$/timeout=0/' \
-    -e 's/^timeout_style=menu$/timeout_style=hidden/' \
-    -e 's/^\([ \t]*linux .*\)$/\1 console=ttyS0/' \
-    "${profile_directory}/grub/grub.cfg"
-
-add-package() {
-  if ! grep -qxF "${1}" "${packages_file}"; then
-    echo "${1}" >> "${packages_file}"
-    echo "Added package: ${1}"
-  fi
-}
-
-add-packages() {
-  for package in "${@}"; do
-    add-package "${package}"
-  done
-}
-
-added_packages=(
-  jq
-)
-
-echo 'Adding packages...'
-add-packages "${added_packages[@]}"
 
 echo 'Creating Arch Linux installation media...'
 sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_directory}"
