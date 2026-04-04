@@ -51,6 +51,13 @@ if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
   error 4 <<<"Project virtual machine is not running: ${project}"
 fi
 
+if ! command -v socat &>/dev/null; then
+  printf 'socat not found, falling back to SIGTERM...\n'
+  systemctl --user stop "${unit}"
+  printf "Project VM stopped: %s\n" "${project}"
+  exit 0
+fi
+
 if [[ -S "${monitor_sock}" ]]; then
   printf "Sending ACPI powerdown to: %s\n" "${project}"
   if echo 'system_powerdown' | socat - UNIX-CONNECT:"${monitor_sock}" &>/dev/null; then
