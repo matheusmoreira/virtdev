@@ -178,7 +178,8 @@ DNS=9.9.9.9
 CONF
 printf 'virtdev: DNS configured\n'
 
-arch-chroot /mnt systemctl enable sshd serial-getty@ttyS0
+arch-chroot /mnt systemctl enable sshd serial-getty@ttyS0 \
+                                  systemd-networkd systemd-resolved
 printf 'virtdev: services enabled\n'
 
 # Lock password-based login on all accounts
