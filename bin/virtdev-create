@@ -10,7 +10,8 @@
 # Use virtdev-start for that.
 #
 # If no port is given, the lowest unused port starting from 2222
-# is assigned automatically by scanning existing project port files.
+# is assigned automatically by scanning existing project port files
+# and checking whether the port is already bound on the host.
 #
 # Project layout:
 #
@@ -30,6 +31,10 @@ error() {
   local -r code="${1}"
   cat >&2
   exit "${code}"
+}
+
+port_in_use() {
+  [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
 }
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
@@ -75,8 +80,13 @@ if [[ $# -eq 2 ]]; then
   if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
     error 6 <<<"Invalid port: '${port}' (must be 1024-65535)"
   fi
+  if port_in_use "${port}"; then
+    error 7 <<<"Port ${port} is already in use on this host"
+  fi
 else
-  # Find lowest unused port starting from 2222
+  # Find lowest unused port starting from 2222,
+  # skipping ports registered by other virtdev projects
+  # and ports currently bound on the host.
   declare -A used_ports=()
 
   if [[ -d "${projects_directory}" ]]; then
@@ -87,7 +97,7 @@ else
   fi
 
   port=2222
-  while [[ -n "${used_ports[${port}]+_}" ]]; do
+  while [[ -n "${used_ports[${port}]+_}" ]] || port_in_use "${port}"; do
     (( port++ ))
   done
 fi

@@ -24,6 +24,10 @@ error() {
   exit "${code}"
 }
 
+port_in_use() {
+  [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
+}
+
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
 : "${VIRTDEV_VM_CPUS:=4}"
@@ -68,6 +72,14 @@ if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
 fi
 
 port="$(< "${project_directory}"/port)"
+
+if port_in_use "${port}"; then
+  error 7 <<MESSAGE
+Port ${port} is already in use on this host
+Stop whatever is holding it or reassign the port
+MESSAGE
+fi
+
 system_disk="${project_directory}"/system.qcow2
 home_disk="${project_directory}"/home.qcow2
 nvram="${project_directory}"/nvram
