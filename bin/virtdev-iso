@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+#
+# virtdev-iso [repository]
+#
+# Builds the virtdev Arch Linux installation ISO.
+#
+# If no repository path is given, the parent directory of this
+# script is used, allowing the script to be run from anywhere
+# once installed to PATH.
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME      Base directory for virtdev data.
+#                     Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#
+#   VIRTDEV_SSH_KEY   Path to the ed25519 private key whose public half
+#                     is injected into the ISO as the authorized key for dev.
+#                     Default: ${VIRTDEV_HOME}/id
+#                     Run virtdev-key to generate it.
+#
+#   VIRTDEV_TIMEZONE  Timezone for the installed system.
+#                     Default: UTC
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+: "${VIRTDEV_TIMEZONE:="UTC"}"
+
+if [[ $# -gt 1 ]]; then
+  error 1 <<<'usage: virtdev-iso [repository]'
+fi
+
+if [[ $# -eq 1 ]]; then
+  repository_root="$(cd "${1}" && pwd)"
+else
+  repository_root="$(cd "$(dirname "${0}")/.." && pwd)"
+fi
+
+if [[ ! -f "${repository_root}/iso/profiledef.sh" ]]; then
+  error 2 <<<"Not a virtdev repository: '${repository_root}'"
+fi
+
+if ! command -v mkarchiso &>/dev/null; then
+  error 3 <<<'mkarchiso not found, install archiso'
+fi
+
+if ! command -v jq &>/dev/null; then
+  error 4 <<<'jq not found, install jq'
+fi
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}.pub" ]]; then
+  error 5 <<MESSAGE
+SSH public key not found: '${VIRTDEV_SSH_KEY}.pub'
+Generate it with virtdev-key.
+MESSAGE
+fi
+
+profile=/usr/share/archiso/configs/releng
+
+if [[ ! -d "${profile}" ]]; then
+  error 6 <<<"archiso releng profile not found: '${profile}'"
+fi
+
+public_key="$(< "${VIRTDEV_SSH_KEY}.pub")"
+
+build_directory="${repository_root}/build"
+output_directory="${build_directory}/output"
+work_directory="${build_directory}/work"
+profile_directory="${build_directory}/profile"
+
+printf 'Clearing build tree...\n'
+sudo rm -rf "${output_directory:?}" "${work_directory:?}" "${profile_directory:?}"
+mkdir -p "${output_directory}" "${work_directory}" "${profile_directory}"
+
+printf "Copying profile: '%s'\n" "${profile}"
+cp -r "${profile}/." "${profile_directory}/"
+rm -rf "${profile_directory}/grub" \
+       "${profile_directory}/syslinux" \
+       "${profile_directory}/efiboot/loader/entries/"*.conf
+
+printf 'Overlaying ISO configuration files...\n'
+cp -r "${repository_root}/iso/." "${profile_directory}/"
+
+printf 'Injecting SSH public key and timezone...\n'
+config_json="${profile_directory}/airootfs/root/archinstall/config.json"
+jq --arg key      "${public_key}"      \
+   --arg timezone "${VIRTDEV_TIMEZONE}" \
+   '.users[0].ssh_authorized_keys = [$key] | .timezone = $timezone' \
+   "${config_json}" > "${config_json}.tmp"
+mv "${config_json}.tmp" "${config_json}"
+
+printf 'Creating Arch Linux installation media...\n'
+sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_directory}"
+
+image_name=virtdev
+image_version="$(date +%Y-%m-%d)"
+iso="${output_directory}/${image_name}-${image_version}-x86_64.iso"
+
+if [[ ! -r "${iso}" ]]; then
+  error 7 <<<"Failed to create installation media: '${iso}'"
+fi
+
+printf "Created Arch Linux installation media: '%s'\n" "${iso}"
