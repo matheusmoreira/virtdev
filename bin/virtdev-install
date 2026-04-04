@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# virtdev-install <iso>
+#
+# Boots the virtdev ISO in a temporary QEMU process to install
+# the base system into fresh qcow2 disks. Does not daemonize,
+# waits for the VM to power off which happens automatically
+# on successful installation. Serial output is attached
+# to the terminal so that progress is visible.
+#
+# Resulting disk images are placed in ${VIRTDEV_HOME}/installation.
+# Use virtdev-seal to promote them to sealed base system images
+# from which project virtual machines may be derived.
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SYSTEM_DISK_SIZE:=24G}"
+: "${VIRTDEV_HOME_DISK_SIZE:=48G}"
+: "${VIRTDEV_VM_MEMORY:=4096}"
+: "${VIRTDEV_VM_CPUS:=4}"
+: "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
+: "${OVMF_VARS:="/usr/share/edk2/x64/OVMF_VARS.4m.fd"}"
+
+if [[ $# -ne 1 ]]; then
+  error 2 <<<'usage: virtdev-install <iso>'
+fi
+
+iso="${1}"
+
+if [[ ! -f "${iso}" ]]; then
+  error 3 <<<"Arch Linux ISO not found: '${iso}'"
+fi
+
+if [[ ! -f "${OVMF_CODE}" ]]; then
+  error 4 <<<"OVMF_CODE not found: '${OVMF_CODE}'"
+fi
+
+if [[ ! -f "${OVMF_VARS}" ]]; then
+  error 5 <<<"OVMF_VARS not found: '${OVMF_VARS}'"
+fi
+
+installation_directory="${VIRTDEV_HOME}"/installation
+
+if [[ -d "${installation_directory}" ]]; then
+  error 6 <<MESSAGE
+Installation directory already exists: '${installation_directory}'
+Use virtdev-seal to seal the installation, or remove it manually to reinstall.
+MESSAGE
+fi
+
+system_directory="${VIRTDEV_HOME}"/system
+
+if [[ -d "${system_directory}" ]]; then
+  error 7 <<MESSAGE
+Sealed base system images already present: '${system_directory}'
+Remove the system directory manually to reinstall.
+MESSAGE
+fi
+
+mkdir -p "${installation_directory}"
+
+system_disk="${installation_directory}"/system.qcow2
+printf "Creating %s system disk image: '%s'\n" \
+       "${VIRTDEV_SYSTEM_DISK_SIZE}" "${system_disk}"
+qemu-img create -f qcow2 "${system_disk}" "${VIRTDEV_SYSTEM_DISK_SIZE}"
+
+home_disk="${installation_directory}"/home.qcow2
+printf "Creating %s home disk: '%s'\n" \
+       "${VIRTDEV_HOME_DISK_SIZE}" "${home_disk}"
+qemu-img create -f qcow2 "${home_disk}" "${VIRTDEV_HOME_DISK_SIZE}"
+
+nvram="${installation_directory}"/nvram
+printf 'Copying default NVRAM...\n'
+cp "${OVMF_VARS}" "${nvram}"
+
+printf 'Booting installer with serial output attached.\n'
+printf 'On success, the virtual machine will power off automatically.\n'
+printf 'On failure, the shell will be accessible via the serial console.\n\n'
+
+qemu-system-x86_64 \
+    -enable-kvm \
+    -cpu host \
+    -machine q35 \
+    -m "${VIRTDEV_VM_MEMORY}" \
+    -smp "${VIRTDEV_VM_CPUS}" \
+    -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+    -drive if=pflash,format=raw,file="${nvram}" \
+    -drive file="${system_disk}",if=virtio,format=qcow2 \
+    -drive file="${home_disk}",if=virtio,format=qcow2 \
+    -cdrom "${iso}" \
+    -boot order=d,menu=off \
+    -netdev user,id=net0 \
+    -device virtio-net-pci,netdev=net0 \
+    -device virtio-rng-pci \
+    -display none \
+    -serial stdio \
+    -monitor none
+
+printf '\n'
+printf 'Installer finished.\n'
+printf 'Run virtdev-seal to seal the base system images.\n'
