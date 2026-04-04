@@ -170,6 +170,14 @@ UseDNS=false
 CONF
 printf 'virtdev: network configured\n'
 
+# Now actually configure the DNS
+install -d /mnt/etc/systemd/resolved.conf.d
+cat > /mnt/etc/systemd/resolved.conf.d/dns.conf <<CONF
+[Resolve]
+DNS=9.9.9.9
+CONF
+printf 'virtdev: DNS configured\n'
+
 arch-chroot /mnt systemctl enable sshd serial-getty@ttyS0
 printf 'virtdev: services enabled\n'
 
