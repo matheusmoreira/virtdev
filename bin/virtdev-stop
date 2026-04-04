@@ -43,8 +43,12 @@ unit=virtdev-"${project}"
 project_directory="${VIRTDEV_HOME}"/projects/"${project}"
 monitor_sock="${project_directory}"/monitor.sock
 
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
 if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
-  error 3 <<<"Project virtual machine is not running: ${project}"
+  error 4 <<<"Project virtual machine is not running: ${project}"
 fi
 
 if [[ -S "${monitor_sock}" ]]; then
