@@ -35,21 +35,28 @@ fi
 
 project="${1}"
 
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
 if [[ ! -d "${project_directory}" ]]; then
-  error 2 <<<"Project not found: ${project}"
+  error 3 <<<"Project not found: ${project}"
 fi
 
 port_file="${project_directory}/port"
 if [[ ! -f "${port_file}" ]]; then
-  error 3 <<<"Project port file not found: '${port_file}'"
+  error 4 <<<"Project port file not found: '${port_file}'"
 fi
 
 port="$(< "${port_file}")"
 
 if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
-  error 4 <<MESSAGE
+  error 5 <<MESSAGE
 SSH key not found: '${VIRTDEV_SSH_KEY}'
 Generate it with virtdev-key then recreate and reinstall base system,
 or set VIRTDEV_SSH_KEY.
@@ -79,7 +86,7 @@ while (( SECONDS < deadline )); do
   sleep 2
 done
 
-error 5 <<MESSAGE
+error 6 <<MESSAGE
 Timed out after ${VIRTDEV_WAIT_TIMEOUT}s waiting for SSH: ${project}
 Is the virtual machine running? Start it with: virtdev-start ${project}
 MESSAGE
