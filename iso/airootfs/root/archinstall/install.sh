@@ -156,6 +156,20 @@ editor  no
 CONF
 printf 'virtdev: boot loader configuration written\n'
 
+# QEMU's DNS proxy is apparently broken
+# Prevent it from being used as the link-level DNS
+cat > /mnt/etc/systemd/network/20-wired.network <<CONF
+[Match]
+Name=en*
+
+[Network]
+DHCP=yes
+
+[DHCPv4]
+UseDNS=false
+CONF
+printf 'virtdev: network configured\n'
+
 arch-chroot /mnt systemctl enable sshd serial-getty@ttyS0
 printf 'virtdev: services enabled\n'
 
