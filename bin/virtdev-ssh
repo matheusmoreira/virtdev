@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+#
+# virtdev-ssh <project> [ssh-args...]
+#
+# Connects into a running project virtual machine
+# via SSH and as the dev user.
+#
+# Additional arguments are passed through to ssh verbatim,
+# allowing remote command execution:
+#
+#     virtdev-ssh myproject
+#     virtdev-ssh myproject -- ls -la
+#     virtdev-ssh myproject -L 3000:localhost:3000
+#
+# The SSH key is read from VIRTDEV_SSH_KEY,
+# defaulting to ${VIRTDEV_HOME}/id.
+#
+#     export VIRTDEV_SSH_KEY=~/.ssh/virtdev_id
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/id"}"
+
+if [[ $# -lt 1 ]]; then
+  error 1 <<<'usage: virtdev-ssh <project> [ssh-args...]'
+fi
+
+project="${1}"
+shift
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 2 <<<"Project not found: ${project}"
+fi
+
+port_file="${project_directory}/port"
+if [[ ! -f "${port_file}" ]]; then
+  error 3 <<<"Project port file not found: '${port_file}'"
+fi
+
+port="$(< "${port_file}")"
+
+if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+  error 4 <<MESSAGE
+Virtual machine is not running: ${project}
+Start it with: virtdev-start ${project}
+MESSAGE
+fi
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
+  error 5 <<MESSAGE
+SSH key not found: '${VIRTDEV_SSH_KEY}'
+Place the private key at that path, link it, or set VIRTDEV_SSH_KEY.
+MESSAGE
+fi
+
+key_permissions="$(stat -c '%a' "${VIRTDEV_SSH_KEY}")"
+if [[ "${key_permissions}" != "600" && "${key_permissions}" != "400" ]]; then
+  error 6 <<MESSAGE
+SSH key permissions too open: '${VIRTDEV_SSH_KEY}' (${key_permissions})
+Fix with: chmod 600 '${VIRTDEV_SSH_KEY}'
+MESSAGE
+fi
+
+exec ssh                             \
+  -i "${VIRTDEV_SSH_KEY}"            \
+  -p "${port}"                       \
+  -o StrictHostKeyChecking=no        \
+  -o UserKnownHostsFile=/dev/null    \
+  -o LogLevel=ERROR                  \
+  dev@127.0.0.1                      \
+  "$@"
