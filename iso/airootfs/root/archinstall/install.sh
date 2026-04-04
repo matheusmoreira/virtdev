@@ -157,7 +157,7 @@ editor  no
 CONF
 printf 'virtdev: boot loader configuration written\n'
 
-arch-chroot /mnt systemctl enable systemd-networkd systemd-resolved sshd
+arch-chroot /mnt systemctl enable systemd-networkd systemd-resolved sshd serial-getty@ttyS0
 printf 'virtdev: services enabled\n'
 
 # Lock password-based login on all accounts
