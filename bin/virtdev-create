@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+#
+# virtdev-create <project> [port]
+#
+# Creates a named project virtual machine
+# derived from the sealed base system images.
+# Provisions the project directory
+# and records the SSH port.
+# Does not start the VM.
+# Use virtdev-start for that.
+#
+# If no port is given, the lowest unused port starting from 2222
+# is assigned automatically by scanning existing project port files.
+#
+# Project layout:
+#
+#   ${VIRTDEV_HOME}/
+#     projects/
+#       ${project}/
+#         system.qcow2    (delta over system/system.qcow2)
+#         home.qcow2      (delta over system/home.qcow2)
+#         nvram           (UEFI variable store copy)
+#         port            (SSH forwarding port, one number)
+#         pid             (QEMU process ID while running, absent when stopped)
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  error 1 <<<'usage: virtdev-create <project> [port]'
+fi
+
+project="${1}"
+
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
+system_directory="${VIRTDEV_HOME}/system"
+projects_directory="${VIRTDEV_HOME}/projects"
+project_directory="${projects_directory}/${project}"
+
+if [[ ! -d "${system_directory}" ]]; then
+  error 3 <<MESSAGE
+Sealed base system images not found: '${system_directory}'
+Run virtdev-install and virtdev-seal first
+MESSAGE
+fi
+
+for file in system.qcow2 home.qcow2 nvram; do
+  if [[ ! -f "${system_directory}/${file}" ]]; then
+    error 4 <<<"Base system image missing: '${system_directory}/${file}'"
+  fi
+done
+
+if [[ -d "${project_directory}" ]]; then
+  error 5 <<<"Project already exists: '${project_directory}'"
+fi
+
+# Resolve SSH port
+
+if [[ $# -eq 2 ]]; then
+  port="${2}"
+  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
+    error 6 <<<"Invalid port: '${port}' (must be 1024-65535)"
+  fi
+else
+  # Find lowest unused port starting from 2222
+  declare -A used_ports=()
+
+  if [[ -d "${projects_directory}" ]]; then
+    while IFS= read -r port_file; do
+      input="$(< "${port_file}")"
+      used_ports["${input}"]=1
+    done < <(find "${projects_directory}" -maxdepth 2 -name port 2>/dev/null)
+  fi
+
+  port=2222
+  while [[ -n "${used_ports[${port}]+_}" ]]; do
+    (( port++ ))
+  done
+fi
+
+# Create project directory and disk images
+
+mkdir -p "${project_directory}"
+
+system_disk="${project_directory}/system.qcow2"
+home_disk="${project_directory}/home.qcow2"
+nvram="${project_directory}/nvram"
+
+printf "Creating system delta image: '%s'\n" "${system_disk}"
+qemu-img create \
+    -f qcow2 \
+    -b "${system_directory}/system.qcow2" \
+    -F qcow2 \
+    "${system_disk}"
+
+printf "Creating home delta image: '%s'\n" "${home_disk}"
+qemu-img create \
+    -f qcow2 \
+    -b "${system_directory}/home.qcow2" \
+    -F qcow2 \
+    "${home_disk}"
+
+printf "Copying NVRAM: '%s'\n" "${nvram}"
+cp "${system_directory}/nvram" "${nvram}"
+
+printf '%d\n' "${port}" > "${project_directory}/port"
+
+printf '\n'
+printf "Project virtual machine created: '%s'\n" "${project}"
+printf "Directory: '%s'\n" "${project_directory}"
+printf "SSH port: %d\n" "${port}"
+printf "Start it with: virtdev-start %s\n" "${project}"
