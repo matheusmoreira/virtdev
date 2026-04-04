@@ -114,16 +114,7 @@
     "sys_lang": "en_US"
   },
   "network_config": {
-    "type": "manual",
-    "nics": [
-      {
-        "iface": null,
-        "ip": null,
-        "dhcp": true,
-        "gateway": null,
-        "dns": []
-      }
-    ]
+    "type": "iso"
   },
   "packages": [
     "base-devel",

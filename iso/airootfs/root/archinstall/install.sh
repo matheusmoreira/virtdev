@@ -18,8 +18,6 @@
 #       4. Generate new bootloader entries in XBOOTLDR partition
 #       5. Reconfigure bootloader
 #       6. Enable services
-#          1. systemd-networkd
-#          2. systemd-resolved
 #          2. sshd
 #       7. Lock all accounts to disable password-based login
 #       8. Configure sudo for the dev user
@@ -157,7 +155,7 @@ editor  no
 CONF
 printf 'virtdev: boot loader configuration written\n'
 
-arch-chroot /mnt systemctl enable systemd-networkd systemd-resolved sshd serial-getty@ttyS0
+arch-chroot /mnt systemctl enable sshd serial-getty@ttyS0
 printf 'virtdev: services enabled\n'
 
 # Lock password-based login on all accounts
