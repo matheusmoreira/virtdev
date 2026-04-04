@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# virtdev-start <project>
+#
+# Starts a project virtual machine as a transient systemd user service.
+# The VM runs in the background, and systemd tracks the process.
+#
+# Lifecycle:
+#
+#     systemctl --user status virtdev-<project>     # status + recent logs
+#     journalctl --user -u virtdev-<project>        # full logs
+#     virtdev-stop <project>                        # clean ACPI shutdown
+#
+# Serial console access (when SSH is unavailable):
+#
+#     socat - UNIX-CONNECT:${VIRTDEV_HOME}/projects/<project>/console.sock
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_VM_MEMORY:=4096}"
+: "${VIRTDEV_VM_CPUS:=4}"
+: "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
+
+if [[ $# -ne 1 ]]; then
+  error 1 <<<'usage: virtdev-start <project>'
+fi
+
+project="${1}"
+
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
+project_directory="${VIRTDEV_HOME}"/projects/"${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<MESSAGE
+Project not found: '${project_directory}'
+Create project virtual machine first: virtdev-create '${project}'
+MESSAGE
+fi
+
+for file in system.qcow2 home.qcow2 nvram port; do
+  if [[ ! -f "${project_directory}/${file}" ]]; then
+    error 4 <<<"Project file missing: '${project_directory}/${file}'"
+  fi
+done
+
+if [[ ! -f "${OVMF_CODE}" ]]; then
+  error 5 <<<"Firmware not found: '${OVMF_CODE}'"
+fi
+
+unit=virtdev-"${project}"
+
+if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+  error 6 <<<"Project virtual machine is already running: ${project}"
+fi
+
+port="$(< "${project_directory}"/port)"
+system_disk="${project_directory}"/system.qcow2
+home_disk="${project_directory}"/home.qcow2
+nvram="${project_directory}"/nvram
+monitor_sock="${project_directory}"/monitor.sock
+console_sock="${project_directory}"/console.sock
+
+# Remove stale sockets from a previous unclean shutdown
+rm -f "${monitor_sock}" "${console_sock}"
+
+printf "Starting project virtual machine %s on SSH port %d...\n" "${project}" "${port}"
+
+systemd-run \
+    --user \
+    --unit="${unit}" \
+    --description="virtdev project virtual machine: ${project}" \
+    --collect \
+    -- \
+    qemu-system-x86_64 \
+        -enable-kvm \
+        -cpu host \
+        -machine q35 \
+        -m "${VIRTDEV_VM_MEMORY}" \
+        -smp "${VIRTDEV_VM_CPUS}" \
+        -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+        -drive if=pflash,format=raw,file="${nvram}" \
+        -drive file="${system_disk}",if=virtio,format=qcow2 \
+        -drive file="${home_disk}",if=virtio,format=qcow2 \
+        -netdev user,id=net0,hostfwd=tcp:127.0.0.1:"${port}"-:22 \
+        -device virtio-net-pci,netdev=net0 \
+        -device virtio-rng-pci \
+        -display none \
+        -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
+        -monitor chardev:monitor \
+        -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
+        -serial chardev:serial
+
+printf 'VM started.\n'
+printf 'SSH will be available after boot at: 127.0.0.1:%d\n' "${port}"
+printf 'Shut down cleanly with: virtdev-stop %s\n' "${project}"

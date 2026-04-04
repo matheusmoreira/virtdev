@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# virtdev-stop <project>
+#
+# Shuts down a project virtual machine cleanly via ACPI powerdown.
+# Falls back to systemctl stop (SIGTERM) if the monitor is unavailable
+# or the guest does not respond within a timeout.
+#
+# The QEMU monitor socket is used to send 'system_powerdown',
+# which triggers a clean ACPI shutdown in the guest.
+# It should halt gracefully since systemd sees it as a power button press.
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_STOP_TIMEOUT:=60}"
+
+if [[ $# -ne 1 ]]; then
+  error 1 <<<'usage: virtdev-stop <project>'
+fi
+
+project="${1}"
+
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
+unit=virtdev-"${project}"
+project_directory="${VIRTDEV_HOME}"/projects/"${project}"
+monitor_sock="${project_directory}"/monitor.sock
+
+if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+  error 3 <<<"Project virtual machine is not running: ${project}"
+fi
+
+if [[ -S "${monitor_sock}" ]]; then
+  printf "Sending ACPI powerdown to: %s\n" "${project}"
+  if echo 'system_powerdown' | socat - UNIX-CONNECT:"${monitor_sock}" &>/dev/null; then
+    # Wait for systemd to see the unit exit
+    deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
+    while systemctl --user --quiet is-active "${unit}" 2>/dev/null; do
+      if (( SECONDS >= deadline )); then
+        printf 'Guest did not halt within %ds, falling back to SIGTERM...\n' \
+               "${VIRTDEV_STOP_TIMEOUT}"
+        systemctl --user stop "${unit}"
+        break
+      fi
+      sleep 1
+    done
+  else
+    printf 'Monitor send failed, falling back to SIGTERM...\n'
+    systemctl --user stop "${unit}"
+  fi
+else
+  printf 'Monitor socket not found, falling back to SIGTERM...\n'
+  systemctl --user stop "${unit}"
+fi
+
+printf "Project VM stopped: %s\n" "${project}"
