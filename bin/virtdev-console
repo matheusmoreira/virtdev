@@ -29,22 +29,29 @@ fi
 
 project="${1}"
 
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
 if [[ ! -d "${project_directory}" ]]; then
-  error 2 <<<"Project virtual machine not found: ${project}"
+  error 3 <<<"Project virtual machine not found: ${project}"
 fi
 
 console_sock="${project_directory}/console.sock"
 if [[ ! -S "${console_sock}" ]]; then
-  error 3 <<MESSAGE
+  error 4 <<MESSAGE
 Project virtual machine is not running: ${project}
 Start it with: virtdev-start ${project}
 MESSAGE
 fi
 
 if ! command -v socat &>/dev/null; then
-  error 4 <<<'socat not found, install with: pacman -S socat'
+  error 5 <<<'socat not found, install with: pacman -S socat'
 fi
 
 printf 'Attaching to serial console of %s.\nDetach with Ctrl-].\n\n' "${project}"
