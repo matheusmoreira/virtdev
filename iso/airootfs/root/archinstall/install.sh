@@ -204,8 +204,10 @@ printf 'virtdev: accounts locked\n'
 cp /etc/ssh/sshd_config /mnt/etc/ssh/sshd_config
 printf 'virtdev: sshd configured\n'
 
-install -d -m 700 -o 1000 -g 1000 /mnt/home/dev/.ssh
-install -m 600 -o 1000 -g 1000 /dev/stdin /mnt/home/dev/.ssh/authorized_keys <<JQ
+dev_uid="$(arch-chroot /mnt id -u dev)"
+dev_gid="$(arch-chroot /mnt id -g dev)"
+install -d -m 700 -o "${dev_uid}" -g "${dev_gid}" /mnt/home/dev/.ssh
+install -m 600 -o "${dev_uid}" -g "${dev_gid}" /dev/stdin /mnt/home/dev/.ssh/authorized_keys <<JQ
 $(jq -r '.users[0].ssh_authorized_keys[0]' "${config}")
 JQ
 printf 'virtdev: authorized_keys for dev user installed\n'
