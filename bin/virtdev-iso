@@ -12,7 +12,7 @@
 #
 #   VIRTDEV_SSH_KEY        Path to the ed25519 private key whose public half
 #                          is injected into the ISO as the authorized key for dev.
-#                          Default: ${VIRTDEV_HOME}/id
+#                          Default: ${VIRTDEV_HOME}/ssh/id
 #                          Run virtdev-key to generate it.
 #
 #   VIRTDEV_TIMEZONE       Timezone for the installed system.
