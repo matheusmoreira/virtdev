@@ -1,0 +1,310 @@
+#!/usr/bin/env bash
+#
+# virtdev-maintain
+#
+# Boots the sealed base system in a writable maintenance staging area
+# where it is possible to configure and update the system
+# as well as seed dotfiles into the base system home disk.
+# Reseals automatically on clean power off
+# as signaled by the systemd unit exit status
+# after explicit confirmation from the user.
+#
+# Workflow:
+#
+#   1. Copy system/ to maintenance/
+#   2. Make maintenance/ images writable
+#   3. Start the maintenance virtual machine as a systemd user service on port 2222
+#   4. Connect via SSH once the virtual machine is ready: virtdev-ssh maintenance
+#   5. Perform maintenance inside the virtual machine
+#      5.1. Update system
+#      5.2. Configure system
+#      5.3. Seed dotfiles
+#   6. Power off, not reboot: sudo poweroff
+#   7. On clean exit
+#      7.1. Integrity check
+#      7.2. Confirm reseal
+#           7.2.1 Replace system/ with maintenance/
+#
+# If the virtual machine does not exit cleanly,
+# as signaled by a non-zero systemd unit exit status
+# QEMU failure or SIGINT from Ctrl-C or virtdev-stop,
+# maintenance/ is left intact for inspection
+# and the sealed system/ is unchanged.
+# Remove maintenance/ manually to retry.
+#
+# The maintenance virtual machine runs as a systemd user service
+# named virtdev-maintenance. Use standard systemd and virtdev tools
+# to inspect or stop it:
+#
+#   virtdev-ssh maintenance
+#   virtdev-stop maintenance
+#   systemctl --user status virtdev-maintenance
+#   journalctl --user -u virtdev-maintenance
+#
+# All running project virtual machines
+# must be stopped before running virtdev-maintain.
+# Project virtual machines use system/system.qcow2
+# as a backing file. Replacing it under a running
+# virtual machine would corrupt its delta image.
+#
+# After resealing:
+#
+#   - Project virtual machines in delta mode
+#     do not pick up changes automatically.
+#     Recreate them with virtdev-destroy + virtdev-create.
+#   - Project virtual machines in shared read-only mode
+#     pick up changes to the system disk on next boot.
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME              Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_SSH_KEY           Default: ${VIRTDEV_HOME}/ssh/id
+#   VIRTDEV_WAIT_TIMEOUT      Seconds to wait for SSH. Default: 120
+#   VIRTDEV_VM_MEMORY         Default: 4096
+#   VIRTDEV_VM_CPUS           Default: 4
+#   OVMF_CODE                 Default: /usr/share/edk2/x64/OVMF_CODE.4m.fd
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+: "${VIRTDEV_WAIT_TIMEOUT:=120}"
+: "${VIRTDEV_VM_MEMORY:=4096}"
+: "${VIRTDEV_VM_CPUS:=4}"
+: "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
+
+readonly maintenance_port=2222
+readonly unit=virtdev-maintenance
+
+if [[ $# -ne 0 ]]; then
+  error 1 <<<'usage: virtdev-maintain'
+fi
+
+system_directory="${VIRTDEV_HOME}/system"
+maintenance_directory="${VIRTDEV_HOME}/maintenance"
+maintenance_project="${VIRTDEV_HOME}/projects/maintenance"
+
+if [[ ! -d "${system_directory}" ]]; then
+  error 2 <<MESSAGE
+Sealed base system not found: '${system_directory}'
+Create it with virtdev-iso, virtdev-install and virtdev-seal.
+MESSAGE
+fi
+
+for file in system.qcow2 home.qcow2 nvram; do
+  if [[ ! -f "${system_directory}/${file}" ]]; then
+    error 3 <<<"Base system image missing: '${system_directory}/${file}'"
+  fi
+done
+
+if [[ -d "${maintenance_directory}" ]]; then
+  error 4 <<MESSAGE
+Maintenance staging directory already exists: '${maintenance_directory}'
+A previous virtdev-maintain session may have failed or been interrupted.
+Inspect the directory and remove it manually to proceed:
+
+    rm -rf '${maintenance_directory}'
+
+The original sealed base system should be intact: '${system_directory}'
+MESSAGE
+fi
+
+if [[ ! -f "${OVMF_CODE}" ]]; then
+  error 5 <<<"Firmware not found: '${OVMF_CODE}'"
+fi
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
+  error 6 <<MESSAGE
+SSH key not found: '${VIRTDEV_SSH_KEY}'
+Generate it with virtdev-key then recreate and reinstall base system image.
+MESSAGE
+fi
+
+# Refuse to run if any project virtual machines are currently running.
+# They depend on system/system.qcow2 as a backing file.
+# Replacing it while a project virtual machine is running would corrupt it.
+if systemctl --user list-units --state=active --no-legend 'virtdev-*.service' \
+       2>/dev/null | grep -q .; then
+  error 7 <<MESSAGE
+One or more project virtual machines are running.
+Stop all project virtual machines before running virtdev-maintain:
+
+    virtdev-stop <project>
+
+MESSAGE
+fi
+
+mkdir -p "${maintenance_directory}"
+
+system_disk="${maintenance_directory}/system.qcow2"
+home_disk="${maintenance_directory}/home.qcow2"
+nvram="${maintenance_directory}/nvram"
+
+printf "Copying sealed base images to: '%s'\n" "${maintenance_directory}"
+cp "${system_directory}/system.qcow2" "${system_disk}"
+cp "${system_directory}/home.qcow2"   "${home_disk}"
+cp "${system_directory}/nvram"        "${nvram}"
+
+printf 'Making maintenance images writable...\n'
+chmod 644 "${system_disk}" "${home_disk}" "${nvram}"
+
+# Register maintenance as a virtual project so virtdev-ssh and virtdev-stop work.
+mkdir -p "${maintenance_project}"
+printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
+
+monitor_sock="${maintenance_project}/monitor.sock"
+rm -f "${monitor_sock}"
+
+printf 'Starting maintenance VM (virtdev-maintenance)...\n'
+
+systemd-run \
+    --user \
+    --unit="${unit}" \
+    --description='virtdev base system maintenance virtual machine' \
+    -- \
+    qemu-system-x86_64 \
+        -enable-kvm \
+        -cpu host \
+        -machine q35 \
+        -m "${VIRTDEV_VM_MEMORY}" \
+        -smp "${VIRTDEV_VM_CPUS}" \
+        -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+        -drive if=pflash,format=raw,file="${nvram}" \
+        -drive file="${system_disk}",if=virtio,format=qcow2 \
+        -drive file="${home_disk}",if=virtio,format=qcow2 \
+        -netdev user,id=net0,hostfwd=tcp:127.0.0.1:"${maintenance_port}"-:22 \
+        -device virtio-net-pci,netdev=net0 \
+        -device virtio-rng-pci \
+        -display none \
+        -serial none \
+        -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
+        -monitor chardev:monitor
+
+# Poll until SSH is up or the unit exits early.
+printf 'Waiting for SSH on port %d with timeout %ds...' \
+       "${maintenance_port}" "${VIRTDEV_WAIT_TIMEOUT}"
+
+ssh_up=0
+deadline=$(( SECONDS + VIRTDEV_WAIT_TIMEOUT ))
+
+while (( SECONDS < deadline )); do
+  unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
+  case "${unit_state}" in
+    active|activating) ;;
+    *) break ;;   # Unit exited before SSH came up
+  esac
+  if ssh \
+      -i "${VIRTDEV_SSH_KEY}" \
+      -p "${maintenance_port}" \
+      -o BatchMode=yes \
+      -o ConnectTimeout=3 \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o LogLevel=ERROR \
+      dev@127.0.0.1 \
+      true 2>/dev/null
+  then
+    ssh_up=1
+    break
+  fi
+  printf '.'
+  sleep 2
+done
+
+if [[ "${ssh_up}" -eq 0 ]]; then
+  printf ' failed.\n'
+  systemctl --user stop "${unit}" 2>/dev/null || true
+  systemctl --user reset-failed "${unit}" 2>/dev/null || true
+  rm -f "${maintenance_project}/port" "${monitor_sock}"
+  rmdir "${maintenance_project}" 2>/dev/null || true
+  error 8 <<MESSAGE
+SSH did not become available within ${VIRTDEV_WAIT_TIMEOUT}s.
+The sealed base images are intact: '${system_directory}'
+Maintenance images preserved for inspection: '${maintenance_directory}'
+Remove manually to retry: rm -rf '${maintenance_directory}'
+MESSAGE
+fi
+
+printf ' up.\n\n'
+printf 'Connect to the maintenance virtual machine:\n\n'
+printf '\tvirtdev-ssh maintenance\n\n'
+printf 'When done, power off to trigger resealing:\n\n'
+printf '\tsudo poweroff\n\n'
+printf 'Waiting for virtual machine to exit...\n'
+printf 'To abort:\n\n'
+printf '\tvirtdev-stop maintenance\n\n'
+
+# Wait for the unit to leave active/activating state.
+while true; do
+  unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
+  case "${unit_state}" in
+    active|activating) sleep 2 ;;
+    *) break ;;
+  esac
+done
+
+# Capture exit status before reset-failed removes it.
+qemu_exit="$(systemctl --user show "${unit}" \
+    --property=ExecMainStatus --value 2>/dev/null || echo 1)"
+
+systemctl --user reset-failed "${unit}" 2>/dev/null || true
+rm -f "${maintenance_project}/port" "${monitor_sock}"
+rmdir "${maintenance_project}" 2>/dev/null || true
+
+printf '\n'
+
+if [[ "${qemu_exit}" -ne 0 ]]; then
+  error 9 <<MESSAGE
+Unclean shutdown or interrupted.
+Unit exit status: ${qemu_exit}
+The sealed base images are intact: '${system_directory}'
+Maintenance images preserved for inspection: '${maintenance_directory}'
+Remove manually to retry: rm -rf '${maintenance_directory}'
+MESSAGE
+fi
+
+# QEMU exits 0 for both a guest poweroff and an external SIGTERM
+# due to Ctrl-C or virtdev-stop maintenance. Exit status alone
+# cannot be used to determine whether maintenance is complete.
+# Require explicit confirmation before overwriting the sealed base system.
+printf 'Virtual machine exited cleanly.\n'
+printf 'Reseal the base system? [y/N] '
+read -r confirm
+if [[ "${confirm}" != 'y' && "${confirm}" != 'Y' ]]; then
+  error 10 <<MESSAGE
+Reseal cancelled.
+The sealed base images are intact: '${system_directory}'
+Maintenance images preserved for inspection: '${maintenance_directory}'
+Remove manually to retry: rm -rf '${maintenance_directory}'
+MESSAGE
+fi
+
+printf 'Checking maintenance image integrity...\n'
+if ! qemu-img check -q "${system_disk}"; then
+  error 11 <<<"System disk integrity check failed: '${system_disk}'"
+fi
+if ! qemu-img check -q "${home_disk}"; then
+  error 12 <<<"Home disk integrity check failed: '${home_disk}'"
+fi
+
+printf "Resealing base system images to: '%s'\n" "${system_directory}"
+rm -f "${system_directory:?}"/*
+mv "${system_disk}" "${system_directory}"/
+mv "${home_disk}"   "${system_directory}"/
+mv "${nvram}"       "${system_directory}"/
+rmdir "${maintenance_directory}"
+
+printf 'Marking base system images read-only...\n'
+chmod 444 "${system_directory}"/*
+
+printf 'Base system resealed: %s\n' "${system_directory}"
+printf '\n'
+printf 'Project virtual machines in delta mode do not inherit these changes.\n'
+printf 'Recreate them with virtdev-destroy + virtdev-create to pick up updates.\n'
