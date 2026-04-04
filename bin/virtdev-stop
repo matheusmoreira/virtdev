@@ -10,6 +10,10 @@
 # which triggers a clean ACPI shutdown in the guest.
 # It should halt gracefully since systemd sees it as a power button press.
 #
+# Requires socat.
+#
+#     pacman -S socat
+#
 
 set -euo pipefail
 
