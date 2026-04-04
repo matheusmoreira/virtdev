@@ -146,7 +146,7 @@ cat > /mnt/boot/loader/entries/arch.conf <<ENTRY
 title   Arch Linux
 linux   /vmlinuz-linux
 initrd  /initramfs-linux.img
-options root=UUID=${root_uuid} rw rootfstype=ext4
+options root=UUID=${root_uuid} rw rootfstype=ext4 console=tty0 console=ttyS0
 ENTRY
 printf 'virtdev: bootloader entry written\n'
 
