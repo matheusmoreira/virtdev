@@ -19,6 +19,7 @@
 #       5. Reconfigure bootloader
 #       6. Enable services
 #          2. sshd
+#          2. getty@ttyS0
 #       7. Lock all accounts to disable password-based login
 #       8. Configure sudo for the dev user
 #
