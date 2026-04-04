@@ -22,7 +22,6 @@
 #         home.qcow2      (delta over system/home.qcow2)
 #         nvram           (UEFI variable store copy)
 #         port            (SSH forwarding port, one number)
-#         pid             (QEMU process ID while running, absent when stopped)
 #
 
 set -euo pipefail
