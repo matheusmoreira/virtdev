@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+#
+# virtdev-seal
+#
+# Promotes installed base system images to sealed, read-only
+# backing files from which per-project delta images are derived.
+#
+# Reads from  ${VIRTDEV_HOME}/installation/
+# Writes to   ${VIRTDEV_HOME}/system/
+#
+# On success, the installation directory is removed.
+#
+# Run virtdev-install <iso> first to produce the installation directory.
+# Run virtdev-create <project> after sealing to create a project VM.
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+if [[ $# -ne 0 ]]; then
+  error 1 <<<'usage: virtdev-seal'
+fi
+
+installation_directory="${VIRTDEV_HOME}/installation"
+system_directory="${VIRTDEV_HOME}/system"
+
+if [[ ! -d "${installation_directory}" ]]; then
+  error 2 <<<"Installation directory not found: '${installation_directory}'"
+fi
+
+if [[ -d "${system_directory}" ]]; then
+  error 3 <<MESSAGE
+Sealed base system images already present: '${system_directory}'
+Remove the system directory manually to reseal.
+MESSAGE
+fi
+
+system_disk="${installation_directory}/system.qcow2"
+home_disk="${installation_directory}/home.qcow2"
+nvram="${installation_directory}/nvram"
+
+for f in "${system_disk}" "${home_disk}" "${nvram}"; do
+  if [[ ! -f "${f}" ]]; then
+    error 4 <<<"Installation file not found: '${f}'"
+  fi
+done
+
+printf 'Checking image integrity...\n'
+if ! qemu-img check -q "${system_disk}"; then
+  error 5 <<<"System disk image integrity check failed: '${system_disk}'"
+fi
+if ! qemu-img check -q "${home_disk}"; then
+  error 6 <<<"Home disk image integrity check failed: '${home_disk}'"
+fi
+
+mkdir -p "${system_directory}"
+
+printf "Sealing base system images to '%s'...\n" "${system_directory}"
+mv "${system_disk}" "${system_directory}"/
+mv "${home_disk}"   "${system_directory}"/
+mv "${nvram}"       "${system_directory}"/
+
+printf 'Marking base system images read-only...\n'
+chmod 444 "${system_directory}"/*
+
+printf 'Removing installation directory...\n'
+rmdir "${installation_directory}"
+
+printf "Base system sealed: '%s'\n" "${system_directory}"
+printf 'Run virtdev-create <name> to derive a virtual machine.\n'
