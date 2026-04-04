@@ -5,7 +5,7 @@
 # Generates the ed25519 key pair used to authenticate
 # into virtdev virtual machines.
 #
-# The public key is included into the ISO at build time by virtdev-build.
+# The public key is included into the ISO at build time by virtdev-iso.
 # The private key is used at runtime by virtdev-ssh.
 #
 # Configuration via environment variables:
