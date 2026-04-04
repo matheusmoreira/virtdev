@@ -116,6 +116,7 @@ qemu-img create \
 
 printf "Copying NVRAM: '%s'\n" "${nvram}"
 cp "${system_directory}/nvram" "${nvram}"
+chmod 644 "${nvram}"
 
 printf '%d\n' "${port}" > "${project_directory}/port"
 
