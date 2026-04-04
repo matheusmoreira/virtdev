@@ -141,6 +141,7 @@ rm -f /mnt/efi/loader/entries/*.conf
 printf 'virtdev: generated bootloader entries erased\n'
 
 root_uuid="$(blkid -s UUID -o value /dev/vda3)"
+mkdir -p /mnt/boot/loader/entries
 cat > /mnt/boot/loader/entries/arch.conf <<ENTRY
 title   Arch Linux
 linux   /vmlinuz-linux
