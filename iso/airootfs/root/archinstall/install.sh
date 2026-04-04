@@ -132,6 +132,10 @@ printf 'virtdev: set vda2 partition type XBOOTLDR = EA00\n'
 # in order enable project machines to swap in home disks
 e2label /dev/vdb1 home
 home_uuid="$(blkid -s UUID -o value /dev/vdb1)"
+if [[ -z "${home_uuid}" ]]; then
+  >&2 printf 'virtdev: failed to read UUID of home disk\n'
+  exit 1
+fi
 sed -i "s|^UUID=${home_uuid}|LABEL=home|" /mnt/etc/fstab
 printf 'virtdev: home partition labelled and configured\n'
 
@@ -140,6 +144,10 @@ rm -f /mnt/efi/loader/entries/*.conf
 printf 'virtdev: generated bootloader entries erased\n'
 
 root_uuid="$(blkid -s UUID -o value /dev/vda3)"
+if [[ -z "${root_uuid}" ]]; then
+  >&2 printf 'virtdev: failed to read UUID of system disk\n'
+  exit 2
+fi
 mkdir -p /mnt/boot/loader/entries
 cat > /mnt/boot/loader/entries/arch.conf <<ENTRY
 title   Arch Linux
