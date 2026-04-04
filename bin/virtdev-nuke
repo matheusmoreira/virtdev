@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+#
+# virtdev-nuke
+#
+# Permanently deletes all virtdev data:
+#
+#   ${VIRTDEV_HOME}                                   (projects, images, keys)
+#   ${XDG_CACHE_HOME:-~/.cache}/virtdev               (ISO, build artifacts)
+#
+# No other paths are touched. Ever.
+#
+# All project virtual machines must be stopped before running this.
+# Requires typing "nuke" to confirm.
+# This operation is irreversible.
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
+
+if [[ $# -ne 0 ]]; then
+  error 1 <<<'usage: virtdev-nuke'
+fi
+
+# Refuse to operate on obviously dangerous paths
+for path in "${VIRTDEV_HOME}" "${VIRTDEV_CACHE}"; do
+  real="$(realpath -m "${path}")"
+  home_real="$(realpath "${HOME}")"
+  if [[ "${real}" == "${home_real}" || "${real}" == "/" ]]; then
+    error 2 <<MESSAGE
+Path resolves to a protected path: '${path}'
+Nuke aborted
+MESSAGE
+  fi
+done
+
+# Refuse if any project VMs are running
+projects_directory="${VIRTDEV_HOME}/projects"
+if [[ -d "${projects_directory}" ]]; then
+  while IFS= read -r project; do
+    if systemctl --user --quiet is-active virtdev-"${project}" 2>/dev/null; then
+      error 3 <<MESSAGE
+Project virtual machine is running: ${project}
+Stop it with: virtdev-stop ${project}
+All virtual machines must be stopped before nuking
+MESSAGE
+    fi
+  done < <(find "${projects_directory}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null)
+fi
+
+printf 'This will permanently delete all virtdev data:\n\n'
+
+for path in "${VIRTDEV_HOME}" "${VIRTDEV_CACHE}"; do
+  if [[ -e "${path}" ]]; then
+    printf '\t%s\t%s\n' "$(du -sh "${path}" 2>/dev/null | cut -f1)" "${path}"
+  fi
+done
+
+printf '\nThis includes:\n'
+printf '\tALL project virtual machines\n'
+printf '\tALL disk images\n'
+printf '\tBase system images\n'
+printf '\tSSH keys\n'
+printf '\tISOs\n'
+printf '\nThis operation is irreversible.\n'
+printf 'Type "nuke" to confirm: '
+read -r confirmation
+
+if [[ "${confirmation}" != "nuke" ]]; then
+  error 4 <<<"Aborted."
+fi
+
+[[ -d "${VIRTDEV_HOME}"  ]] && rm -rf "${VIRTDEV_HOME}"
+[[ -d "${VIRTDEV_CACHE}" ]] && rm -rf "${VIRTDEV_CACHE}"
+
+printf 'All virtdev data deleted.\n'
