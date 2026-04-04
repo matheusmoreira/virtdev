@@ -64,7 +64,8 @@ mib=$(( 1024 * 1024 ))
 esp_start=$((1 * mib))
 esp_length=$((512 * mib))
 
-# XBOOTLDR partition size is fixed at 1024 MiB
+xbootldr_start=$((513 * mib))
+xbootldr_length=$((1024 * mib))
 
 root_start=$((1537 * mib))
 root_length=$((vda_bytes - root_start - mib))
@@ -85,31 +86,35 @@ if ((root_length <= 0 || home_length <= 0)); then
 fi
 
 tmp=$(mktemp)
-jq                                                          \
-    --argjson esp_start       "${esp_start}"                \
-    --argjson esp_length      "${esp_length}"               \
-    --argjson root_start      "${root_start}"               \
-    --argjson root_length     "${root_length}"              \
-    --argjson home_start      "${home_start}"               \
-    --argjson home_length     "${home_length}"              \
-    --argjson vda_sector_size "${vda_sector_size}"          \
-    --argjson vdb_sector_size "${vdb_sector_size}"          \
+jq                                                           \
+    --argjson esp_start         "${esp_start}"               \
+    --argjson esp_length        "${esp_length}"              \
+    --argjson xbootldr_start    "${xbootldr_start}"          \
+    --argjson xbootldr_length   "${xbootldr_length}"         \
+    --argjson root_start        "${root_start}"              \
+    --argjson root_length       "${root_length}"             \
+    --argjson home_start        "${home_start}"              \
+    --argjson home_length       "${home_length}"             \
+    --argjson vda_sector_size   "${vda_sector_size}"         \
+    --argjson vdb_sector_size   "${vdb_sector_size}"         \
     '
     (.disk_config.device_modifications[0].partitions[].start.sector_size,
      .disk_config.device_modifications[0].partitions[].size.sector_size) |= {"value": $vda_sector_size, "unit": "B"} |
     (.disk_config.device_modifications[1].partitions[].start.sector_size,
      .disk_config.device_modifications[1].partitions[].size.sector_size) |= {"value": $vdb_sector_size, "unit": "B"} |
-    .disk_config.device_modifications[0].partitions[0].start |= (.value = $esp_start   | .unit = "B") |
-    .disk_config.device_modifications[0].partitions[0].size  |= (.value = $esp_length  | .unit = "B") |
-    .disk_config.device_modifications[0].partitions[2].start |= (.value = $root_start  | .unit = "B") |
-    .disk_config.device_modifications[0].partitions[2].size  |= (.value = $root_length | .unit = "B") |
-    .disk_config.device_modifications[1].partitions[0].start |= (.value = $home_start  | .unit = "B") |
-    .disk_config.device_modifications[1].partitions[0].size  |= (.value = $home_length | .unit = "B")
+    .disk_config.device_modifications[0].partitions[0].start |= (.value = $esp_start       | .unit = "B") |
+    .disk_config.device_modifications[0].partitions[0].size  |= (.value = $esp_length      | .unit = "B") |
+    .disk_config.device_modifications[0].partitions[1].start |= (.value = $xbootldr_start  | .unit = "B") |
+    .disk_config.device_modifications[0].partitions[1].size  |= (.value = $xbootldr_length | .unit = "B") |
+    .disk_config.device_modifications[0].partitions[2].start |= (.value = $root_start      | .unit = "B") |
+    .disk_config.device_modifications[0].partitions[2].size  |= (.value = $root_length     | .unit = "B") |
+    .disk_config.device_modifications[1].partitions[0].start |= (.value = $home_start      | .unit = "B") |
+    .disk_config.device_modifications[1].partitions[0].size  |= (.value = $home_length     | .unit = "B")
     ' "${config}" > "${tmp}" && mv "${tmp}" "${config}"
 
 printf 'virtdev: disk layout patched\n'
 printf 'virtdev: vda(esp=%d xbootldr=%d root=%d sector_size=%d)\n' \
-       "${esp_length}" "$((1024 * mib))" "${root_length}" "${vda_sector_size}"
+       "${esp_length}" "${xbootldr_length}" "${root_length}" "${vda_sector_size}"
 printf 'virtdev: vdb(home=%d sector_size=%d)\n' \
        "${home_length}" "${vdb_sector_size}"
 
