@@ -3,23 +3,23 @@
 # virtdev-iso [repository]
 #
 # Builds the virtdev Arch Linux installation ISO.
-#
-# If no repository path is given, the parent directory of this
-# script is used, allowing the script to be run from anywhere
-# once installed to PATH.
+# The resulting ISO is written to the current directory.
 #
 # Configuration via environment variables:
 #
-#   VIRTDEV_HOME      Base directory for virtdev data.
-#                     Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_HOME           Base directory for virtdev data.
+#                          Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #
-#   VIRTDEV_SSH_KEY   Path to the ed25519 private key whose public half
-#                     is injected into the ISO as the authorized key for dev.
-#                     Default: ${VIRTDEV_HOME}/id
-#                     Run virtdev-key to generate it.
+#   VIRTDEV_SSH_KEY        Path to the ed25519 private key whose public half
+#                          is injected into the ISO as the authorized key for dev.
+#                          Default: ${VIRTDEV_HOME}/id
+#                          Run virtdev-key to generate it.
 #
-#   VIRTDEV_TIMEZONE  Timezone for the installed system.
-#                     Default: UTC
+#   VIRTDEV_TIMEZONE       Timezone for the installed system.
+#                          Default: UTC
+#
+#   VIRTDEV_ISO_PROFILE    Path to the virtdev ISO profile directory.
+#                          Detected automatically; set to override.
 #
 
 set -euo pipefail
@@ -34,18 +34,27 @@ error() {
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_TIMEZONE:="UTC"}"
 
-if [[ $# -gt 1 ]]; then
-  error 1 <<<'usage: virtdev-iso [repository]'
+if [[ $# -ne 0 ]]; then
+  error 1 <<<'usage: virtdev-iso'
 fi
 
-if [[ $# -eq 1 ]]; then
-  repository_root="$(cd "${1}" && pwd)"
+#
+# Resolve ISO profile directory:
+#   1. Explicit override via VIRTDEV_ISO_PROFILE
+#   2. Adjacent to script (git checkout: bin/../iso)
+#   3. Installed system path (package: /usr/share/virtdev/profile)
+#
+script_dir="$(cd "$(dirname "${0}")" && pwd)"
+if [[ -n "${VIRTDEV_ISO_PROFILE:-}" ]]; then
+  iso_profile="${VIRTDEV_ISO_PROFILE}"
+elif [[ -f "${script_dir}/../iso/profiledef.sh" ]]; then
+  iso_profile="$(cd "${script_dir}/../iso" && pwd)"
 else
-  repository_root="$(cd "$(dirname "${0}")/.." && pwd)"
+  iso_profile="/usr/share/virtdev/profile"
 fi
 
-if [[ ! -f "${repository_root}/iso/profiledef.sh" ]]; then
-  error 2 <<<"Not a virtdev repository: '${repository_root}'"
+if [[ ! -f "${iso_profile}/profiledef.sh" ]]; then
+  error 2 <<<"ISO profile not found: '${iso_profile}'"
 fi
 
 if ! command -v mkarchiso &>/dev/null; then
@@ -87,7 +96,7 @@ rm -rf "${profile_directory}/grub" \
        "${profile_directory}/efiboot/loader/entries/"*.conf
 
 printf 'Overlaying ISO configuration files...\n'
-cp -r "${repository_root}/iso/." "${profile_directory}/"
+cp -r "${iso_profile}/." "${profile_directory}/"
 
 printf 'Injecting SSH public key and timezone...\n'
 config_json="${profile_directory}/airootfs/root/archinstall/config.json"
