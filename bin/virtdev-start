@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# virtdev-start <project>
+# virtdev-start <project> [port]
 #
 # Starts a project virtual machine as a transient systemd user service.
 # The VM runs in the background, and systemd tracks the process.
@@ -33,8 +33,8 @@ port_in_use() {
 : "${VIRTDEV_VM_CPUS:=4}"
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 
-if [[ $# -ne 1 ]]; then
-  error 1 <<<'usage: virtdev-start <project>'
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  error 1 <<<'usage: virtdev-start <project> [port]'
 fi
 
 project="${1}"
@@ -55,7 +55,7 @@ Create project virtual machine first: virtdev-create '${project}'
 MESSAGE
 fi
 
-for file in system.qcow2 home.qcow2 nvram port; do
+for file in system.qcow2 home.qcow2 nvram; do
   if [[ ! -f "${project_directory}/${file}" ]]; then
     error 4 <<<"Project file missing: '${project_directory}/${file}'"
   fi
@@ -71,14 +71,27 @@ if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
   error 6 <<<"Project virtual machine is already running: ${project}"
 fi
 
-port="$(< "${project_directory}"/port)"
+# Resolve SSH port
+port_file="${project_directory}"/port
 
-if port_in_use "${port}"; then
-  error 7 <<MESSAGE
-Port ${port} is already in use on this host
-Stop whatever is holding it or reassign the port
-MESSAGE
+if [[ $# -eq 2 ]]; then
+  # Explicit port from command line
+  port="${2}"
+  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
+    error 7 <<<"Invalid port: '${port}' (must be 1024-65535)"
+  fi
+  if port_in_use "${port}"; then
+    error 8 <<<"Port ${port} is already in use on this host"
+  fi
+else
+  # Auto-assign: lowest available port starting from 2222
+  port=2222
+  while port_in_use "${port}"; do
+    (( port++ ))
+  done
 fi
+
+printf '%d\n' "${port}" > "${port_file}"
 
 system_disk="${project_directory}"/system.qcow2
 home_disk="${project_directory}"/home.qcow2

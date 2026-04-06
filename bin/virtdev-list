@@ -39,16 +39,16 @@ for project in "${projects[@]}"; do
   project_directory="${projects_directory}"/"${project}"
   port_file="${project_directory}"/port
 
-  if [[ -f "${port_file}" ]]; then
-    port="$(< "${port_file}")"
-  else
-    port='?'
-  fi
-
   if systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
     status='running'
+    if [[ -f "${port_file}" ]]; then
+      port="$(< "${port_file}")"
+    else
+      port='?'
+    fi
   else
     status='stopped'
+    port='-'
   fi
 
   printf '%-24s %-8s %s\n' "${project}" "${port}" "${status}"

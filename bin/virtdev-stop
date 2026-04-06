@@ -54,6 +54,7 @@ fi
 if ! command -v socat &>/dev/null; then
   printf 'socat not found, falling back to SIGTERM...\n'
   systemctl --user stop "${unit}"
+  rm -f "${project_directory}"/port
   printf "Project VM stopped: %s\n" "${project}"
   exit 0
 fi
@@ -81,4 +82,5 @@ else
   systemctl --user stop "${unit}"
 fi
 
+rm -f "${project_directory}"/port
 printf "Project VM stopped: %s\n" "${project}"

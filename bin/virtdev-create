@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
 #
-# virtdev-create <project> [port]
+# virtdev-create <project>
 #
 # Creates a named project virtual machine
 # derived from the sealed base system images.
-# Provisions the project directory
-# and records the SSH port.
-# Does not start the VM.
+# Provisions the project directory.
+# Does not start the virtual machine.
+# nor does it assign an SSH port.
 # Use virtdev-start for that.
-#
-# If no port is given, the lowest unused port starting from 2222
-# is assigned automatically by scanning existing project port files
-# and checking whether the port is already bound on the host.
 #
 # Project layout:
 #
@@ -21,7 +17,6 @@
 #         system.qcow2    (delta over system/system.qcow2)
 #         home.qcow2      (delta over system/home.qcow2)
 #         nvram           (UEFI variable store copy)
-#         port            (SSH forwarding port, one number)
 #
 
 set -euo pipefail
@@ -32,14 +27,10 @@ error() {
   exit "${code}"
 }
 
-port_in_use() {
-  [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
-}
-
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
-if [[ $# -lt 1 || $# -gt 2 ]]; then
-  error 1 <<<'usage: virtdev-create <project> [port]'
+if [[ $# -ne 1 ]]; then
+  error 1 <<<'usage: virtdev-create <project>'
 fi
 
 project="${1}"
@@ -76,35 +67,6 @@ if [[ -d "${project_directory}" ]]; then
   error 5 <<<"Project already exists: '${project_directory}'"
 fi
 
-# Resolve SSH port
-
-if [[ $# -eq 2 ]]; then
-  port="${2}"
-  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
-    error 6 <<<"Invalid port: '${port}' (must be 1024-65535)"
-  fi
-  if port_in_use "${port}"; then
-    error 7 <<<"Port ${port} is already in use on this host"
-  fi
-else
-  # Find lowest unused port starting from 2222,
-  # skipping ports registered by other virtdev projects
-  # and ports currently bound on the host.
-  declare -A used_ports=()
-
-  if [[ -d "${projects_directory}" ]]; then
-    while IFS= read -r port_file; do
-      input="$(< "${port_file}")"
-      used_ports["${input}"]=1
-    done < <(find "${projects_directory}" -maxdepth 2 -name port 2>/dev/null)
-  fi
-
-  port=2222
-  while [[ -n "${used_ports[${port}]+_}" ]] || port_in_use "${port}"; do
-    (( port++ ))
-  done
-fi
-
 # Create project directory and disk images
 
 mkdir -p "${project_directory}"
@@ -131,10 +93,7 @@ printf "Copying NVRAM: '%s'\n" "${nvram}"
 cp "${system_directory}/nvram" "${nvram}"
 chmod 644 "${nvram}"
 
-printf '%d\n' "${port}" > "${project_directory}/port"
-
 printf '\n'
 printf "Project virtual machine created: '%s'\n" "${project}"
 printf "Directory: '%s'\n" "${project_directory}"
-printf "SSH port: %d\n" "${port}"
 printf "Start it with: virtdev-start %s\n" "${project}"

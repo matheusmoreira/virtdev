@@ -50,7 +50,10 @@ fi
 
 port_file="${project_directory}/port"
 if [[ ! -f "${port_file}" ]]; then
-  error 4 <<<"Project port file not found: '${port_file}'"
+  error 4 <<MESSAGE
+Project has no port assigned: ${project}
+Start the virtual machine first: virtdev-start ${project}
+MESSAGE
 fi
 
 port="$(< "${port_file}")"
