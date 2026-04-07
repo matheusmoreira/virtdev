@@ -88,6 +88,9 @@ else
   port=2222
   while port_in_use "${port}"; do
     (( port++ ))
+    if (( port > 65535 )); then
+      error 8 <<<"No available port found in range 2222-65535"
+    fi
   done
 fi
 
