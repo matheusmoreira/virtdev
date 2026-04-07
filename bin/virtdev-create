@@ -5,8 +5,8 @@
 # Creates a named project virtual machine
 # derived from the sealed base system images.
 # Provisions the project directory.
-# Does not start the virtual machine.
-# nor does it assign an SSH port.
+# Does not start the virtual machine
+# nor assign an SSH port.
 # Use virtdev-start for that.
 #
 # Project layout:
