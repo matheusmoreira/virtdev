@@ -14,7 +14,7 @@
 #                    Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #
 #   VIRTDEV_SSH_KEY  Path where the key pair is generated.
-#                    Default: ${VIRTDEV_HOME}/id
+#                    Default: ${VIRTDEV_HOME}/ssh/id
 #
 
 set -euo pipefail

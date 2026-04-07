@@ -13,7 +13,7 @@
 #     virtdev-ssh myproject -L 3000:localhost:3000
 #
 # The SSH key is read from VIRTDEV_SSH_KEY,
-# defaulting to ${VIRTDEV_HOME}/id.
+# defaulting to ${VIRTDEV_HOME}/ssh/id.
 #
 #     export VIRTDEV_SSH_KEY=~/.ssh/virtdev_id
 #
