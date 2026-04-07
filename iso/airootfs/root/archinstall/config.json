@@ -120,8 +120,6 @@
     "base-devel",
     "git",
     "openssh",
-    "python",
-    "rustup",
 
     "vim",
     "less",
@@ -164,7 +162,16 @@
     "hyperfine",
     "7zip",
     "tokei",
-    "direnv"
+    "direnv",
+
+    "python",
+    "python-pip",
+    "python-virtualenv",
+
+    "nodejs",
+    "npm",
+
+    "rustup"
   ],
   "profile_config": null,
   "swap": false,
