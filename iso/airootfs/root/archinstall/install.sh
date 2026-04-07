@@ -18,10 +18,14 @@
 #       4. Generate new bootloader entries in XBOOTLDR partition
 #       5. Reconfigure bootloader
 #       6. Enable services
-#          2. sshd
-#          2. getty@ttyS0
-#       7. Lock all accounts to disable password-based login
-#       8. Configure sudo for the dev user
+#          1. sshd
+#          2. serial-getty@ttyS0
+#          3. systemd-networkd
+#          4. systemd-resolved
+#       7. Install hardened sshd configuration
+#       8. Install SSH authorized_keys for dev user
+#       9. Lock all accounts to disable password-based login
+#      10. Configure sudo for the dev user
 #
 # config.json stores 0 B as a sentinel for dynamic partition lengths.
 # Bypassing this script and running archinstall directly
