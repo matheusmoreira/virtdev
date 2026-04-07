@@ -69,9 +69,20 @@ fi
 printf 'Waiting for %s to bind SSH on port %d with timeout %ds...\n' \
        "${project}" "${port}" "${VIRTDEV_WAIT_TIMEOUT}"
 
+unit=virtdev-"${project}"
 deadline=$(( SECONDS + VIRTDEV_WAIT_TIMEOUT ))
 
 while (( SECONDS < deadline )); do
+  unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
+  case "${unit_state}" in
+    active|activating) ;;
+    *) error 6 <<MESSAGE
+Virtual machine exited before SSH became available: ${project}
+Unit state: ${unit_state}
+Inspect with: journalctl --user -u ${unit}
+MESSAGE
+      ;;
+  esac
   if ssh \
       -i "${VIRTDEV_SSH_KEY}" \
       -p "${port}" \
@@ -89,7 +100,7 @@ while (( SECONDS < deadline )); do
   sleep 2
 done
 
-error 6 <<MESSAGE
+error 7 <<MESSAGE
 Timed out after ${VIRTDEV_WAIT_TIMEOUT}s waiting for SSH: ${project}
 Is the virtual machine running? Start it with: virtdev-start ${project}
 MESSAGE
