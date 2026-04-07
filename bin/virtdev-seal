@@ -67,6 +67,9 @@ mv "${system_disk}" "${system_directory}"/
 mv "${home_disk}"   "${system_directory}"/
 mv "${nvram}"       "${system_directory}"/
 
+printf 'Writing version counter...\n'
+printf '1\n' > "${system_directory}/version"
+
 printf 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
 

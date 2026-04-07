@@ -314,6 +314,13 @@ old_system_directory="${VIRTDEV_HOME}/system.old"
 mv "${system_directory}" "${old_system_directory}"
 mv "${maintenance_directory}" "${system_directory}"
 
+printf 'Incrementing version counter...\n'
+old_version=1
+if [[ -f "${system_directory}/version" ]]; then
+  old_version="$(< "${system_directory}/version")"
+fi
+printf '%d\n' "$(( old_version + 1 ))" > "${system_directory}/version"
+
 printf 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
 

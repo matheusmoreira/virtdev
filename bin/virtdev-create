@@ -93,6 +93,10 @@ printf "Copying NVRAM: '%s'\n" "${nvram}"
 cp "${system_directory}/nvram" "${nvram}"
 chmod 644 "${nvram}"
 
+if [[ -f "${system_directory}/version" ]]; then
+  cp "${system_directory}/version" "${project_directory}/version"
+fi
+
 printf '\n'
 printf "Project virtual machine created: '%s'\n" "${project}"
 printf "Directory: '%s'\n" "${project_directory}"

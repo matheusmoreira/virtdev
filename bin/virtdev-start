@@ -65,6 +65,29 @@ if [[ ! -f "${OVMF_CODE}" ]]; then
   error 5 <<<"Firmware not found: '${OVMF_CODE}'"
 fi
 
+# Detect base system changes since this project was created.
+# After virtdev-maintain reseals the base, existing delta images
+# are silently composed against the new base content by QEMU,
+# which may produce filesystem corruption.
+system_directory="${VIRTDEV_HOME}"/system
+if [[ -f "${system_directory}"/version && -f "${project_directory}"/version ]]; then
+  system_version="$(< "${system_directory}"/version)"
+  project_version="$(< "${project_directory}"/version)"
+  if [[ "${system_version}" != "${project_version}" ]]; then
+    error 9 <<MESSAGE
+Base system has changed since this project was created.
+
+	System version:  ${system_version}
+	Project version: ${project_version}
+
+Starting this project may cause filesystem corruption.
+Transfer data and recreate it on top of the new base system:
+
+    virtdev-destroy ${project} && virtdev-create ${project}
+MESSAGE
+  fi
+fi
+
 unit=virtdev-"${project}"
 
 if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
