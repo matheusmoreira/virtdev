@@ -43,7 +43,7 @@ MESSAGE
 fi
 
 if [[ "${project}" == "maintenance" ]]; then
-  error 2 <<<"Project name 'maintenance' is reserved by virtdev-maintain"
+  error 3 <<<"Project name 'maintenance' is reserved by virtdev-maintain"
 fi
 
 system_directory="${VIRTDEV_HOME}/system"
@@ -51,7 +51,7 @@ projects_directory="${VIRTDEV_HOME}/projects"
 project_directory="${projects_directory}/${project}"
 
 if [[ ! -d "${system_directory}" ]]; then
-  error 3 <<MESSAGE
+  error 4 <<MESSAGE
 Sealed base system images not found: '${system_directory}'
 Run virtdev-install and virtdev-seal first
 MESSAGE
@@ -59,12 +59,12 @@ fi
 
 for file in system.qcow2 home.qcow2 nvram; do
   if [[ ! -f "${system_directory}/${file}" ]]; then
-    error 4 <<<"Base system image missing: '${system_directory}/${file}'"
+    error 5 <<<"Base system image missing: '${system_directory}/${file}'"
   fi
 done
 
 if [[ -d "${project_directory}" ]]; then
-  error 5 <<<"Project already exists: '${project_directory}'"
+  error 6 <<<"Project already exists: '${project_directory}'"
 fi
 
 # Create project directory and disk images
