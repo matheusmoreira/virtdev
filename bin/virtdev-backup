@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# virtdev-backup [--verbose] <project>
+# virtdev-backup --list <project>
+#
+# Snapshots user-curated guest-side paths from a running project
+# virtual machine into a timestamped host-side directory.
+# Snapshots land at:
+#
+#   ${VIRTDEV_HOME}/backups/<project>/<YYYY-MM-DD>/<HH-MM-SS>/
+#
+# Each snapshot contains:
+#
+#   backup.list        copy of projects/<project>/backup.list at backup time
+#   version            integer from ${VIRTDEV_HOME}/system/version (or empty)
+#   tree/              user-content subtree, rsync-preserved
+#
+# The manifest projects/<project>/backup.list is user-curated and
+# required. One path per line; blank lines and lines starting with
+# '#' are ignored. Paths without a leading '/' resolve relative to
+# the guest's /home/dev/. Absolute paths are used as-is. Trailing
+# slash follows rsync convention.
+#
+# Flags:
+#
+#   --verbose    Show rsync per-file progress.
+#   --list       Print snapshots for the project. Does not create
+#                a snapshot; does not require the VM to be running.
+#
+# The project's virtual machine must be running (SSH over the
+# host-forwarded port). Concurrent same-project backups at the same
+# second are prevented by mkdir EEXIST on the partial directory.
+#
+# Requires rsync on both host and guest:
+#
+#     pacman -S rsync
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME       Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_SSH_KEY    Default: ${VIRTDEV_HOME}/ssh/id
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+
+umask 077
+
+verbose=0
+list=0
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --verbose) verbose=1; shift ;;
+    --list)    list=1;    shift ;;
+    --)        shift; break ;;
+    -*)        error 1 <<<"unknown flag: ${1}" ;;
+    *)         break ;;
+  esac
+done
+
+if [[ $# -ne 1 ]]; then
+  if (( list )); then
+    error 1 <<<'usage: virtdev-backup --list <project>'
+  else
+    error 1 <<<'usage: virtdev-backup [--verbose] <project>'
+  fi
+fi
+
+project="${1}"
+
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
+# Remaining preconditions and behavior filled in by later tasks.
+error 99 <<<'not yet implemented'
