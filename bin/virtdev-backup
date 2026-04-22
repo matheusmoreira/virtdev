@@ -15,11 +15,22 @@
 #   version            integer from ${VIRTDEV_HOME}/system/version (or empty)
 #   tree/              user-content subtree, rsync-preserved
 #
-# The manifest projects/<project>/backup.list is user-curated and
-# required. One path per line; blank lines and lines starting with
+# The manifest is user-curated and required. Lookup order:
+#
+#   1. ${VIRTDEV_HOME}/projects/<project>/backup.list
+#   2. ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<project>/backup.list
+#
+# First existing file wins. Put your stable manifest in the config
+# location (dotfile-friendly, survives virtdev-nuke) and use the
+# project-local location for one-off experiments that should be
+# discarded with the VM.
+#
+# Format: one path per line; blank lines and lines starting with
 # '#' are ignored. Paths without a leading '/' resolve relative to
 # the guest's /home/dev/. Absolute paths are used as-is. Trailing
 # slash follows rsync convention.
+#
+# The loaded manifest path is echoed to stderr on each run.
 #
 # Flags:
 #
@@ -39,6 +50,7 @@
 #
 #   VIRTDEV_HOME       Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #   VIRTDEV_SSH_KEY    Default: ${VIRTDEV_HOME}/ssh/id
+#   XDG_CONFIG_HOME    Default: ~/.config
 #
 
 set -euo pipefail
@@ -51,6 +63,7 @@ error() {
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
 umask 077
 
@@ -193,11 +206,19 @@ Install it with: pacman -S rsync
 MESSAGE
 fi
 
-backup_list="${project_directory}/backup.list"
-if [[ ! -f "${backup_list}" ]]; then
+backup_list_project="${project_directory}/backup.list"
+backup_list_config="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
+
+if [[ -f "${backup_list_project}" ]]; then
+  backup_list="${backup_list_project}"
+elif [[ -f "${backup_list_config}" ]]; then
+  backup_list="${backup_list_config}"
+else
   error 8 <<MESSAGE
-Backup manifest not found: ${backup_list}
-Create it with one path per line (relative to /home/dev, or absolute).
+Backup manifest not found. Checked (in order):
+	${backup_list_project}
+	${backup_list_config}
+Create either; one path per line (relative to /home/dev or absolute).
 Blank lines and '#' comments are ignored.
 MESSAGE
 fi
@@ -209,6 +230,8 @@ Backup manifest has no paths: ${backup_list}
 All lines are blank or comments. Add at least one path.
 MESSAGE
 fi
+
+printf >&2 'manifest: %s\n' "${backup_list}"
 
 day="$(date -u +%Y-%m-%d)"
 time="$(date -u +%H-%M-%S)"
