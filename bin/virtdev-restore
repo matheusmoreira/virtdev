@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+#
+# virtdev-restore [--verbose] <project> [<date> [<time>]]
+#
+# Restores a backup snapshot into a running project virtual machine.
+# The snapshot layout is produced by virtdev-backup and lives under:
+#
+#   ${VIRTDEV_HOME}/backups/<project>/<YYYY-MM-DD>/<HH-MM-SS>/
+#
+# With no date/time arguments, restores the newest snapshot for the
+# project. With just a date, restores the newest time within that
+# day. With both, restores that exact snapshot.
+#
+# List available snapshots with: virtdev-backup --list <project>
+#
+# Flags:
+#
+#   --verbose    Show rsync per-file progress.
+#
+# Destructive: overwrites guest files without prompting. Because
+# rsync operates on a live, running VM, partial failures may leave
+# the guest's filesystem with some restored files and some not. This
+# matches virtdev-transfer's semantics.
+#
+# The project's virtual machine must be running.
+#
+# Requires rsync on both host and guest:
+#
+#     pacman -S rsync
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME       Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_SSH_KEY    Default: ${VIRTDEV_HOME}/ssh/id
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+
+umask 077
+
+verbose=0
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --verbose) verbose=1; shift ;;
+    --)        shift; break ;;
+    -*)        error 1 <<<"unknown flag: ${1}" ;;
+    *)         break ;;
+  esac
+done
+
+if [[ $# -lt 1 || $# -gt 3 ]]; then
+  error 1 <<<'usage: virtdev-restore [--verbose] <project> [<date> [<time>]]'
+fi
+
+project="${1}"
+given_date="${2:-}"
+given_time="${3:-}"
+
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+  error 4 <<MESSAGE
+Virtual machine is not running: ${project}
+Start it with: virtdev-start ${project}
+MESSAGE
+fi
+
+port_file="${project_directory}/port"
+if [[ ! -f "${port_file}" ]]; then
+  error 4 <<MESSAGE
+Project has no port assigned: ${project}
+Start the virtual machine first: virtdev-start ${project}
+MESSAGE
+fi
+port="$(< "${port_file}")"
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
+  error 5 <<MESSAGE
+SSH key not found: '${VIRTDEV_SSH_KEY}'
+Place the private key at that path, link it, or set VIRTDEV_SSH_KEY.
+MESSAGE
+fi
+
+key_permissions="$(stat -c '%a' "${VIRTDEV_SSH_KEY}")"
+if [[ "${key_permissions}" != "600" && "${key_permissions}" != "400" ]]; then
+  error 5 <<MESSAGE
+SSH key permissions too open: '${VIRTDEV_SSH_KEY}' (${key_permissions})
+Fix with: chmod 600 '${VIRTDEV_SSH_KEY}'
+MESSAGE
+fi
+
+if ! command -v rsync &>/dev/null; then
+  error 6 <<MESSAGE
+rsync not found
+Install it with: pacman -S rsync
+MESSAGE
+fi
+
+# Snapshot resolution filled in by Task 6.
+error 99 <<<'snapshot resolution not yet implemented'
