@@ -453,6 +453,9 @@ ${VIRTDEV_HOME}/
       monitor.sock      QEMU monitor socket (present while running)
       console.sock      serial console socket (present while running)
       backup.list       optional; user-curated manifest for virtdev-backup
+                        (falls back to
+                        ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<name>/backup.list
+                        if absent here - config path survives virtdev-nuke)
   backups/
     <project>/
       <YYYY-MM-DD>/
@@ -466,7 +469,24 @@ ${XDG_CACHE_HOME:-~/.cache}/virtdev/
   virtdev.iso
   work/                 mkarchiso work tree (cleared on each build)
   profile/              assembled ISO profile (cleared on each build)
+
+${XDG_CONFIG_HOME:-~/.config}/virtdev/
+  projects/
+    <name>/
+      backup.list       user-curated manifest, dotfile-friendly fallback;
+                        used by virtdev-backup when a project-local
+                        backup.list is absent. Survives virtdev-nuke.
 ```
+
+`virtdev-backup` consults `projects/<name>/backup.list` under
+`${VIRTDEV_HOME}` first, falling back to the same relative path
+under `${XDG_CONFIG_HOME}`. The first existing file wins.
+Project-local wins because it is the more specific location; a
+user who wants to experiment with a different manifest for one
+VM can drop it there without touching dotfiles, and the edit
+disappears with the VM on `virtdev-destroy` or `virtdev-nuke`.
+Every backup run echoes the loaded manifest path to stderr so
+there is no silent shadowing when both files exist.
 
 ---
 
