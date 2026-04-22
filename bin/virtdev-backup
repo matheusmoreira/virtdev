@@ -83,5 +83,74 @@ Allowed: a-z A-Z 0-9 _ -
 MESSAGE
 fi
 
-# Remaining preconditions and behavior filled in by later tasks.
-error 99 <<<'not yet implemented'
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+# List mode stops here; it lists past snapshots regardless of VM state.
+if (( list )); then
+  # Filled in by Task 4.
+  error 99 <<<'list mode not yet implemented'
+fi
+
+# From here on: create mode preconditions (4 and up).
+
+if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+  error 4 <<MESSAGE
+Virtual machine is not running: ${project}
+Start it with: virtdev-start ${project}
+MESSAGE
+fi
+
+port_file="${project_directory}/port"
+if [[ ! -f "${port_file}" ]]; then
+  error 4 <<MESSAGE
+Project has no port assigned: ${project}
+Start the virtual machine first: virtdev-start ${project}
+MESSAGE
+fi
+port="$(< "${port_file}")"
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
+  error 5 <<MESSAGE
+SSH key not found: '${VIRTDEV_SSH_KEY}'
+Place the private key at that path, link it, or set VIRTDEV_SSH_KEY.
+MESSAGE
+fi
+
+key_permissions="$(stat -c '%a' "${VIRTDEV_SSH_KEY}")"
+if [[ "${key_permissions}" != "600" && "${key_permissions}" != "400" ]]; then
+  error 5 <<MESSAGE
+SSH key permissions too open: '${VIRTDEV_SSH_KEY}' (${key_permissions})
+Fix with: chmod 600 '${VIRTDEV_SSH_KEY}'
+MESSAGE
+fi
+
+if ! command -v rsync &>/dev/null; then
+  error 6 <<MESSAGE
+rsync not found
+Install it with: pacman -S rsync
+MESSAGE
+fi
+
+backup_list="${project_directory}/backup.list"
+if [[ ! -f "${backup_list}" ]]; then
+  error 8 <<MESSAGE
+Backup manifest not found: ${backup_list}
+Create it with one path per line (relative to /home/dev, or absolute).
+Blank lines and '#' comments are ignored.
+MESSAGE
+fi
+
+# Non-empty after comment/blank filter
+if ! grep -Eq '^\s*[^#[:space:]]' "${backup_list}"; then
+  error 9 <<MESSAGE
+Backup manifest has no paths: ${backup_list}
+All lines are blank or comments. Add at least one path.
+MESSAGE
+fi
+
+# Create-mode body filled in by Task 3.
+error 99 <<<'create mode body not yet implemented'
