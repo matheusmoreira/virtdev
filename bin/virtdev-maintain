@@ -202,9 +202,16 @@ home_disk="${maintenance_directory}/home.qcow2"
 nvram="${maintenance_directory}/nvram"
 
 printf "Copying sealed base images to: '%s'\n" "${maintenance_directory}"
-cp "${system_directory}/system.qcow2" "${system_disk}"
-cp "${system_directory}/home.qcow2"   "${home_disk}"
-cp "${system_directory}/nvram"        "${nvram}"
+# --reflink=auto produces an instant COW clone on filesystems that
+# support reflinks (btrfs, XFS with reflink=1) and silently falls
+# back to a full byte copy everywhere else, so the flag is safe to
+# pass unconditionally. On supported hosts this replaces a
+# (system + home) ~ 72 GiB copy with a near-instantaneous metadata
+# operation; the sealed originals stay untouched because subsequent
+# writes to the clone get copy-on-write'd.
+cp --reflink=auto "${system_directory}/system.qcow2" "${system_disk}"
+cp --reflink=auto "${system_directory}/home.qcow2"   "${home_disk}"
+cp --reflink=auto "${system_directory}/nvram"        "${nvram}"
 
 printf 'Making maintenance images writable...\n'
 chmod 644 "${system_disk}" "${home_disk}" "${nvram}"
