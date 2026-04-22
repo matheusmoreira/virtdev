@@ -39,31 +39,45 @@ Allowed: a-z A-Z 0-9 _ -
 MESSAGE
 fi
 
-# Acquire the exclusive virtdev lock. See virtdev-install for the
-# full rationale.
-mkdir -p "${VIRTDEV_HOME}"
-exec 9>>"${VIRTDEV_HOME}/lock"
-if ! flock -n 9; then
-  holder_pid="$(cat "${VIRTDEV_HOME}/lock" 2>/dev/null || true)"
-  holder_cmdline=""
-  if [[ -n "${holder_pid}" && -r "/proc/${holder_pid}/cmdline" ]]; then
-    holder_cmdline="$(tr '\0' ' ' < "/proc/${holder_pid}/cmdline")"
-  fi
-  if [[ "${holder_cmdline}" == *virtdev-maintain* ]]; then
-    error 6 <<MESSAGE
+# The maintenance virtual machine is the one target that skips the
+# virtdev lock. virtdev-maintain holds the exclusive lock for its
+# entire session, so requiring it here would make 'virtdev-stop
+# maintenance' — the documented abort path — fail with lock
+# contention exactly when it is needed. Skipping is safe: maintain
+# has already serialized everything else, and the only virtdev
+# virtual machine that can be running during a maintain session is
+# virtdev-maintenance itself. Concurrent cleanup between this
+# script and maintain's post-exit path is either idempotent (rm -f
+# on missing paths, rmdir || true) or order-insensitive
+# (reset-failed from either side; the ExecMainStatus-race fallback
+# is handled in bin/maintain).
+if [[ "${project}" != "maintenance" ]]; then
+  # Acquire the exclusive virtdev lock. See virtdev-install for the
+  # full rationale.
+  mkdir -p "${VIRTDEV_HOME}"
+  exec 9>>"${VIRTDEV_HOME}/lock"
+  if ! flock -n 9; then
+    holder_pid="$(cat "${VIRTDEV_HOME}/lock" 2>/dev/null || true)"
+    holder_cmdline=""
+    if [[ -n "${holder_pid}" && -r "/proc/${holder_pid}/cmdline" ]]; then
+      holder_cmdline="$(tr '\0' ' ' < "/proc/${holder_pid}/cmdline")"
+    fi
+    if [[ "${holder_cmdline}" == *virtdev-maintain* ]]; then
+      error 6 <<MESSAGE
 Base system maintenance is in progress (virtdev-maintain, PID ${holder_pid}).
 Wait for it to finish or inspect its virtual machine:
     systemctl --user status virtdev-maintenance
 MESSAGE
-  fi
-  error 6 <<MESSAGE
+    fi
+    error 6 <<MESSAGE
 Another virtdev operation is in progress.
 Lock file: ${VIRTDEV_HOME}/lock
 Holder PID: ${holder_pid:-unknown}
 MESSAGE
+  fi
+  : > "${VIRTDEV_HOME}/lock"
+  printf '%d\n' "$$" >&9
 fi
-: > "${VIRTDEV_HOME}/lock"
-printf '%d\n' "$$" >&9
 
 unit=virtdev-"${project}"
 project_directory="${VIRTDEV_HOME}"/projects/"${project}"
