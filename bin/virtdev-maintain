@@ -120,6 +120,35 @@ printf '%d\n' "$$" >&9
 system_directory="${VIRTDEV_HOME}/system"
 maintenance_directory="${VIRTDEV_HOME}/maintenance"
 maintenance_project="${VIRTDEV_HOME}/projects/maintenance"
+old_system_directory="${VIRTDEV_HOME}/system.old"
+
+# Auto-recover from an interrupted reseal. The reseal block below
+# is a two-mv-plus-writes sequence that this commit further wraps
+# in a signal trap, but a SIGKILL or host power loss can still
+# land in the middle of it and leave the layout in one of these
+# partial states:
+#
+#   - system.old/ exists, system/ does not         (between mv's)
+#   - system.old/ exists, system/ has no version   (post-mv, pre-write)
+#   - system.old/ and system/ both fully populated (pre-rm-of-old)
+#
+# In all three, the prior sealed base is intact at system.old/
+# and the right move is to unconditionally restore it — clobbering
+# whatever partial state is in system/ — so the next operation
+# starts from a known-good layout. The in-progress maintenance
+# work is discarded; a user who wants to recover it must do so
+# from maintenance/ by hand before retrying, but maintenance/ is
+# left untouched here so that option stays open.
+if [[ -d "${old_system_directory}" ]]; then
+  printf 'Detected interrupted reseal from a prior virtdev-maintain.\n'
+  if [[ -d "${system_directory}" ]]; then
+    printf 'Clobbering partial new base: %s\n' "${system_directory}"
+    rm -rf "${system_directory}"
+  fi
+  printf 'Restoring previous sealed base from: %s\n' "${old_system_directory}"
+  mv "${old_system_directory}" "${system_directory}"
+  printf 'Recovery complete. Proceed with virtdev-maintain as normal.\n\n'
+fi
 
 if [[ ! -d "${system_directory}" ]]; then
   error 2 <<MESSAGE
@@ -401,13 +430,38 @@ fi
 #
 #     1. Rename old system directory aside
 #     2. Rename maintenance/ directory to system/
-#     3. Remove old directory
+#     3. Write new version counter
+#     4. chmod 444 to seal
+#     5. Remove old directory
 #
-# If interrupted between the rename and completion,
-# the old images survive as system.old for recovery.
+# The whole sequence is the non-atomic critical section. Between
+# the operations the layout is transiently inconsistent: no
+# system/ (between the two mv's); system/ without a version file
+# (post-mv, pre-write); system/ not yet read-only (post-write,
+# pre-chmod); or a leftover system.old/ alongside a fully-sealed
+# system/ (pre-final-rm). Catchable signals — Ctrl-C, SIGTERM
+# from systemctl --user stop, HUP from a closed terminal — are
+# trapped away for the duration so those paths cannot interrupt
+# the sequence partway through.
 #
+# The rm -rf of system.old/ is inside the trap too, even though
+# system/ is already a complete seal at that point. Reason: the
+# auto-recovery block at the top of this script treats "system.old
+# exists" as "interrupted reseal, restore system.old to system."
+# Leaving a stale system.old/ behind a completed reseal would
+# cause the next maintain run to revert a perfectly valid seal.
+# Extending the trap through the final rm prevents that entirely
+# for catchable signals.
+#
+# SIGKILL and hardware failure still get through — nothing can
+# trap SIGKILL — but the auto-recovery does handle the resulting
+# state. In the very narrow SIGKILL-during-rm case, the user loses
+# the just-completed reseal (they have to redo the maintenance
+# session). A syscall-level atomic rename (renameat2 with
+# RENAME_EXCHANGE, Linux-only) would close that last gap but is
+# not wrapped by any shell-accessible tool today.
+trap '' INT TERM HUP QUIT
 printf "Resealing base system images to: '%s'\n" "${system_directory}"
-old_system_directory="${VIRTDEV_HOME}/system.old"
 mv "${system_directory}" "${old_system_directory}"
 mv "${maintenance_directory}" "${system_directory}"
 
@@ -419,6 +473,7 @@ printf 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
 
 rm -rf "${old_system_directory}"
+trap - INT TERM HUP QUIT
 
 printf 'Base system resealed: %s\n' "${system_directory}"
 printf '\n'
