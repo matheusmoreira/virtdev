@@ -91,6 +91,22 @@ else
   systemctl --user stop "${unit}"
 fi
 
+# Post-condition: every path above must leave the unit in a terminal
+# state (inactive or failed). This catches bugs where a future change
+# adds a fallthrough that skips a wait, and serves as a hard floor on
+# the contract that virtdev-stop only returns when QEMU is gone.
+active_state="$(systemctl --user show "${unit}" --property=ActiveState --value 2>/dev/null || true)"
+case "${active_state}" in
+  inactive|failed) ;;
+  *)
+    error 5 <<MESSAGE
+Unit ${unit} is in unexpected state after stop: '${active_state}'.
+Expected 'inactive' or 'failed'. The VM may still be running.
+Investigate: systemctl --user status ${unit}
+MESSAGE
+    ;;
+esac
+
 rm -f "${project_directory}"/port \
      "${project_directory}"/monitor.sock \
      "${project_directory}"/console.sock
