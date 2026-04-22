@@ -28,6 +28,33 @@ if [[ $# -ne 0 ]]; then
   error 1 <<<'usage: virtdev-seal'
 fi
 
+# Acquire the exclusive virtdev lock. See virtdev-install for the
+# full rationale; the pattern is identical across every mutating
+# script.
+mkdir -p "${VIRTDEV_HOME}"
+exec 9>>"${VIRTDEV_HOME}/lock"
+if ! flock -n 9; then
+  holder_pid="$(cat "${VIRTDEV_HOME}/lock" 2>/dev/null || true)"
+  holder_cmdline=""
+  if [[ -n "${holder_pid}" && -r "/proc/${holder_pid}/cmdline" ]]; then
+    holder_cmdline="$(tr '\0' ' ' < "/proc/${holder_pid}/cmdline")"
+  fi
+  if [[ "${holder_cmdline}" == *virtdev-maintain* ]]; then
+    error 7 <<MESSAGE
+Base system maintenance is in progress (virtdev-maintain, PID ${holder_pid}).
+Wait for it to finish or inspect its virtual machine:
+    systemctl --user status virtdev-maintenance
+MESSAGE
+  fi
+  error 7 <<MESSAGE
+Another virtdev operation is in progress.
+Lock file: ${VIRTDEV_HOME}/lock
+Holder PID: ${holder_pid:-unknown}
+MESSAGE
+fi
+: > "${VIRTDEV_HOME}/lock"
+printf '%d\n' "$$" >&9
+
 installation_directory="${VIRTDEV_HOME}/installation"
 system_directory="${VIRTDEV_HOME}/system"
 
