@@ -78,6 +78,21 @@ find "${project_directory}" -type f \
   | while IFS= read -r f; do
       printf '\t\t%s\t%s\n' "$(du -sh "${f}" | cut -f1)" "$(basename "${f}")"
     done
+
+backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
+if [[ -d "${backups_project_dir}" ]]; then
+  snapshot_count=$(
+    find "${backups_project_dir}" -mindepth 2 -maxdepth 2 -type d \
+         -regextype posix-extended \
+         -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
+      2>/dev/null \
+      | wc -l
+  )
+  if (( snapshot_count > 0 )); then
+    printf '\nBackups preserved: %d snapshot(s) at %s\n' "${snapshot_count}" "${backups_project_dir}"
+  fi
+fi
+
 printf '\nThis operation is irreversible.\n'
 printf 'Type the project name to confirm: '
 read -r confirmation

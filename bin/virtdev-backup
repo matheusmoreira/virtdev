@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+#
+# virtdev-backup [--verbose] <project>
+# virtdev-backup --list <project>
+#
+# Snapshots user-curated guest-side paths from a running project
+# virtual machine into a timestamped host-side directory.
+# Snapshots land at:
+#
+#   ${VIRTDEV_HOME}/backups/<project>/<YYYY-MM-DD>/<HH-MM-SS>/
+#
+# Each snapshot contains:
+#
+#   backup.list        copy of projects/<project>/backup.list at backup time
+#   version            integer from ${VIRTDEV_HOME}/system/version (or empty)
+#   tree/              user-content subtree, rsync-preserved
+#
+# The manifest is user-curated and required. Lookup order:
+#
+#   1. ${VIRTDEV_HOME}/projects/<project>/backup.list
+#   2. ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<project>/backup.list
+#
+# First existing file wins. Put your stable manifest in the config
+# location (dotfile-friendly, survives virtdev-nuke) and use the
+# project-local location for one-off experiments that should be
+# discarded with the VM.
+#
+# Format: one path per line; blank lines and lines starting with
+# '#' are ignored. Paths without a leading '/' resolve relative to
+# the guest's /home/dev/. Absolute paths are used as-is. Trailing
+# slash follows rsync convention.
+#
+# The loaded manifest path is echoed to stderr on each run.
+#
+# Flags:
+#
+#   --verbose    Show rsync per-file progress.
+#   --list       Print snapshots for the project. Does not create
+#                a snapshot; does not require the VM to be running.
+#
+# The project's virtual machine must be running (SSH over the
+# host-forwarded port). Concurrent same-project backups at the same
+# second are prevented by mkdir EEXIST on the partial directory.
+#
+# Requires rsync on both host and guest:
+#
+#     pacman -S rsync
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME       Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_SSH_KEY    Default: ${VIRTDEV_HOME}/ssh/id
+#   XDG_CONFIG_HOME    Default: ~/.config
+#
+
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
+
+umask 077
+
+verbose=0
+list=0
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --verbose) verbose=1; shift ;;
+    --list)    list=1;    shift ;;
+    --)        shift; break ;;
+    -*)        error 1 <<<"unknown flag: ${1}" ;;
+    *)         break ;;
+  esac
+done
+
+if [[ $# -ne 1 ]]; then
+  if (( list )); then
+    error 1 <<<'usage: virtdev-backup --list <project>'
+  else
+    error 1 <<<'usage: virtdev-backup [--verbose] <project>'
+  fi
+fi
+
+project="${1}"
+
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  error 2 <<MESSAGE
+Invalid project name: '${project}'
+Allowed: a-z A-Z 0-9 _ -
+MESSAGE
+fi
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+# List mode stops here; it lists past snapshots regardless of VM state.
+if (( list )); then
+  backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
+  if [[ ! -d "${backups_project_dir}" ]]; then
+    printf 'No snapshots.\n'
+    exit 0
+  fi
+
+  date_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+  time_regex='^[0-9]{2}-[0-9]{2}-[0-9]{2}$'
+
+  mapfile -t day_dirs < <(
+    find "${backups_project_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
+      | grep -E "${date_regex}" \
+      | sort
+  )
+
+  if (( ${#day_dirs[@]} == 0 )); then
+    printf 'No snapshots.\n'
+    exit 0
+  fi
+
+  printf '%-12s  %-10s %-10s %-8s %s\n' 'DATE' 'TIME' 'AGE' 'SIZE' 'VERSION'
+  printf '%-12s  %-10s %-10s %-8s %s\n' '----' '----' '---' '----' '-------'
+
+  now=$(date -u +%s)
+
+  humanize_age() {
+    local -r seconds="${1}"
+    if (( seconds < 60 )); then
+      printf '%ds ago' "${seconds}"
+    elif (( seconds < 3600 )); then
+      printf '%dm ago' "$((seconds / 60))"
+    elif (( seconds < 86400 )); then
+      printf '%dh ago' "$((seconds / 3600))"
+    else
+      printf '%dd ago' "$((seconds / 86400))"
+    fi
+  }
+
+  for d in "${day_dirs[@]}"; do
+    mapfile -t time_dirs < <(
+      find "${backups_project_dir}/${d}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
+        | grep -E "${time_regex}" \
+        | sort
+    )
+    for t in "${time_dirs[@]}"; do
+      snapshot="${backups_project_dir}/${d}/${t}"
+      size="$(du -sh "${snapshot}" 2>/dev/null | cut -f1)"
+      version='-'
+      if [[ -s "${snapshot}/version" ]]; then
+        version="$(< "${snapshot}/version")"
+      fi
+      time_colons="${t//-/:}"
+      snap_epoch=$(date -u -d "${d} ${time_colons} UTC" +%s 2>/dev/null || echo 0)
+      age_seconds=$(( now - snap_epoch ))
+      (( age_seconds < 0 )) && age_seconds=0
+      age="$(humanize_age "${age_seconds}")"
+      printf '%-12s  %-10s %-10s %-8s %s\n' "${d}" "${t}" "${age}" "${size}" "${version}"
+    done
+  done
+  exit 0
+fi
+
+# From here on: create mode preconditions (4 and up).
+
+if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+  error 4 <<MESSAGE
+Virtual machine is not running: ${project}
+Start it with: virtdev-start ${project}
+MESSAGE
+fi
+
+port_file="${project_directory}/port"
+if [[ ! -f "${port_file}" ]]; then
+  error 4 <<MESSAGE
+Project has no port assigned: ${project}
+Start the virtual machine first: virtdev-start ${project}
+MESSAGE
+fi
+port="$(< "${port_file}")"
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
+  error 5 <<MESSAGE
+SSH key not found: '${VIRTDEV_SSH_KEY}'
+Place the private key at that path, link it, or set VIRTDEV_SSH_KEY.
+MESSAGE
+fi
+
+key_permissions="$(stat -c '%a' "${VIRTDEV_SSH_KEY}")"
+if [[ "${key_permissions}" != "600" && "${key_permissions}" != "400" ]]; then
+  error 5 <<MESSAGE
+SSH key permissions too open: '${VIRTDEV_SSH_KEY}' (${key_permissions})
+Fix with: chmod 600 '${VIRTDEV_SSH_KEY}'
+MESSAGE
+fi
+
+if ! command -v rsync &>/dev/null; then
+  error 6 <<MESSAGE
+rsync not found
+Install it with: pacman -S rsync
+MESSAGE
+fi
+
+backup_list_project="${project_directory}/backup.list"
+backup_list_config="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
+
+if [[ -f "${backup_list_project}" ]]; then
+  backup_list="${backup_list_project}"
+elif [[ -f "${backup_list_config}" ]]; then
+  backup_list="${backup_list_config}"
+else
+  error 8 <<MESSAGE
+Backup manifest not found. Checked (in order):
+	${backup_list_project}
+	${backup_list_config}
+Create either; one path per line (relative to /home/dev or absolute).
+Blank lines and '#' comments are ignored.
+MESSAGE
+fi
+
+# Non-empty after comment/blank filter
+if ! grep -Eq '^\s*[^#[:space:]]' "${backup_list}"; then
+  error 9 <<MESSAGE
+Backup manifest has no paths: ${backup_list}
+All lines are blank or comments. Add at least one path.
+MESSAGE
+fi
+
+printf >&2 'manifest: %s\n' "${backup_list}"
+
+day="$(date -u +%Y-%m-%d)"
+time="$(date -u +%H-%M-%S)"
+
+backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
+day_dir="${backups_project_dir}/${day}"
+partial="${day_dir}/${time}.partial"
+final="${day_dir}/${time}"
+
+mkdir -p -m 0700 "${day_dir}"
+
+if ! mkdir -m 0700 "${partial}" 2>/dev/null; then
+  error 10 <<MESSAGE
+Partial snapshot already exists: ${partial}
+Either another backup is in progress, or a previous backup was
+killed (SIGKILL or similar) without its EXIT trap firing.
+Remove it if stale: rm -rf "${partial}"
+MESSAGE
+fi
+
+backup_succeeded=0
+cleanup_partial() {
+  (( backup_succeeded )) || rm -rf "${partial}"
+}
+trap cleanup_partial EXIT
+
+cp "${backup_list}" "${partial}/backup.list"
+
+version_file="${VIRTDEV_HOME}/system/version"
+if [[ -f "${version_file}" ]]; then
+  cp "${version_file}" "${partial}/version"
+else
+  : > "${partial}/version"
+fi
+
+mkdir -m 0700 "${partial}/tree"
+
+# Build the SSH command for rsync's -e. printf %q survives rsync's
+# internal shell reparse even if VIRTDEV_SSH_KEY or port contain
+# unusual characters. Matches bin/virtdev-transfer.
+printf -v ssh_command \
+    'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
+    "${VIRTDEV_SSH_KEY}" "${port}"
+
+rsync_opts=(-a --no-D --ignore-missing-args)
+(( verbose )) && rsync_opts+=(--info=progress2)
+
+printf 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
+
+if ! rsync "${rsync_opts[@]}" \
+    --files-from=<(grep -Ev '^\s*(#|$)' "${partial}/backup.list") \
+    -e "${ssh_command}" \
+    "dev@127.0.0.1:/home/dev/" \
+    "${partial}/tree/"; then
+  error 7 <<MESSAGE
+rsync transfer failed during backup of ${project}.
+Partial snapshot removed: ${partial}
+MESSAGE
+fi
+
+mv "${partial}" "${final}"
+backup_succeeded=1
+
+printf '%s\n' "${final}"

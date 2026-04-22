@@ -42,6 +42,51 @@ virtdev-ssh myproject ./provision.sh # Run a provisioning script
 virtdev-stop myproject               # Clean shutdown
 ```
 
+## Backing up and restoring project state
+
+When a base system update forces delta-mode project VMs to be
+recreated (see `DESIGN.md`), `virtdev-backup` and `virtdev-restore`
+preserve state that the provision script cannot reproduce —
+Claude Code project memories, untracked files in git working
+trees, hand-edited dotfiles, shell history.
+
+Write a manifest. The canonical location is
+`~/.config/virtdev/projects/<project>/backup.list` — dotfile-friendly
+and survives `virtdev-nuke`. A project-local copy at
+`${VIRTDEV_HOME}/projects/<project>/backup.list` takes precedence
+when present (handy for one-off experiments; discarded with the VM).
+
+```
+# Claude Code project memories
+.claude/
+
+# Untracked files in git working trees
+project-a/notes.md
+project-a/.env.local
+
+# Shell config
+.bashrc
+.config/nvim/
+```
+
+Snapshot, recreate, restore:
+
+```
+virtdev-backup myproject               # snapshot the running VM
+virtdev-backup --list myproject        # see snapshots
+virtdev-stop myproject
+virtdev-destroy myproject              # type project name to confirm
+virtdev-create myproject               # rebuild on current base
+virtdev-start myproject
+virtdev-wait myproject
+virtdev-ssh myproject ./provision.sh   # re-run provisioning
+virtdev-restore myproject              # restore latest snapshot
+```
+
+Backups live under `${VIRTDEV_HOME}/backups/<project>/<date>/<time>/`
+and are preserved across `virtdev-destroy` but removed by
+`virtdev-nuke`.
+
 ## Requirements
 
 - Arch Linux host
