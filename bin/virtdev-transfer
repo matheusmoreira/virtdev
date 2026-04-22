@@ -135,6 +135,12 @@ else
   printf 'Copying to %s...\n' "${project}"
 fi
 
-ssh_command="ssh -i '${VIRTDEV_SSH_KEY}' -p ${port} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+# rsync's -e takes a string that rsync re-parses via the shell. The
+# private-key path and port must survive that reparse intact even if
+# they contain quotes or whitespace. printf %q emits shell-safe escapes
+# that round-trip through bash word-splitting.
+printf -v ssh_command \
+    'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
+    "${VIRTDEV_SSH_KEY}" "${port}"
 
 exec rsync -a -e "${ssh_command}" "${rsync_src}" "${rsync_dest}"
