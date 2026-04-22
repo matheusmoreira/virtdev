@@ -69,12 +69,37 @@ fi
 # After virtdev-maintain reseals the base, existing delta images
 # are silently composed against the new base content by QEMU,
 # which may produce filesystem corruption.
+# Both version files must exist — otherwise there is no way to
+# guarantee the delta is safe against the current base.
 system_directory="${VIRTDEV_HOME}"/system
-if [[ -f "${system_directory}"/version && -f "${project_directory}"/version ]]; then
-  system_version="$(< "${system_directory}"/version)"
-  project_version="$(< "${project_directory}"/version)"
-  if [[ "${system_version}" != "${project_version}" ]]; then
-    error 9 <<MESSAGE
+system_version_file="${system_directory}/version"
+project_version_file="${project_directory}/version"
+
+if [[ ! -f "${system_version_file}" ]]; then
+  error 9 <<MESSAGE
+Base system version file missing: '${system_version_file}'
+The sealed base may be corrupted or from before versioning was added.
+Reinstall the base system: virtdev-install + virtdev-seal
+MESSAGE
+fi
+
+if [[ ! -f "${project_version_file}" ]]; then
+  error 10 <<MESSAGE
+Project version file missing: '${project_version_file}'
+This project was created against a base that did not track versions,
+or the file was removed. There is no way to verify the delta image
+is safe against the current base content.
+Transfer data and recreate this project on top of the current base:
+
+    virtdev-destroy ${project} && virtdev-create ${project}
+MESSAGE
+fi
+
+system_version="$(< "${system_version_file}")"
+project_version="$(< "${project_version_file}")"
+
+if [[ "${system_version}" != "${project_version}" ]]; then
+  error 11 <<MESSAGE
 Base system has changed since this project was created.
 
 	System version:  ${system_version}
@@ -85,7 +110,6 @@ Transfer data and recreate it on top of the new base system:
 
     virtdev-destroy ${project} && virtdev-create ${project}
 MESSAGE
-  fi
 fi
 
 unit=virtdev-"${project}"
