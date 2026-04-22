@@ -116,5 +116,78 @@ Install it with: pacman -S rsync
 MESSAGE
 fi
 
-# Snapshot resolution filled in by Task 6.
-error 99 <<<'snapshot resolution not yet implemented'
+backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
+
+date_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+time_regex='^[0-9]{2}-[0-9]{2}-[0-9]{2}$'
+
+# Validate user-supplied date/time shape up front.
+if [[ -n "${given_date}" && ! "${given_date}" =~ ${date_regex} ]]; then
+  error 9 <<<"Invalid date format: '${given_date}' (expected YYYY-MM-DD)"
+fi
+if [[ -n "${given_time}" && ! "${given_time}" =~ ${time_regex} ]]; then
+  error 9 <<<"Invalid time format: '${given_time}' (expected HH-MM-SS)"
+fi
+
+list_day_dirs() {
+  if [[ ! -d "${backups_project_dir}" ]]; then return 0; fi
+  find "${backups_project_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
+    | grep -E "${date_regex}" \
+    | sort
+}
+
+list_time_dirs() {
+  local -r day="${1}"
+  find "${backups_project_dir}/${day}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
+    | grep -E "${time_regex}" \
+    | sort
+}
+
+# Resolve date component.
+if [[ -z "${given_date}" ]]; then
+  resolved_date="$(list_day_dirs | tail -n1)"
+  if [[ -z "${resolved_date}" ]]; then
+    error 8 <<MESSAGE
+No snapshots for this project: ${project}
+Create one with: virtdev-backup ${project}
+MESSAGE
+  fi
+else
+  if [[ ! -d "${backups_project_dir}/${given_date}" ]]; then
+    error 9 <<<"Snapshot date not found: ${given_date}"
+  fi
+  resolved_date="${given_date}"
+fi
+
+# Resolve time component.
+if [[ -z "${given_time}" ]]; then
+  resolved_time="$(list_time_dirs "${resolved_date}" | tail -n1)"
+  if [[ -z "${resolved_time}" ]]; then
+    error 9 <<<"No snapshots on date ${resolved_date}"
+  fi
+else
+  if [[ ! -d "${backups_project_dir}/${resolved_date}/${given_time}" ]]; then
+    error 9 <<<"Snapshot time not found: ${resolved_date}/${given_time}"
+  fi
+  resolved_time="${given_time}"
+fi
+
+snapshot="${backups_project_dir}/${resolved_date}/${resolved_time}"
+
+if [[ ! -f "${snapshot}/backup.list" ]]; then
+  error 10 <<<"Snapshot missing backup.list: ${snapshot}"
+fi
+if [[ ! -d "${snapshot}/tree" ]]; then
+  error 10 <<<"Snapshot missing tree/: ${snapshot}"
+fi
+
+snapshot_version='-'
+if [[ -s "${snapshot}/version" ]]; then
+  snapshot_version="$(< "${snapshot}/version")"
+fi
+
+printf >&2 'Restoring %s from %s/%s (version=%s)\n' \
+    "${project}" "${resolved_date}" "${resolved_time}" "${snapshot_version}"
+
+# Rsync filled in by Task 7.
+error 99 <<<'rsync invocation not yet implemented'
