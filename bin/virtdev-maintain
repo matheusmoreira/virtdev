@@ -371,20 +371,80 @@ rmdir "${maintenance_project}" 2>/dev/null || true
 
 printf '\n'
 
-if [[ "${qemu_exit}" != 0 ]]; then
-  error 10 <<MESSAGE
-Unclean shutdown or interrupted.
+# Any non-zero exit means the maintenance session did not finish
+# with a clean guest poweroff. The sealed base must NOT be
+# overwritten in that case: ext4 journal replay needs write
+# access, half-applied pacman transactions produce inconsistent
+# package state, and so on. Preserve maintenance/ for inspection
+# in every non-zero path, and let the user retry from a clean
+# start. See DESIGN.md 'Base System Maintenance' for the ext4
+# unclean-shutdown rationale.
+#
+# 143 is called out specifically because it is the common case: a
+# 'virtdev-stop maintenance' whose ACPI powerdown timed out and
+# fell back to SIGTERM, a 'systemctl --user stop
+# virtdev-maintenance', or an external kill -TERM all route here.
+# The message distinguishes the likely cause and explains why
+# SIGTERM-to-QEMU is not equivalent to a guest-level shutdown —
+# users who don't know the distinction are tempted to just say
+# 'y' to a reseal prompt, so we refuse the prompt entirely and
+# tell them how to redo the session cleanly.
+case "${qemu_exit}" in
+  0)
+    : # Clean guest poweroff. Fall through to the reseal prompt below.
+    ;;
+  143)
+    error 10 <<MESSAGE
+Maintenance virtual machine exited abnormally.
+Unit exit status: 143 (SIGTERM).
+
+Likely cause:
+
+    virtdev-stop maintenance       (ACPI powerdown fallback to SIGTERM)
+    systemctl --user stop virtdev-maintenance
+    kill -TERM <qemu-pid>
+
+SIGTERM tells QEMU to shut ITSELF down cleanly — flush qcow2
+buffers, close file handles — but does not give the guest
+operating system a chance to run its own shutdown. From the
+guest kernel's perspective this is an abrupt power-off:
+ext4's journal is dirty, the page cache is lost, and any
+in-progress package transactions are half-applied. Resealing
+in this state would bake that dirty state into the new base.
+
+The sealed base images are intact: '${system_directory}'
+Maintenance images preserved for inspection: '${maintenance_directory}'
+
+Discard the staging directory and re-enter maintenance:
+
+    rm -rf '${maintenance_directory}'
+    virtdev-maintain
+
+Inside the VM, finish with 'sudo poweroff' — that triggers a
+proper guest-level shutdown and QEMU will then exit 0.
+MESSAGE
+    ;;
+  *)
+    error 10 <<MESSAGE
+Maintenance virtual machine exited abnormally.
 Unit exit status: ${qemu_exit}
+
+This is not a clean guest poweroff. Whatever happened may have
+left the guest filesystem in an inconsistent state (dirty ext4
+journal, half-applied writes). Resealing is refused.
+
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
 Remove manually to retry: rm -rf '${maintenance_directory}'
 MESSAGE
-fi
+    ;;
+esac
 
-# QEMU exits 0 for both a guest poweroff and an external SIGTERM
-# due to Ctrl-C or virtdev-stop maintenance. Exit status alone
-# cannot be used to determine whether maintenance is complete.
-# Require explicit confirmation before overwriting the sealed base system.
+# qemu_exit == 0 only confirms the QEMU process exited without a
+# signal — it does not prove the guest actually ran its shutdown
+# sequence rather than being, say, manually 'exit 0' from a
+# foreground shell inside the guest. Require explicit user
+# confirmation before overwriting the sealed base system.
 printf 'Virtual machine exited cleanly.\n'
 printf 'Reseal the base system? [y/N] '
 read -r confirm
