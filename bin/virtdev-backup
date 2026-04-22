@@ -152,5 +152,66 @@ All lines are blank or comments. Add at least one path.
 MESSAGE
 fi
 
-# Create-mode body filled in by Task 3.
-error 99 <<<'create mode body not yet implemented'
+day="$(date -u +%Y-%m-%d)"
+time="$(date -u +%H-%M-%S)"
+
+backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
+day_dir="${backups_project_dir}/${day}"
+partial="${day_dir}/${time}.partial"
+final="${day_dir}/${time}"
+
+mkdir -p -m 0700 "${day_dir}"
+
+if ! mkdir -m 0700 "${partial}" 2>/dev/null; then
+  error 10 <<MESSAGE
+Partial snapshot already exists: ${partial}
+Either another backup is in progress, or a previous backup was
+killed (SIGKILL or similar) without its EXIT trap firing.
+Remove it if stale: rm -rf "${partial}"
+MESSAGE
+fi
+
+backup_succeeded=0
+cleanup_partial() {
+  (( backup_succeeded )) || rm -rf "${partial}"
+}
+trap cleanup_partial EXIT
+
+cp "${backup_list}" "${partial}/backup.list"
+
+version_file="${VIRTDEV_HOME}/system/version"
+if [[ -f "${version_file}" ]]; then
+  cp "${version_file}" "${partial}/version"
+else
+  : > "${partial}/version"
+fi
+
+mkdir -m 0700 "${partial}/tree"
+
+# Build the SSH command for rsync's -e. printf %q survives rsync's
+# internal shell reparse even if VIRTDEV_SSH_KEY or port contain
+# unusual characters. Matches bin/virtdev-transfer.
+printf -v ssh_command \
+    'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
+    "${VIRTDEV_SSH_KEY}" "${port}"
+
+rsync_opts=(-a --no-D --ignore-missing-args)
+(( verbose )) && rsync_opts+=(--info=progress2)
+
+printf 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
+
+if ! rsync "${rsync_opts[@]}" \
+    --files-from=<(grep -Ev '^\s*(#|$)' "${partial}/backup.list") \
+    -e "${ssh_command}" \
+    "dev@127.0.0.1:/home/dev/" \
+    "${partial}/tree/"; then
+  error 7 <<MESSAGE
+rsync transfer failed during backup of ${project}.
+Partial snapshot removed: ${partial}
+MESSAGE
+fi
+
+mv "${partial}" "${final}"
+backup_succeeded=1
+
+printf '%s\n' "${final}"
