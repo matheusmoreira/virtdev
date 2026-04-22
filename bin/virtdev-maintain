@@ -316,8 +316,8 @@ mv "${maintenance_directory}" "${system_directory}"
 
 printf 'Incrementing version counter...\n'
 old_version=1
-if [[ -f "${system_directory}/version" ]]; then
-  old_version="$(< "${system_directory}/version")"
+if [[ -f "${old_system_directory}/version" ]]; then
+  old_version="$(< "${old_system_directory}/version")"
 fi
 printf '%d\n' "$(( old_version + 1 ))" > "${system_directory}/version"
 
