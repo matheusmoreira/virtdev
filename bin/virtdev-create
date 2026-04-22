@@ -89,6 +89,21 @@ for file in system.qcow2 home.qcow2 nvram; do
   fi
 done
 
+# Validate the base version file if present, so a corrupt base fails
+# at create time instead of start time. virtdev-start's comparison
+# is strict; inheriting a corrupted counter here would produce a
+# project that can never boot.
+if [[ -f "${system_directory}/version" ]]; then
+  base_version="$(< "${system_directory}/version")"
+  if ! [[ "${base_version}" =~ ^[0-9]+$ ]]; then
+    error 8 <<MESSAGE
+Corrupted base version file: '${system_directory}/version'
+Contents: '${base_version}'
+Repair manually: the file must contain a single non-negative integer.
+MESSAGE
+  fi
+fi
+
 if [[ -d "${project_directory}" ]]; then
   error 6 <<<"Project already exists: '${project_directory}'"
 fi

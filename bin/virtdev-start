@@ -128,6 +128,29 @@ fi
 system_version="$(< "${system_version_file}")"
 project_version="$(< "${project_version_file}")"
 
+# Both version files must be a single non-negative integer. Anything
+# else — empty, whitespace, non-numeric, negative — is either
+# corruption or external tampering, and must not silently pass the
+# equality check below where bash happens to compare strings. Future
+# readers that touch this as arithmetic (e.g. to widen the check)
+# would otherwise coerce bad input to 0 and match a zero on the
+# other side.
+if ! [[ "${system_version}" =~ ^[0-9]+$ ]]; then
+  error 14 <<MESSAGE
+Corrupted base version file: '${system_version_file}'
+Contents: '${system_version}'
+Repair manually: the file must contain a single non-negative integer.
+MESSAGE
+fi
+
+if ! [[ "${project_version}" =~ ^[0-9]+$ ]]; then
+  error 15 <<MESSAGE
+Corrupted project version file: '${project_version_file}'
+Contents: '${project_version}'
+Repair manually: the file must contain a single non-negative integer.
+MESSAGE
+fi
+
 if [[ "${system_version}" != "${project_version}" ]]; then
   error 11 <<MESSAGE
 Base system has changed since this project was created.

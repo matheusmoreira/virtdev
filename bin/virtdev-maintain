@@ -349,6 +349,27 @@ if ! qemu-img check -q "${home_disk}"; then
   error 13 <<<"Home disk integrity check failed: '${home_disk}'"
 fi
 
+# Read and validate the old version counter BEFORE the rename
+# sequence below. After the mv, the sealed base has moved to
+# system.old and recovery from a corrupted version would be manual
+# surgery; failing here leaves the sealed base untouched in place.
+# Accept any non-negative integer, including 0, to stay consistent
+# with the validation elsewhere — virtdev-seal writes the initial
+# counter as '1' but the schema itself does not require that.
+old_version=1
+if [[ -f "${system_directory}/version" ]]; then
+  old_version="$(< "${system_directory}/version")"
+  if ! [[ "${old_version}" =~ ^[0-9]+$ ]]; then
+    error 15 <<MESSAGE
+Corrupted base version file: '${system_directory}/version'
+Contents: '${old_version}'
+Repair manually: the file must contain a single non-negative integer.
+The sealed base images are intact: '${system_directory}'
+Maintenance images preserved for inspection: '${maintenance_directory}'
+MESSAGE
+  fi
+fi
+
 # Reseal:
 #
 #     1. Rename old system directory aside
@@ -363,11 +384,8 @@ old_system_directory="${VIRTDEV_HOME}/system.old"
 mv "${system_directory}" "${old_system_directory}"
 mv "${maintenance_directory}" "${system_directory}"
 
-printf 'Incrementing version counter...\n'
-old_version=1
-if [[ -f "${old_system_directory}/version" ]]; then
-  old_version="$(< "${old_system_directory}/version")"
-fi
+printf 'Incrementing version counter (%d → %d)...\n' \
+       "${old_version}" "$(( old_version + 1 ))"
 printf '%d\n' "$(( old_version + 1 ))" > "${system_directory}/version"
 
 printf 'Marking base system images read-only...\n'
