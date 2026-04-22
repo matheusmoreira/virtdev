@@ -107,7 +107,20 @@ MESSAGE
     ;;
 esac
 
+# Capture the raw QEMU exit status for the user. Typical values:
+#   0       clean guest poweroff
+#   143     SIGTERM (our SIGTERM fallback path or external 'systemctl stop')
+#   128+N   killed by signal N
+#   other   QEMU-level error
+qemu_exit="$(systemctl --user show "${unit}" --property=ExecMainStatus --value 2>/dev/null || true)"
+qemu_exit="${qemu_exit:-?}"
+
+# Reset any residual failed state so the next virtdev-start does not
+# hit a name collision. Done after the ExecMainStatus capture, which
+# needs the unit to still be loaded.
+systemctl --user reset-failed "${unit}" 2>/dev/null || true
+
 rm -f "${project_directory}"/port \
      "${project_directory}"/monitor.sock \
      "${project_directory}"/console.sock
-printf "Project VM stopped: %s\n" "${project}"
+printf "Project VM stopped: %s (QEMU exit %s)\n" "${project}" "${qemu_exit}"
