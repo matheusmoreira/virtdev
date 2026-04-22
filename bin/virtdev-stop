@@ -63,7 +63,14 @@ fi
 
 if [[ -S "${monitor_sock}" ]]; then
   printf "Sending ACPI powerdown to: %s\n" "${project}"
-  if echo 'system_powerdown' | socat - UNIX-CONNECT:"${monitor_sock}" &>/dev/null; then
+  # Unidirectional socat: close after stdin EOF instead of waiting for the
+  # server to close the socket. QEMU only closes the monitor when the VM
+  # process itself exits, so bidirectional 'socat -' would block here
+  # indefinitely if the guest ignored the ACPI event (wedged kernel,
+  # masked poweroff target, etc). Decoupling send from wait lets the
+  # is-active poll below enforce VIRTDEV_STOP_TIMEOUT as the actual
+  # upper bound on the stop.
+  if echo 'system_powerdown' | socat -u - UNIX-CONNECT:"${monitor_sock}" &>/dev/null; then
     # Wait for systemd to see the unit exit
     deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
     while systemctl --user --quiet is-active "${unit}" 2>/dev/null; do
