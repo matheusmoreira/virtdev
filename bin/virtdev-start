@@ -244,21 +244,58 @@ systemd-run \
 
 # Wait for systemd to confirm the transient unit is active before the
 # lock is released (via script exit). systemd-run returns when the
-# unit is queued; 'is-active' becomes true once systemd moves it from
-# 'activating' to 'active'. Without this wait, another virtdev script
-# could take the lock between systemd-run returning and systemd
-# seeing the unit, and its 'is-active' check would falsely conclude
-# the VM is not running.
+# unit is queued; ActiveState transitions activating → active once
+# systemd has started tracking it. Without this wait, another virtdev
+# script could take the lock between systemd-run returning and
+# systemd seeing the unit, and its 'is-active' check would falsely
+# conclude the VM is not running.
+#
+# The three outcomes we care about are distinguished, so the user
+# gets a targeted error message instead of a generic timeout:
+#
+#   - active:              normal, break out of the loop
+#   - activating:          still booting, keep polling until deadline
+#   - failed | inactive:   QEMU exited before activation completed
+#                          (bad firmware path, bad qcow2 header,
+#                          KVM initialisation failure, etc.) — fail
+#                          fast with the captured exit status so the
+#                          user is not told "unit did not become
+#                          active" when in fact it entered and left
+#                          in the same second
+#   - other states:        treat as activating for timeout purposes
 deadline=$(( SECONDS + 5 ))
-while ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; do
-  if (( SECONDS >= deadline )); then
-    error 13 <<MESSAGE
+while true; do
+  state="$(systemctl --user show "${unit}" \
+      --property=ActiveState --value 2>/dev/null || true)"
+  case "${state}" in
+    active)
+      break
+      ;;
+    failed|inactive)
+      exit_status="$(systemctl --user show "${unit}" \
+          --property=ExecMainStatus --value 2>/dev/null || true)"
+      exit_status="${exit_status:-unknown}"
+      error 13 <<MESSAGE
+Unit exited before becoming active: ${unit}
+ActiveState: ${state}
+QEMU exit status: ${exit_status}
+QEMU likely crashed at boot. Investigate:
+    systemctl --user status ${unit}
+    journalctl --user -u ${unit}
+MESSAGE
+      ;;
+    *)
+      if (( SECONDS >= deadline )); then
+        error 13 <<MESSAGE
 Unit did not become active within 5s: ${unit}
+ActiveState: ${state:-unknown}
 systemd-run reported success but systemctl does not see the unit active.
 Investigate: systemctl --user status ${unit}
 MESSAGE
-  fi
-  sleep 0.1
+      fi
+      sleep 0.1
+      ;;
+  esac
 done
 
 printf 'VM started.\n'
