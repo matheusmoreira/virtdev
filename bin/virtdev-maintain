@@ -157,6 +157,26 @@ Generate it with virtdev-key then recreate and reinstall base system image.
 MESSAGE
 fi
 
+# Check for an orphaned virtdev-maintenance unit from a previous
+# session before the generic "any virtdev-*.service active" check
+# below. Both checks would fire here — virtdev-maintenance matches
+# the 'virtdev-*.service' glob — but the generic message tells the
+# user to stop their project VMs, which is not what is wrong when
+# the only active unit is the maintenance unit itself. A user who
+# already cleaned up maintenance/ in response to the "Maintenance
+# staging directory already exists" check should not then be told
+# to stop nonexistent project VMs.
+if systemctl --user --quiet is-active virtdev-maintenance 2>/dev/null; then
+  error 7 <<MESSAGE
+Orphaned maintenance virtual machine is running (virtdev-maintenance).
+A previous virtdev-maintain session was likely interrupted before it
+could stop the virtual machine. Terminate it, then retry:
+
+    systemctl --user stop virtdev-maintenance
+
+MESSAGE
+fi
+
 # Refuse to run if any project virtual machines are currently running.
 # They depend on system/system.qcow2 as a backing file.
 # Replacing it while a project virtual machine is running would corrupt it.
