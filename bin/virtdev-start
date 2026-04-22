@@ -152,13 +152,23 @@ console_sock="${project_directory}"/console.sock
 # Remove stale sockets from a previous unclean shutdown
 rm -f "${monitor_sock}" "${console_sock}"
 
+# Clear any residual failed state from a previous start attempt. Without
+# --collect (see below), a unit that exited with error persists as
+# 'failed' in systemd's state until explicitly reset, which would make
+# the name-in-use collision below block retries.
+systemctl --user reset-failed "${unit}" 2>/dev/null || true
+
 printf "Starting project virtual machine %s on SSH port %d...\n" "${project}" "${port}"
 
+# --collect intentionally omitted: it sets CollectMode=inactive-or-failed,
+# which would let systemd garbage-collect a failed unit before anything
+# can query ExecMainStatus or similar post-mortem properties. virtdev-stop
+# reads those properties after the VM exits; leaving --collect off keeps
+# the unit loaded until reset-failed or the next virtdev-start clears it.
 systemd-run \
     --user \
     --unit="${unit}" \
     --description="virtdev project virtual machine: ${project}" \
-    --collect \
     -- \
     qemu-system-x86_64 \
         -enable-kvm \
