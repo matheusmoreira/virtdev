@@ -83,6 +83,18 @@ fi
 
 mkdir -p "${installation_directory}"
 
+# Any failure or interruption between here and the final success marker
+# removes the partial installation directory so the user can retry
+# virtdev-install without having to rm -rf by hand. QEMU returns 0 only
+# on successful guest poweroff (archinstall-auto.service runs
+# 'systemctl poweroff' on success); any other exit path indicates an
+# incomplete install.
+install_succeeded=0
+cleanup_partial_installation() {
+  (( install_succeeded )) || rm -rf "${installation_directory}"
+}
+trap cleanup_partial_installation EXIT
+
 system_disk="${installation_directory}"/system.qcow2
 printf "Creating %s system disk image: '%s'\n" \
        "${VIRTDEV_SYSTEM_DISK_SIZE}" "${system_disk}"
@@ -119,6 +131,8 @@ qemu-system-x86_64 \
     -display none \
     -serial stdio \
     -monitor none
+
+install_succeeded=1
 
 printf '\n'
 printf 'Installer finished.\n'
