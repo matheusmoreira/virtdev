@@ -332,6 +332,7 @@ operation and a generic "operation in progress" is unhelpful in that case.
 
 - `virtdev-list`, `virtdev-ssh`, `virtdev-wait`, `virtdev-console`
 - `virtdev-transfer`, `virtdev-key`, `virtdev-iso`
+- `virtdev-backup`, `virtdev-restore`
 
 `virtdev-start` is the one special case: it holds the lock until
 `systemctl --user is-active <unit>` returns true for the transient unit,
@@ -349,6 +350,18 @@ images are being modified, and any concurrent `virtdev-create` or
 `virtdev-start` would read an inconsistent view. The lock converts the
 existing "refuse if any VMs are running" check into a genuine mutual
 exclusion with all other mutating operations.
+
+`virtdev-backup` and `virtdev-restore` take no lock, matching
+`virtdev-transfer`'s precedent. Both operate as SSH-level read/write
+into the running guest, produce only append-only output under
+`${VIRTDEV_HOME}/backups/`, and never modify shared virtdev state
+(base images, project trees, ports). Dangerous cross-project
+interactions are prevented by existing preconditions elsewhere:
+`virtdev-maintain` refuses when any VM is running, `virtdev-destroy`
+and `virtdev-nuke` refuse when the target VM is running, and backup
+requires a running VM — so backup and maintain are mutually exclusive
+without the lock. Concurrent same-project backup at the same second
+is blocked by `mkdir` EEXIST on the per-second partial directory.
 
 ---
 
@@ -382,6 +395,8 @@ before launching QEMU.
 | `virtdev-list`     | List all projects with port and running status               |
 | `virtdev-destroy`  | Delete a project VM and its disks (requires typing name)     |
 | `virtdev-nuke`     | Delete all virtdev data (requires typing "nuke")             |
+| `virtdev-backup`   | Snapshot user-curated guest-side paths to a host-side timestamped directory |
+| `virtdev-restore`  | Restore a snapshot into a running project VM                |
 
 ---
 
@@ -437,6 +452,15 @@ ${VIRTDEV_HOME}/
       port              SSH forwarding port (present while running)
       monitor.sock      QEMU monitor socket (present while running)
       console.sock      serial console socket (present while running)
+      backup.list       optional; user-curated manifest for virtdev-backup
+  backups/
+    <project>/
+      <YYYY-MM-DD>/
+        <HH-MM-SS>/
+          backup.list   copy of projects/<project>/backup.list at backup time
+          version       base version at backup time (may be empty)
+          tree/         user content, rsync-preserved
+        <HH-MM-SS>.partial/  transient; present during an in-flight backup
 
 ${XDG_CACHE_HOME:-~/.cache}/virtdev/
   virtdev.iso
@@ -473,10 +497,12 @@ ${XDG_CACHE_HOME:-~/.cache}/virtdev/
   disk from one project and attaching it to another (LABEL=home fstab). No
   commands implement this yet.
 
-- **Destroy-recreate is the only path for picking up base updates.** Project
-  VMs in delta mode must be destroyed and recreated to absorb a reseal. This
-  loses any state in the home disk that is not reproduced by a user-supplied
-  provision script. A planned `virtdev-backup` / `virtdev-restore` pair
-  (reading a per-project manifest file) plus a `virtdev-recreate` wrapper
-  that chains `backup + destroy + create + provision + restore` is the
-  intended remedy.
+- **Destroy-recreate loses state in delta-mode project VMs.** After
+  `virtdev-maintain` reseals the base, delta-mode project VMs must be
+  destroyed and recreated to absorb the update. Home-disk state that is
+  not reproduced by a user-supplied provision script can be preserved
+  across this cycle via `virtdev-backup` (before destroy) and
+  `virtdev-restore` (after create). The two primitives consult a
+  per-project `projects/<name>/backup.list` manifest. A `virtdev-recreate`
+  wrapper that chains `backup + stop + destroy + create + start + provision
+  + restore` into a single command is planned but not yet implemented.
