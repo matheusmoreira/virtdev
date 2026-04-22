@@ -205,6 +205,18 @@ via a version counter (`system/version` vs `projects/<name>/version`)
 and refuses to boot a project VM whose version does not match the current
 base. Always destroy and recreate delta-mode project VMs after resealing.
 
+**Note on NVRAM:** each project VM owns a copy of `nvram` taken from
+`system/nvram` at `virtdev-create` time. A subsequent `virtdev-maintain`
+can update `system/nvram`, but project NVRAMs are not refreshed — they
+continue to hold their original copy. This is intentional for UEFI
+variable state (boot entry selection, secure-boot variables on hosts that
+use them), which should be per-VM rather than inherited; but it does
+mean an NVRAM-level change made during maintenance (e.g. a new default
+boot entry in systemd-boot) is only picked up by projects on
+destroy-and-recreate, not by a plain restart. In practice this is a
+non-issue for the current headless configuration, where nothing writes
+to NVRAM after install.
+
 ---
 
 ## Provisioning
