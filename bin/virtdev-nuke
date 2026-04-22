@@ -47,6 +47,34 @@ MESSAGE
   fi
 done
 
+# Acquire the exclusive virtdev lock. See virtdev-install for the
+# full rationale. Taken BEFORE the "any VMs active" check below so
+# that a concurrent virtdev-start cannot slip a VM in between the
+# check and the 'rm -rf'.
+mkdir -p "${VIRTDEV_HOME}"
+exec 9>>"${VIRTDEV_HOME}/lock"
+if ! flock -n 9; then
+  holder_pid="$(cat "${VIRTDEV_HOME}/lock" 2>/dev/null || true)"
+  holder_cmdline=""
+  if [[ -n "${holder_pid}" && -r "/proc/${holder_pid}/cmdline" ]]; then
+    holder_cmdline="$(tr '\0' ' ' < "/proc/${holder_pid}/cmdline")"
+  fi
+  if [[ "${holder_cmdline}" == *virtdev-maintain* ]]; then
+    error 5 <<MESSAGE
+Base system maintenance is in progress (virtdev-maintain, PID ${holder_pid}).
+Wait for it to finish or inspect its virtual machine:
+    systemctl --user status virtdev-maintenance
+MESSAGE
+  fi
+  error 5 <<MESSAGE
+Another virtdev operation is in progress.
+Lock file: ${VIRTDEV_HOME}/lock
+Holder PID: ${holder_pid:-unknown}
+MESSAGE
+fi
+: > "${VIRTDEV_HOME}/lock"
+printf '%d\n' "$$" >&9
+
 # Refuse if any project VMs are running
 projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
