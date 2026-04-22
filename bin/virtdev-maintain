@@ -197,6 +197,16 @@ monitor_sock="${maintenance_project}/monitor.sock"
 console_sock="${maintenance_project}/console.sock"
 rm -f "${monitor_sock}" "${console_sock}"
 
+# Clear residual failed state from a prior session. Mirrors the same
+# guard in virtdev-start: without --collect (which we also omit so
+# the post-exit ExecMainStatus query below stays queryable), a unit
+# that exited with error persists as 'failed' in systemd's state
+# until explicitly reset. A SIGKILL of a previous virtdev-maintain
+# between its unit's failure and its own cleanup path can leave that
+# residue; the systemd-run below would then refuse with
+# name-already-in-use.
+systemctl --user reset-failed "${unit}" 2>/dev/null || true
+
 printf 'Starting maintenance VM (virtdev-maintenance)...\n'
 
 systemd-run \
