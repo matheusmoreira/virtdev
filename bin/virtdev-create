@@ -67,9 +67,17 @@ if [[ -d "${project_directory}" ]]; then
   error 6 <<<"Project already exists: '${project_directory}'"
 fi
 
-# Create project directory and disk images
+# Create project directory and disk images.
+# Any failure between here and the final success marker deletes the
+# partial directory so the user can retry without manual cleanup.
 
 mkdir -p "${project_directory}"
+
+create_succeeded=0
+cleanup_partial_project() {
+  (( create_succeeded )) || rm -rf "${project_directory}"
+}
+trap cleanup_partial_project EXIT
 
 system_disk="${project_directory}/system.qcow2"
 home_disk="${project_directory}/home.qcow2"
@@ -96,6 +104,8 @@ chmod 644 "${nvram}"
 if [[ -f "${system_directory}/version" ]]; then
   cp "${system_directory}/version" "${project_directory}/version"
 fi
+
+create_succeeded=1
 
 printf '\n'
 printf "Project virtual machine created: '%s'\n" "${project}"
