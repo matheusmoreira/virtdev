@@ -189,5 +189,36 @@ fi
 printf >&2 'Restoring %s from %s/%s (version=%s)\n' \
     "${project}" "${resolved_date}" "${resolved_time}" "${snapshot_version}"
 
-# Rsync filled in by Task 7.
-error 99 <<<'rsync invocation not yet implemented'
+printf -v ssh_command \
+    'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
+    "${VIRTDEV_SSH_KEY}" "${port}"
+
+rsync_opts=(-a --no-D --ignore-missing-args --stats)
+(( verbose )) && rsync_opts+=(--info=progress2)
+
+rsync_log="$(mktemp)"
+trap 'rm -f "${rsync_log}"' EXIT
+
+if ! rsync "${rsync_opts[@]}" \
+    --files-from=<(grep -Ev '^\s*(#|$)' "${snapshot}/backup.list") \
+    -e "${ssh_command}" \
+    "${snapshot}/tree/" \
+    "dev@127.0.0.1:/home/dev/" \
+    | tee "${rsync_log}"; then
+  error 7 <<<"rsync transfer failed during restore"
+fi
+
+files_transferred="$(awk -F: '/^Number of regular files transferred:/ {
+  gsub(/[ ,]/, "", $2); print $2
+}' "${rsync_log}")"
+files_transferred="${files_transferred:-0}"
+
+if (( files_transferred == 0 )); then
+  error 11 <<MESSAGE
+Zero files restored from snapshot: ${resolved_date}/${resolved_time}
+The snapshot may be empty, or every path in its manifest is absent.
+MESSAGE
+fi
+
+printf 'Restored %d files from %s/%s into %s.\n' \
+    "${files_transferred}" "${resolved_date}" "${resolved_time}" "${project}"
