@@ -29,14 +29,20 @@ if [[ $# -ne 0 ]]; then
   error 1 <<<'usage: virtdev-nuke'
 fi
 
-# Refuse to operate on obviously dangerous paths
+# Refuse to operate on any path that is not strictly under $HOME.
+# This guards against a typo or accidental override of VIRTDEV_HOME or
+# VIRTDEV_CACHE turning 'nuke' into 'rm -rf /usr' or similar.
+# Using realpath -m resolves symlinks so the check applies to the
+# physical target, not the link path.
+home_real="$(realpath "${HOME}")"
 for path in "${VIRTDEV_HOME}" "${VIRTDEV_CACHE}"; do
   real="$(realpath -m "${path}")"
-  home_real="$(realpath "${HOME}")"
-  if [[ "${real}" == "${home_real}" || "${real}" == "/" ]]; then
+  if [[ "${real}" != "${home_real}"/?* ]]; then
     error 2 <<MESSAGE
-Path resolves to a protected path: '${path}'
-Nuke aborted
+Path is not strictly under \$HOME: '${path}'
+	Resolved: '${real}'
+	Home:     '${home_real}'
+Nuke aborted.
 MESSAGE
   fi
 done
