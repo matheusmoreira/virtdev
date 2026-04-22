@@ -287,8 +287,17 @@ while true; do
 done
 
 # Capture exit status before reset-failed removes it.
+#
+# systemctl show returns empty — not non-zero — when the property is
+# unset, for instance because something else already reset-failed the
+# unit in the narrow window between our wait loop observing the exit
+# and this capture. The || echo 1 fallback only triggers on non-zero
+# exit and does not catch that path. Fall back to a sentinel on empty
+# and compare as a string below: the arithmetic '-ne 0' test coerces
+# empty to 0 and would misclassify that path as a clean shutdown.
 qemu_exit="$(systemctl --user show "${unit}" \
     --property=ExecMainStatus --value 2>/dev/null || echo 1)"
+qemu_exit="${qemu_exit:-unknown}"
 
 systemctl --user reset-failed "${unit}" 2>/dev/null || true
 rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
@@ -296,7 +305,7 @@ rmdir "${maintenance_project}" 2>/dev/null || true
 
 printf '\n'
 
-if [[ "${qemu_exit}" -ne 0 ]]; then
+if [[ "${qemu_exit}" != 0 ]]; then
   error 10 <<MESSAGE
 Unclean shutdown or interrupted.
 Unit exit status: ${qemu_exit}
