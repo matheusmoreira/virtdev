@@ -121,12 +121,14 @@ backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
 date_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 time_regex='^[0-9]{2}-[0-9]{2}-[0-9]{2}$'
 
-# Validate user-supplied date/time shape up front.
+# Validate user-supplied date/time shape up front. Distinct exit
+# codes per error type — date-format (9), time-format (15) — so a
+# scripted caller can branch on the cause without parsing stderr.
 if [[ -n "${given_date}" && ! "${given_date}" =~ ${date_regex} ]]; then
   error 9 <<<"Invalid date format: '${given_date}' (expected YYYY-MM-DD)"
 fi
 if [[ -n "${given_time}" && ! "${given_time}" =~ ${time_regex} ]]; then
-  error 9 <<<"Invalid time format: '${given_time}' (expected HH-MM-SS)"
+  error 15 <<<"Invalid time format: '${given_time}' (expected HH-MM-SS)"
 fi
 
 list_day_dirs() {
@@ -143,7 +145,10 @@ list_time_dirs() {
     | sort
 }
 
-# Resolve date component.
+# Resolve date component. Resolution failures get codes distinct
+# from the syntactic ones above: 16 = date directory absent,
+# 17 = date directory empty (no times under it), 18 = time directory
+# absent within an existing date.
 if [[ -z "${given_date}" ]]; then
   resolved_date="$(list_day_dirs | tail -n1)"
   if [[ -z "${resolved_date}" ]]; then
@@ -154,7 +159,7 @@ MESSAGE
   fi
 else
   if [[ ! -d "${backups_project_dir}/${given_date}" ]]; then
-    error 9 <<<"Snapshot date not found: ${given_date}"
+    error 16 <<<"Snapshot date not found: ${given_date}"
   fi
   resolved_date="${given_date}"
 fi
@@ -163,11 +168,11 @@ fi
 if [[ -z "${given_time}" ]]; then
   resolved_time="$(list_time_dirs "${resolved_date}" | tail -n1)"
   if [[ -z "${resolved_time}" ]]; then
-    error 9 <<<"No snapshots on date ${resolved_date}"
+    error 17 <<<"No snapshots on date ${resolved_date}"
   fi
 else
   if [[ ! -d "${backups_project_dir}/${resolved_date}/${given_time}" ]]; then
-    error 9 <<<"Snapshot time not found: ${resolved_date}/${given_time}"
+    error 18 <<<"Snapshot time not found: ${resolved_date}/${given_time}"
   fi
   resolved_time="${given_time}"
 fi
