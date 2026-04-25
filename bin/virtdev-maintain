@@ -81,7 +81,7 @@ import() {
   done
 }
 
-import error
+import error lock
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -98,35 +98,9 @@ if [[ $# -ne 0 ]]; then
   error 1 <<<'usage: virtdev-maintain'
 fi
 
-# Acquire the exclusive virtdev lock. Held for the entire maintenance
-# session, which may last hours while the user runs pacman -Syu or
-# other long operations inside the guest. Other virtdev scripts will
-# detect this holder and redirect the user to the maintenance VM
-# instead of printing a generic "operation in progress" error. See
-# virtdev-install for full rationale.
-mkdir -p "${VIRTDEV_HOME}"
-exec 9>>"${VIRTDEV_HOME}/lock"
-if ! flock -n 9; then
-  holder_pid="$(cat "${VIRTDEV_HOME}/lock" 2>/dev/null || true)"
-  holder_cmdline=""
-  if [[ -n "${holder_pid}" && -r "/proc/${holder_pid}/cmdline" ]]; then
-    holder_cmdline="$(tr '\0' ' ' < "/proc/${holder_pid}/cmdline")"
-  fi
-  if [[ "${holder_cmdline}" == *virtdev-maintain* ]]; then
-    error 14 <<MESSAGE
-Another virtdev-maintain is already running (PID ${holder_pid}).
-Wait for it to finish or inspect its virtual machine:
-    systemctl --user status virtdev-maintenance
-MESSAGE
-  fi
-  error 14 <<MESSAGE
-Another virtdev operation is in progress.
-Lock file: ${VIRTDEV_HOME}/lock
-Holder PID: ${holder_pid:-unknown}
-MESSAGE
-fi
-: > "${VIRTDEV_HOME}/lock"
-printf '%d\n' "$$" >&9
+# Held for the entire maintenance session, which may last hours while
+# the user runs pacman -Syu or other long operations inside the guest.
+lock_acquire_for_maintain
 
 system_directory="${VIRTDEV_HOME}/system"
 maintenance_directory="${VIRTDEV_HOME}/maintenance"

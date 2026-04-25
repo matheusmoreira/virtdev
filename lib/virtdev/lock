@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# lock library: exclusive virtdev lock acquisition.
+# Public:
+#   lock_acquire                  every script except maintain
+#   lock_acquire_for_maintain     maintain (different message when
+#                                 holder is also maintain)
+# Exit codes:
+#   75  lock contention (EX_TEMPFAIL — retry possible)
+#
+# The lock is held via fd 9 for the entire lifetime of the calling
+# process and released automatically when the process exits (fd 9
+# closes). Opening with >> (append) preserves the holder PID file
+# for the contention path; O_TRUNC would wipe it before the loser
+# could read it.
+#
+set -euo pipefail
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+import error
+
+readonly lock_file="${VIRTDEV_HOME}/lock"
+readonly lock_contention_exit_code=75
+
+lock_acquire() {
+  lock_open_and_flock || lock_die_for_other
+}
+
+lock_acquire_for_maintain() {
+  lock_open_and_flock || lock_die_for_maintain
+}
+
+lock_open_and_flock() {
+  mkdir -p "${VIRTDEV_HOME}"
+  exec 9>>"${lock_file}"
+  if flock -n 9; then
+    : > "${lock_file}"
+    printf '%d\n' "$$" >&9
+    return 0
+  fi
+  return 1
+}
+
+lock_holder_pid_and_cmdline() {
+  local pid cmdline=""
+  pid="$(cat "${lock_file}" 2>/dev/null || true)"
+  if [[ -n "${pid}" && -r "/proc/${pid}/cmdline" ]]; then
+    cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline")"
+  fi
+  printf '%s\t%s\n' "${pid}" "${cmdline}"
+}
+
+lock_die_for_other() {
+  local pid cmdline
+  IFS=$'\t' read -r pid cmdline < <(lock_holder_pid_and_cmdline)
+  if [[ "${cmdline}" == *virtdev-maintain* ]]; then
+    error "${lock_contention_exit_code}" <<MESSAGE
+Base system maintenance is in progress (virtdev-maintain, PID ${pid}).
+Wait for it to finish or inspect its virtual machine:
+    systemctl --user status virtdev-maintenance
+MESSAGE
+  fi
+  error "${lock_contention_exit_code}" <<MESSAGE
+Another virtdev operation is in progress.
+Lock file: ${lock_file}
+Holder PID: ${pid:-unknown}
+MESSAGE
+}
+
+lock_die_for_maintain() {
+  local pid cmdline
+  IFS=$'\t' read -r pid cmdline < <(lock_holder_pid_and_cmdline)
+  if [[ "${cmdline}" == *virtdev-maintain* ]]; then
+    error "${lock_contention_exit_code}" <<MESSAGE
+Another virtdev-maintain is already running (PID ${pid}).
+Wait for it to finish or inspect its virtual machine:
+    systemctl --user status virtdev-maintenance
+MESSAGE
+  fi
+  error "${lock_contention_exit_code}" <<MESSAGE
+Another virtdev operation is in progress.
+Lock file: ${lock_file}
+Holder PID: ${pid:-unknown}
+MESSAGE
+}
