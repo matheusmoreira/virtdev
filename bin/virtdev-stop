@@ -47,10 +47,10 @@ fi
 # has already serialized everything else, and the only virtdev
 # virtual machine that can be running during a maintain session is
 # virtdev-maintenance itself. Concurrent cleanup between this
-# script and maintain's post-exit path is either idempotent (rm -f
-# on missing paths, rmdir || true) or order-insensitive
-# (reset-failed from either side; the ExecMainStatus-race fallback
-# is handled in bin/maintain).
+# script and maintain's post-exit path is idempotent (rm -f on
+# missing paths, rmdir || true) by construction. Unit state
+# (reset-failed) is owned strictly by maintain; see the conditional
+# guarding the reset-failed call below.
 if [[ "${project}" != "maintenance" ]]; then
   # Acquire the exclusive virtdev lock. See virtdev-install for the
   # full rationale.
@@ -158,7 +158,21 @@ qemu_exit="${qemu_exit:-?}"
 # Reset any residual failed state so the next virtdev-start does not
 # hit a name collision. Done after the ExecMainStatus capture, which
 # needs the unit to still be loaded.
-systemctl --user reset-failed "${unit}" 2>/dev/null || true
+#
+# Skipped when target is 'maintenance': virtdev-maintain owns the
+# unit lifecycle there. It calls reset-failed before its systemd-run
+# and again at end-of-session (clean and error paths). Doing it
+# here would race with maintain's read of ExecMainStatus in the
+# narrow window between maintain's wait-loop seeing 'inactive' and
+# its show --property capture: clearing the property leaves maintain
+# reading empty, which it coerces to 'unknown' and treats as
+# abnormal exit, refusing the reseal of an otherwise-clean session.
+# The cosmetic cost (the unit lingers in 'failed' between sessions
+# when virtdev-stop maintenance is used) is paid by the next
+# virtdev-maintain run via its pre-systemd-run reset-failed.
+if [[ "${project}" != "maintenance" ]]; then
+  systemctl --user reset-failed "${unit}" 2>/dev/null || true
+fi
 
 rm -f "${project_directory}"/port \
      "${project_directory}"/monitor.sock \
