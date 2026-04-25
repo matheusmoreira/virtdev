@@ -460,6 +460,8 @@ ${VIRTDEV_HOME}/
     <project>/
       <YYYY-MM-DD>/
         <HH-MM-SS>/
+          project       source project name; virtdev-restore refuses
+                        to apply a snapshot to a different project
           backup.list   copy of projects/<project>/backup.list at backup time
           version       base version at backup time (may be empty)
           tree/         user content, rsync-preserved

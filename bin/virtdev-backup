@@ -11,6 +11,8 @@
 #
 # Each snapshot contains:
 #
+#   project            the source project name; virtdev-restore uses
+#                      this to refuse cross-project restoration
 #   backup.list        copy of projects/<project>/backup.list at backup time
 #   version            integer from ${VIRTDEV_HOME}/system/version (or empty)
 #   tree/              user-content subtree, rsync-preserved
@@ -259,6 +261,14 @@ cleanup_partial() {
 trap cleanup_partial EXIT
 
 cp "${backup_list}" "${partial}/backup.list"
+
+# Record the source project. virtdev-restore reads this and refuses
+# to proceed if its <project> argument disagrees, which catches the
+# common 'snapshot directory copied between projects, restore picks
+# the wrong one' failure mode. Without this marker the snapshot is
+# indistinguishable from any other and a cross-project restore would
+# silently overwrite the target project's home with the source's.
+printf '%s\n' "${project}" > "${partial}/project"
 
 version_file="${VIRTDEV_HOME}/system/version"
 if [[ -f "${version_file}" ]]; then

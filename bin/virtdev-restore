@@ -180,14 +180,77 @@ fi
 if [[ ! -d "${snapshot}/tree" ]]; then
   error 10 <<<"Snapshot missing tree/: ${snapshot}"
 fi
+if [[ ! -f "${snapshot}/project" ]]; then
+  error 10 <<MESSAGE
+Snapshot missing 'project' marker: ${snapshot}
+This snapshot was likely produced by an older virtdev-backup that
+did not record the source project, so cross-project restoration
+cannot be verified. Refusing to proceed.
+Re-run virtdev-backup to produce a snapshot with origin metadata.
+MESSAGE
+fi
 
+# Refuse cross-project restoration. The snapshot records the project
+# it was taken from; restoring it into a different project would
+# silently overwrite that project's files with the source project's
+# tree. backup.list paths are user-curated and may differ between
+# projects; even when they overlap, the resulting filesystem is
+# half-merged and impossible to audit after the fact.
+snapshot_project="$(< "${snapshot}/project")"
+if [[ "${snapshot_project}" != "${project}" ]]; then
+  error 12 <<MESSAGE
+Snapshot belongs to a different project.
+	snapshot project: ${snapshot_project}
+	target project:   ${project}
+Snapshots are project-scoped; cross-project restoration is refused.
+MESSAGE
+fi
+
+# Read and validate the project's current base version. A project
+# whose VM is running was created against some sealed base, and the
+# version file is the audit trail for which one. The file must be a
+# single non-negative integer per the convention in virtdev-start,
+# virtdev-create, and virtdev-maintain (see commit 4b82a64).
+project_version_file="${project_directory}/version"
+if [[ ! -f "${project_version_file}" ]]; then
+  error 13 <<MESSAGE
+Project version file missing: '${project_version_file}'
+The project's audit trail is incomplete; refusing to proceed.
+MESSAGE
+fi
+project_version="$(< "${project_version_file}")"
+if ! [[ "${project_version}" =~ ^[0-9]+$ ]]; then
+  error 13 <<MESSAGE
+Corrupted project version file: '${project_version_file}'
+Contents: '${project_version}'
+Repair manually: the file must contain a single non-negative integer.
+MESSAGE
+fi
+
+# Read the snapshot's recorded base version. Empty/absent is a
+# legitimate 'unknown at backup time' (the base predated versioning
+# or was missing); display as '-'. Anything non-empty must validate,
+# otherwise the snapshot's audit trail is unreliable.
 snapshot_version='-'
 if [[ -s "${snapshot}/version" ]]; then
   snapshot_version="$(< "${snapshot}/version")"
+  if ! [[ "${snapshot_version}" =~ ^[0-9]+$ ]]; then
+    error 14 <<MESSAGE
+Corrupted snapshot version file: '${snapshot}/version'
+Contents: '${snapshot_version}'
+The snapshot's base-version audit trail is unreadable.
+MESSAGE
+  fi
 fi
 
-printf >&2 'Restoring %s from %s/%s (version=%s)\n' \
-    "${project}" "${resolved_date}" "${resolved_time}" "${snapshot_version}"
+# Display the version transition. Mismatch is the EXPECTED case in
+# the destroy-recreate-restore workflow (snapshot taken under one
+# base, restored under the next), so it is informational, not fatal.
+# Same-version restoration is the rollback case.
+printf >&2 'Restoring %s from %s/%s\n' \
+    "${project}" "${resolved_date}" "${resolved_time}"
+printf >&2 '  snapshot version: %s\n' "${snapshot_version}"
+printf >&2 '  current version:  %s\n' "${project_version}"
 
 printf -v ssh_command \
     'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
