@@ -101,6 +101,10 @@ if ! command -v socat &>/dev/null; then
   exit 0
 fi
 
+# Dispatch the stop. Three branches: ACPI (preferred), SIGTERM with
+# socket present but ACPI send failed, SIGTERM with no monitor
+# socket. The ACPI success path falls through with no body — the
+# unified wait loop below handles all three.
 if [[ -S "${monitor_sock}" ]]; then
   printf "Sending ACPI powerdown to: %s\n" "${project}"
   # Unidirectional socat: close after stdin EOF instead of waiting for the
@@ -108,21 +112,9 @@ if [[ -S "${monitor_sock}" ]]; then
   # process itself exits, so bidirectional 'socat -' would block here
   # indefinitely if the guest ignored the ACPI event (wedged kernel,
   # masked poweroff target, etc). Decoupling send from wait lets the
-  # is-active poll below enforce VIRTDEV_STOP_TIMEOUT as the actual
+  # ActiveState poll below enforce VIRTDEV_STOP_TIMEOUT as the actual
   # upper bound on the stop.
-  if echo 'system_powerdown' | socat -u - UNIX-CONNECT:"${monitor_sock}" &>/dev/null; then
-    # Wait for systemd to see the unit exit
-    deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
-    while systemctl --user --quiet is-active "${unit}" 2>/dev/null; do
-      if (( SECONDS >= deadline )); then
-        printf 'Guest did not halt within %ds, falling back to SIGTERM...\n' \
-               "${VIRTDEV_STOP_TIMEOUT}"
-        systemctl --user stop "${unit}"
-        break
-      fi
-      sleep 1
-    done
-  else
+  if ! echo 'system_powerdown' | socat -u - UNIX-CONNECT:"${monitor_sock}" &>/dev/null; then
     printf 'Monitor send failed, falling back to SIGTERM...\n'
     systemctl --user stop "${unit}"
   fi
@@ -131,11 +123,46 @@ else
   systemctl --user stop "${unit}"
 fi
 
-# Post-condition: every path above must leave the unit in a terminal
+# Wait for the unit to settle into a terminal state (inactive or
+# failed). After ACPI we wait for the guest to halt; after SIGTERM
+# we wait for QEMU to exit and the user manager to update the unit's
+# ActiveState. 'systemctl --user stop' returns once the stop job is
+# queued, not after the transition completes, and the user manager's
+# queue can be congested — so the SIGTERM-fallback paths above MUST
+# settle here before the post-condition assertion runs. Without this
+# wait, the post-condition would fire on an in-flight 'deactivating'
+# state and produce a spurious error 5 for an otherwise-successful
+# stop.
+#
+# If the deadline expires while the unit is still active or
+# activating, escalate ACPI to SIGTERM once and resume waiting; if
+# SIGTERM also fails to land in time, exit the loop and let the
+# post-condition surface the stuck state.
+deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
+escalated=0
+while :; do
+  active_state="$(systemctl --user show "${unit}" --property=ActiveState --value 2>/dev/null || true)"
+  case "${active_state}" in
+    inactive|failed) break ;;
+  esac
+  if (( SECONDS >= deadline )); then
+    if (( ! escalated )); then
+      printf 'Guest did not halt within %ds, falling back to SIGTERM...\n' \
+             "${VIRTDEV_STOP_TIMEOUT}"
+      systemctl --user stop "${unit}"
+      escalated=1
+      deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
+      continue
+    fi
+    break
+  fi
+  sleep 1
+done
+
+# Post-condition: the loop above must leave the unit in a terminal
 # state (inactive or failed). This catches bugs where a future change
 # adds a fallthrough that skips a wait, and serves as a hard floor on
 # the contract that virtdev-stop only returns when QEMU is gone.
-active_state="$(systemctl --user show "${unit}" --property=ActiveState --value 2>/dev/null || true)"
 case "${active_state}" in
   inactive|failed) ;;
   *)
