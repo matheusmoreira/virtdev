@@ -252,6 +252,31 @@ Manifest entries must be relative to the guest's /home/dev/.
 MESSAGE
 fi
 
+# Reject malformed path-shape entries: leading whitespace, trailing
+# whitespace, embedded control characters. rsync's --files-from
+# treats each line literally, so 'notes.md  ' (trailing spaces, common
+# on copy-paste) becomes a path with two trailing spaces — which
+# does not exist and gets silently skipped under
+# --ignore-missing-args. Same for ' .bashrc' (leading space, easy
+# to introduce when reformatting). Embedded tabs and CRs (Windows
+# line endings) are similarly suspicious. Validate up front so the
+# user fixes the manifest, not the snapshot.
+bad_shape="$(awk '
+  /^[[:space:]]*$/ { next }
+  /^[[:space:]]*#/ { next }
+  /^[[:space:]]/  { printf("%d: leading whitespace: %s\n", NR, $0); next }
+  /[[:space:]]$/  { printf("%d: trailing whitespace: %s\n", NR, $0); next }
+  /[[:cntrl:]]/   { printf("%d: control character: %s\n", NR, $0); next }
+' "${backup_list}")"
+if [[ -n "${bad_shape}" ]]; then
+  error 9 <<MESSAGE
+Backup manifest has malformed path entries: ${backup_list}
+${bad_shape}
+Each path must start at column 0, end with a non-whitespace
+character, and contain no tabs or control characters.
+MESSAGE
+fi
+
 printf >&2 'manifest: %s\n' "${backup_list}"
 
 day="$(date -u +%Y-%m-%d)"
