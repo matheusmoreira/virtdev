@@ -275,6 +275,36 @@ while true; do
       exit_status="$(systemctl --user show "${unit}" \
           --property=ExecMainStatus --value 2>/dev/null || true)"
       exit_status="${exit_status:-unknown}"
+      # Distinguish a port-bind race from a generic QEMU crash. The
+      # pre-flight port_in_use check above is a TOCTOU: a non-virtdev
+      # process can bind the chosen port between our check and qemu's
+      # bind() call. From systemd's perspective this looks identical
+      # to any other early QEMU exit, but the user-visible cause and
+      # remediation are very different. Re-check the port now: if a
+      # listener is on it, qemu's exit was almost certainly because
+      # it could not bind. (TIME_WAIT sockets do not match -tln, so
+      # this does not false-positive on QEMU's own brief lifetime.)
+      if port_in_use "${port}"; then
+        if [[ $# -eq 2 ]]; then
+          error 8 <<MESSAGE
+Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
+Between virtdev-start's pre-flight port check and qemu's bind() call,
+a non-virtdev process took the port. The explicit port cannot be
+retried until that process releases it.
+Retry with a different port, or omit the port arg to auto-assign:
+    virtdev-start ${project} <other-port>
+    virtdev-start ${project}
+MESSAGE
+        else
+          error 8 <<MESSAGE
+Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
+Auto-assignment selected this port, but a non-virtdev process took
+it between the port check and qemu's bind() call. Retry —
+auto-assignment will pick the next free port:
+    virtdev-start ${project}
+MESSAGE
+        fi
+      fi
       error 13 <<MESSAGE
 Unit exited before becoming active: ${unit}
 ActiveState: ${state}
