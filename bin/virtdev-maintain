@@ -124,6 +124,7 @@ system_directory="${VIRTDEV_HOME}/system"
 maintenance_directory="${VIRTDEV_HOME}/maintenance"
 maintenance_project="${VIRTDEV_HOME}/projects/maintenance"
 old_system_directory="${VIRTDEV_HOME}/system.old"
+trash_directory="${VIRTDEV_HOME}/system.old.trash"
 
 # Auto-recover from an interrupted reseal. The reseal block below
 # is a two-mv-plus-writes sequence that this commit further wraps
@@ -151,6 +152,18 @@ if [[ -d "${old_system_directory}" ]]; then
   printf 'Restoring previous sealed base from: %s\n' "${old_system_directory}"
   mv "${old_system_directory}" "${system_directory}"
   printf 'Recovery complete. Proceed with virtdev-maintain as normal.\n\n'
+fi
+
+# Clean up leftover trash from a prior successful reseal whose
+# best-effort rm did not finish. trash_directory is created by the
+# atomic-rename commit step in the reseal block below; its presence
+# means the new base is already committed and the old base is
+# garbage. This is distinct from the system.old/ revert case above:
+# system.old/ means "reseal interrupted mid-section, revert", while
+# trash_directory means "reseal succeeded, just remove the leftover".
+if [[ -d "${trash_directory}" ]]; then
+  printf 'Removing leftover trash from a prior reseal: %s\n' "${trash_directory}"
+  rm -rf "${trash_directory}"
 fi
 
 if [[ ! -d "${system_directory}" ]]; then
@@ -517,34 +530,39 @@ fi
 #     2. Rename maintenance/ directory to system/
 #     3. Write new version counter
 #     4. chmod 444 to seal
-#     5. Remove old directory
+#     5. Atomically rename system.old/ to system.old.trash/ (commit)
+#     6. Outside the trap: rm -rf the trash (best-effort cleanup)
 #
-# The whole sequence is the non-atomic critical section. Between
-# the operations the layout is transiently inconsistent: no
-# system/ (between the two mv's); system/ without a version file
-# (post-mv, pre-write); system/ not yet read-only (post-write,
-# pre-chmod); or a leftover system.old/ alongside a fully-sealed
-# system/ (pre-final-rm). Catchable signals — Ctrl-C, SIGTERM
-# from systemctl --user stop, HUP from a closed terminal — are
-# trapped away for the duration so those paths cannot interrupt
-# the sequence partway through.
+# Steps 1–5 are the non-atomic critical section. Between the
+# operations the layout is transiently inconsistent: no system/
+# (between the two mv's); system/ without a version file (post-mv,
+# pre-write); system/ not yet read-only (post-write, pre-chmod); or
+# a leftover system.old/ alongside a fully-sealed system/ (pre-step-5).
+# Catchable signals — Ctrl-C, SIGTERM from systemctl --user stop,
+# HUP from a closed terminal — are trapped away for the duration so
+# those paths cannot interrupt the sequence partway through.
 #
-# The rm -rf of system.old/ is inside the trap too, even though
-# system/ is already a complete seal at that point. Reason: the
-# auto-recovery block at the top of this script treats "system.old
-# exists" as "interrupted reseal, restore system.old to system."
-# Leaving a stale system.old/ behind a completed reseal would
-# cause the next maintain run to revert a perfectly valid seal.
-# Extending the trap through the final rm prevents that entirely
-# for catchable signals.
+# Step 5 (mv system.old → system.old.trash) is the commit point.
+# Auto-recovery treats "system.old/ exists" as "interrupted reseal,
+# revert" — but it ignores trash_directory, which it just removes
+# as cleanup. A single rename(2) is atomic on a single filesystem,
+# so the transition from "system.old/ exists (revert on recovery)"
+# to "trash/ exists (cleanup on recovery)" is one syscall: there is
+# no in-between state where a crash could leave both visible to a
+# later auto-recovery. Step 6's rm is therefore best-effort: if it
+# fails, the trash lingers as garbage and is collected by the next
+# maintain run's auto-recovery, but the new base is already
+# committed and cannot revert.
 #
 # SIGKILL and hardware failure still get through — nothing can
-# trap SIGKILL — but the auto-recovery does handle the resulting
-# state. In the very narrow SIGKILL-during-rm case, the user loses
-# the just-completed reseal (they have to redo the maintenance
-# session). A syscall-level atomic rename (renameat2 with
-# RENAME_EXCHANGE, Linux-only) would close that last gap but is
-# not wrapped by any shell-accessible tool today.
+# trap SIGKILL — but the auto-recovery handles the resulting state
+# correctly: a SIGKILL before step 5 leaves system.old/ and reverts;
+# after step 5 leaves trash and just cleans up. The only loss is
+# the in-progress maintenance work itself if the kill lands before
+# step 5, which the user has to redo. A syscall-level atomic
+# RENAME_EXCHANGE (renameat2, Linux-only) would close even the
+# brief mid-step-1/2/3/4 window but is not wrapped by any
+# shell-accessible tool today.
 trap '' INT TERM HUP QUIT
 printf "Resealing base system images to: '%s'\n" "${system_directory}"
 mv "${system_directory}" "${old_system_directory}"
@@ -557,8 +575,17 @@ printf '%d\n' "$(( old_version + 1 ))" > "${system_directory}/version"
 printf 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
 
-rm -rf "${old_system_directory}"
+mv "${old_system_directory}" "${trash_directory}"
 trap - INT TERM HUP QUIT
+
+# Best-effort trash removal. Failure here does not affect
+# correctness: the next maintain run's auto-recovery will collect
+# any leftover trash directory. Surface a warning so the user knows
+# disk space is being held until then.
+if ! rm -rf "${trash_directory}"; then
+  printf >&2 'warning: could not remove %s; will be cleaned up on next virtdev-maintain run\n' \
+             "${trash_directory}"
+fi
 
 printf 'Base system resealed: %s\n' "${system_directory}"
 printf '\n'
