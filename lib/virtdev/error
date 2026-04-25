@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# error library: terminal failure helper.
+# Public:
+#   error <exit-code>            (message via stdin / heredoc)
+# Exit codes: none reserved (caller-supplied via parameter).
+#
+set -euo pipefail
+
+error() {
+  local -r code="${1}"
+  cat >&2
+  exit "${code}"
+}

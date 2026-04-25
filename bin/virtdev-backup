@@ -60,11 +60,19 @@
 
 set -euo pipefail
 
-error() {
-  local -r code="${1}"
-  cat >&2
-  exit "${code}"
+virtdev_library_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev"
+declare -A virtdev_loaded_libraries=()
+import() {
+  local f
+  for f in "$@"; do
+    [[ -v virtdev_loaded_libraries[$f] ]] && continue
+    virtdev_loaded_libraries[$f]=1
+    # shellcheck disable=SC1090
+    source -p "${virtdev_library_directory}" "${f}"
+  done
 }
+
+import error
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -297,6 +305,7 @@ day_dir="${backups_project_dir}/${day}"
 partial="${day_dir}/${time}.partial"
 final="${day_dir}/${time}"
 
+# shellcheck disable=SC2174  # umask 077 above ensures intermediates get 0700 too
 mkdir -p -m 0700 "${day_dir}"
 
 if ! mkdir -m 0700 "${partial}" 2>/dev/null; then
