@@ -268,7 +268,49 @@ if ! rsync "${rsync_opts[@]}" \
     "${snapshot}/tree/" \
     "dev@127.0.0.1:/home/dev/" \
     | tee "${rsync_log}"; then
-  error 7 <<<"rsync transfer failed during restore"
+  # PIPESTATUS[0] is rsync's exit code, intact because pipefail makes
+  # the pipeline's exit non-zero on rsync failure and the if-not
+  # branch reads PIPESTATUS as its first operation. Distinguish the
+  # partial-transfer codes (23, 24) from transport errors (255) and
+  # everything else, since the implications for the user differ:
+  # partial means the guest filesystem is half-merged; transport
+  # usually means nothing was touched.
+  rsync_exit="${PIPESTATUS[0]}"
+  case "${rsync_exit}" in
+    23|24)
+      partial_count="$(awk -F: '/^Number of regular files transferred:/ {
+        gsub(/[ ,]/, "", $2); print $2
+      }' "${rsync_log}")"
+      error 7 <<MESSAGE
+rsync transfer of ${project} completed with errors (exit ${rsync_exit}).
+${partial_count:-?} files restored; the rest were skipped or failed.
+The guest filesystem is in a half-merged state — some paths now
+match the snapshot and others retain their pre-restore contents.
+See the per-file output above for which entries failed.
+Re-run virtdev-restore to retry; rsync's incremental check will
+skip files that already match.
+MESSAGE
+      ;;
+    255)
+      error 7 <<MESSAGE
+rsync transfer failed during restore of ${project} (exit 255: transport).
+The SSH connection to the guest could not be established or was lost.
+The guest's filesystem was not modified.
+Verify the VM is reachable, then retry:
+
+    virtdev-ssh ${project} true
+    virtdev-restore ${project}
+MESSAGE
+      ;;
+    *)
+      error 7 <<MESSAGE
+rsync transfer failed during restore of ${project} (exit ${rsync_exit}).
+The transfer aborted before completion. See the per-file output
+above for the cause. The guest filesystem may be unmodified or
+partially modified — verify the state before retrying.
+MESSAGE
+      ;;
+  esac
 fi
 
 files_transferred="$(awk -F: '/^Number of regular files transferred:/ {
