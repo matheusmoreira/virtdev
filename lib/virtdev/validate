@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#
+# validate library: input validation helpers.
+# Public:
+#   validate_project_name <name>
+# Exit codes:
+#   2  invalid project name
+#
+set -euo pipefail
+import error
+
+validate_project_name() {
+  local -r name="${1}"
+  if [[ ! "${name}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]]; then
+    error 2 <<MESSAGE
+Invalid project name: '${name}'
+Allowed: a-z A-Z 0-9 _ - (1 to 100 characters)
+MESSAGE
+  fi
+}

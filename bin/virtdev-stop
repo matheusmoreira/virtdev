@@ -29,7 +29,7 @@ import() {
   done
 }
 
-import error
+import error validate
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
@@ -40,12 +40,7 @@ fi
 
 project="${1}"
 
-if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]]; then
-  error 2 <<MESSAGE
-Invalid project name: '${project}'
-Allowed: a-z A-Z 0-9 _ - (1 to 100 characters)
-MESSAGE
-fi
+validate_project_name "${project}"
 
 # The maintenance virtual machine is the one target that skips the
 # virtdev lock. virtdev-maintain holds the exclusive lock for its

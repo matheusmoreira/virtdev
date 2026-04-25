@@ -33,7 +33,7 @@ import() {
   done
 }
 
-import error
+import error validate
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -43,12 +43,7 @@ fi
 
 project="${1}"
 
-if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]]; then
-  error 2 <<MESSAGE
-Invalid project name: '${project}'
-Allowed: a-z A-Z 0-9 _ - (1 to 100 characters)
-MESSAGE
-fi
+validate_project_name "${project}"
 
 if [[ "${project}" == "maintenance" ]]; then
   error 3 <<<"Project name 'maintenance' is reserved by virtdev-maintain"

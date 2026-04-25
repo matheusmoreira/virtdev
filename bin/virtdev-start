@@ -30,7 +30,7 @@ import() {
   done
 }
 
-import error
+import error validate
 
 port_in_use() {
   [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
@@ -47,12 +47,7 @@ fi
 
 project="${1}"
 
-if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]]; then
-  error 2 <<MESSAGE
-Invalid project name: '${project}'
-Allowed: a-z A-Z 0-9 _ - (1 to 100 characters)
-MESSAGE
-fi
+validate_project_name "${project}"
 
 # Acquire the exclusive virtdev lock. Held from here until after
 # systemd confirms the transient unit is active, so any other virtdev
