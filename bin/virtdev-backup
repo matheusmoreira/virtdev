@@ -28,8 +28,11 @@
 # discarded with the VM.
 #
 # Format: one path per line; blank lines and lines starting with
-# '#' are ignored. Paths without a leading '/' resolve relative to
-# the guest's /home/dev/. Absolute paths are used as-is. Trailing
+# '#' are ignored. All paths are relative to the guest's /home/dev/
+# — rsync's --files-from cannot reach outside the source root, and
+# absolute paths in the manifest are rejected at backup time
+# (rsync would silently strip the leading slash and look up the
+# remainder under /home/dev/, producing missing files). Trailing
 # slash follows rsync convention.
 #
 # The loaded manifest path is echoed to stderr on each run.
@@ -230,6 +233,22 @@ if ! grep -Eq '^\s*[^#[:space:]]' "${backup_list}"; then
   error 9 <<MESSAGE
 Backup manifest has no paths: ${backup_list}
 All lines are blank or comments. Add at least one path.
+MESSAGE
+fi
+
+# Reject absolute paths. rsync's --files-from semantics strip the
+# leading '/' and resolve every entry relative to the source dir
+# (here, /home/dev/), so '/etc/foo.conf' would silently look up
+# /home/dev/etc/foo.conf and (with --ignore-missing-args) be
+# omitted from the snapshot. Surface this as a hard error rather
+# than allow a silently-incomplete backup. Match leading-slash
+# entries even with surrounding whitespace.
+abs_lines="$(grep -nE '^\s*/' "${backup_list}" || true)"
+if [[ -n "${abs_lines}" ]]; then
+  error 9 <<MESSAGE
+Backup manifest contains absolute paths: ${backup_list}
+${abs_lines}
+Manifest entries must be relative to the guest's /home/dev/.
 MESSAGE
 fi
 
