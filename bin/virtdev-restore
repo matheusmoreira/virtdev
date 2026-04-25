@@ -65,10 +65,10 @@ project="${1}"
 given_date="${2:-}"
 given_time="${3:-}"
 
-if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]]; then
   error 2 <<MESSAGE
 Invalid project name: '${project}'
-Allowed: a-z A-Z 0-9 _ -
+Allowed: a-z A-Z 0-9 _ - (1 to 100 characters)
 MESSAGE
 fi
 
