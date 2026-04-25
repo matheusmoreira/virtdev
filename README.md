@@ -90,6 +90,7 @@ and are preserved across `virtdev-destroy` but removed by
 ## Requirements
 
 - Arch Linux host
+- bash 5.2 or later (the scripts use `source -p` for the shared library system)
 - KVM-capable CPU (`lscpu | grep Virtualization`)
 - QEMU with x86_64 system emulation (`qemu-system-x86`)
 - OVMF UEFI firmware (`edk2-ovmf`)
@@ -119,9 +120,15 @@ To install system-wide:
 
 ```
 sudo install -Dm755 bin/virtdev-* -t /usr/bin/
+sudo install -Dm644 lib/virtdev/* -t /usr/lib/virtdev/
 sudo install -Dm644 iso/* -Dt /usr/share/virtdev/profile/
 # Repeat for subdirectories under iso/
 ```
+
+The `bin/` and `lib/virtdev/` directories must end up as siblings under
+the install prefix (e.g., `/usr/bin/` and `/usr/lib/virtdev/`); the
+scripts resolve the library directory relative to their own location and
+will not find it otherwise.
 
 ## Quick Start
 
@@ -282,13 +289,15 @@ timeout — or if the monitor is unreachable — it falls back to SIGTERM via
 ### Concurrency
 
 Commands that mutate virtdev state take an exclusive `flock(2)` on
-`${VIRTDEV_HOME}/lock` for their duration and fail fast on contention:
+`${VIRTDEV_HOME}/lock` for their duration and fail fast on contention
+with exit code 75 (BSD `EX_TEMPFAIL` — temporary failure, retry possible):
 
 - Locking: `virtdev-install`, `virtdev-seal`, `virtdev-maintain`,
   `virtdev-create`, `virtdev-start`, `virtdev-stop`, `virtdev-destroy`,
   `virtdev-nuke`
 - Not locking: `virtdev-list`, `virtdev-ssh`, `virtdev-wait`,
-  `virtdev-console`, `virtdev-transfer`, `virtdev-key`, `virtdev-iso`
+  `virtdev-console`, `virtdev-transfer`, `virtdev-key`, `virtdev-iso`,
+  `virtdev-backup`, `virtdev-restore`
 
 The lock file is visible and contains the current holder's PID, so
 `cat ${VIRTDEV_HOME}/lock` during a contention error shows which process

@@ -190,7 +190,17 @@ detached and attached to another.
 1. Copies `system/` to a staging area, makes files writable
 2. Boots the staging images as a regular QEMU process (no cdrom, no install)
 3. User performs maintenance: `pacman -Syu`, dotfile setup, etc.
-4. On poweroff, reseals — replacing the previous seal
+4. On poweroff, reseals — replacing the previous seal. The reseal
+   commit point is a single `rename(2)` from `system.old/` to
+   `system.old.trash/` after the new base is fully written and chmod-444'd;
+   an interrupt (Ctrl-C, SIGTERM, or host reset) before that rename leaves
+   the previous sealed base intact at `system.old/` and is auto-recovered
+   on the next `virtdev-maintain` run, while an interrupt after the
+   rename leaves the new base committed and only the trash directory to
+   clean up. A SIGKILL or hardware failure in the brief window between
+   the two `mv`s and the version-file write is the only path that can
+   leave a partial layout, and the auto-recovery handles that case too
+   by reverting to `system.old/`.
 
 After resealing:
 - Project VMs in shared read-only mode pick up changes on next boot automatically
@@ -314,13 +324,39 @@ $ cat ${VIRTDEV_HOME}/lock
 12345
 ```
 
-On contention, `flock -n` fails immediately rather than queueing. The user
-sees the lock-file path and holder PID and can inspect with their own tools
-(`ps`, `/proc/12345/cmdline`, `systemctl --user status`). If the holder's
+On contention, `flock -n` fails immediately rather than queueing and the
+script exits 75 (BSD `EX_TEMPFAIL` — temporary failure, retry possible);
+this is uniform across every locking script. The user sees the lock-file
+path and holder PID and can inspect with their own tools (`ps`,
+`/proc/12345/cmdline`, `systemctl --user status`). If the holder's
 `/proc/<pid>/cmdline` matches `virtdev-maintain`, the error message
 specifically points at the maintenance VM, since a maintenance session can
 hold the lock for the duration of a `pacman -Syu` or similar long
 operation and a generic "operation in progress" is unhelpful in that case.
+
+The lock acquisition logic is factored into `lib/virtdev/lock`. Two
+public entry points cover the observed flavors:
+
+- `lock_acquire` — used by every locking script except `virtdev-maintain`.
+  When the holder is also `virtdev-maintain`, prints the "base system
+  maintenance is in progress" diagnostic.
+- `lock_acquire_for_maintain` — used only by `virtdev-maintain`. When
+  the holder is also `virtdev-maintain`, prints "another virtdev-maintain
+  is already running" instead, since the user invoked `maintain`
+  expecting a fresh session.
+
+`virtdev-stop`'s special case for the maintenance project (skip the
+lock entirely so `virtdev-stop maintenance` can still abort a stuck
+session) lives at the call site:
+
+```bash
+if [[ "${project}" != "maintenance" ]]; then
+  lock_acquire
+fi
+```
+
+The library does not reach into the consumer's `${project}` variable;
+the guard is one line and depends on the script's own state.
 
 **Commands that take the lock** (serialized against each other):
 
@@ -362,6 +398,52 @@ and `virtdev-nuke` refuse when the target VM is running, and backup
 requires a running VM — so backup and maintain are mutually exclusive
 without the lock. Concurrent same-project backup at the same second
 is blocked by `mkdir` EEXIST on the per-second partial directory.
+
+---
+
+## Implementation: Shared Library System
+
+`bin/virtdev-*` are the entry points; cross-cutting helpers used by
+more than one entry point live in `lib/virtdev/*` and are sourced
+into the script's shell at start-up rather than reimplemented per-script.
+This is mechanical deduplication of identical boilerplate, not an
+extension point: the libraries are internal-only and have no stable API.
+
+The mechanism is bash 5.2's `source -p <colon-search-path> <name>`,
+which lets a script source a library by name without computing or
+hardcoding its path. Each script in `bin/` opens with a uniform
+4-symbol bootstrap: it derives the library directory from its own
+location via `readlink -f` on `BASH_SOURCE[0]`, defines an `import`
+helper that de-duplicates via an associative array, and then issues
+`import` calls for the libraries it uses.
+
+The same `<bin>/../lib/virtdev` relative path resolves correctly for
+both the dev tree (`~/dev/virtdev/bin → ~/dev/virtdev/lib/virtdev`)
+and the pacman-installed package (`/usr/bin → /usr/lib/virtdev`),
+because `readlink -f` follows symlinks and normalises to the script's
+actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
+`/usr/bin/`, mode 644, and declares `bash>=5.2` in `depends`.
+
+### Current libraries
+
+| Library | Purpose | Reserved exit codes |
+|---------|---------|---------------------|
+| `error` | terminal failure helper used by every script (`error <code>` with message via stdin/heredoc) | none (caller-supplied) |
+| `validate` | input validation (`validate_project_name`) | 2 |
+| `lock` | exclusive `flock(2)` acquisition on `${VIRTDEV_HOME}/lock`, with maintain-aware diagnostics | 75 |
+
+Libraries are self-contained: each imports its own dependencies
+(e.g., `validate` imports `error` because it calls `error()` on
+invalid input) and self-defaults the env vars it reads (e.g., `lock`
+defaults `VIRTDEV_HOME`). The bootstrap's idempotency guard makes
+redundant imports harmless. Library-owned exit codes are reserved by
+the library and documented in its header; consumers do not override
+them, so the same error condition produces the same exit code in
+every script.
+
+The full discipline rules (no top-level side effects, function
+naming convention, `local` everywhere, `readonly` for constants,
+header comment format) are documented in `CLAUDE.md`.
 
 ---
 
