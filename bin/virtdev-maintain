@@ -60,6 +60,8 @@
 #   VIRTDEV_HOME              Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #   VIRTDEV_SSH_KEY           Default: ${VIRTDEV_HOME}/ssh/id
 #   VIRTDEV_WAIT_TIMEOUT      Seconds to wait for SSH. Default: 120
+#   VIRTDEV_STOP_TIMEOUT      Seconds to wait for the maintenance unit
+#                             to leave active state after stop. Default: 60
 #   VIRTDEV_VM_MEMORY         Default: 4096
 #   VIRTDEV_VM_CPUS           Default: 4
 #   OVMF_CODE                 Default: /usr/share/edk2/x64/OVMF_CODE.4m.fd
@@ -76,6 +78,7 @@ error() {
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_WAIT_TIMEOUT:=120}"
+: "${VIRTDEV_STOP_TIMEOUT:=60}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
 : "${VIRTDEV_VM_CPUS:=4}"
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
@@ -322,7 +325,29 @@ done
 
 if [[ "${ssh_up}" -eq 0 ]]; then
   printf ' failed.\n'
+
   systemctl --user stop "${unit}" 2>/dev/null || true
+
+  # Wait for the unit to actually leave active state before tearing
+  # down its sockets and project directory. Without this wait, QEMU
+  # may still hold the maintenance disk images and the deleted
+  # socket inodes open while the host has already removed the path
+  # entries — a subsequent manual 'rm -rf maintenance/' would not
+  # free the blocks until QEMU exits, and 'virtdev-list' shows an
+  # inconsistent view in the interim. Best-effort: if the unit does
+  # not stop within VIRTDEV_STOP_TIMEOUT, proceed with cleanup
+  # anyway. The next virtdev-maintain pre-flight will refuse to
+  # start because an active unit exists, surfacing the stuck state.
+  stop_deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
+  while systemctl --user --quiet is-active "${unit}" 2>/dev/null; do
+    if (( SECONDS >= stop_deadline )); then
+      printf >&2 'warning: %s did not stop within %ds; cleanup may leak open file descriptors\n' \
+                 "${unit}" "${VIRTDEV_STOP_TIMEOUT}"
+      break
+    fi
+    sleep 1
+  done
+
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
   rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
   rmdir "${maintenance_project}" 2>/dev/null || true
