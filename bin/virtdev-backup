@@ -274,8 +274,10 @@ MESSAGE
 fi
 
 backup_succeeded=0
+rsync_log=
 cleanup_partial() {
   (( backup_succeeded )) || rm -rf "${partial}"
+  [[ -n "${rsync_log}" ]] && rm -f "${rsync_log}"
 }
 trap cleanup_partial EXIT
 
@@ -305,8 +307,10 @@ printf -v ssh_command \
     'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
     "${VIRTDEV_SSH_KEY}" "${port}"
 
-rsync_opts=(-a --no-D --ignore-missing-args)
+rsync_opts=(-a --no-D --ignore-missing-args --stats)
 (( verbose )) && rsync_opts+=(--info=progress2)
+
+rsync_log="$(mktemp)"
 
 printf 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
 
@@ -314,14 +318,39 @@ if ! rsync "${rsync_opts[@]}" \
     --files-from=<(grep -Ev '^\s*(#|$)' "${partial}/backup.list") \
     -e "${ssh_command}" \
     "dev@127.0.0.1:/home/dev/" \
-    "${partial}/tree/"; then
+    "${partial}/tree/" \
+    | tee "${rsync_log}"; then
   error 7 <<MESSAGE
 rsync transfer failed during backup of ${project}.
 Partial snapshot removed: ${partial}
 MESSAGE
 fi
 
+# Refuse a snapshot that received zero files. The manifest may
+# reference paths that all happen to be absent on the guest (typo,
+# wrong project, recently deleted) — with --ignore-missing-args,
+# rsync silently skips them and exits 0. Without this check the
+# resulting snapshot would be promoted to final/ and the user would
+# only discover the empty payload at restore time, possibly after a
+# destroy-recreate cycle had already removed the source data.
+# Mirrors the equivalent guard in virtdev-restore.
+files_transferred="$(awk -F: '/^Number of regular files transferred:/ {
+  gsub(/[ ,]/, "", $2); print $2
+}' "${rsync_log}")"
+files_transferred="${files_transferred:-0}"
+
+if (( files_transferred == 0 )); then
+  error 11 <<MESSAGE
+Zero files transferred during backup of ${project}.
+Every manifest entry was skipped — most commonly because the
+referenced paths do not exist on the guest. The partial snapshot
+has been removed.
+Verify the manifest against the guest: virtdev-ssh ${project} ls -la
+MESSAGE
+fi
+
 mv "${partial}" "${final}"
 backup_succeeded=1
 
+printf >&2 'Backed up %d files.\n' "${files_transferred}"
 printf '%s\n' "${final}"
