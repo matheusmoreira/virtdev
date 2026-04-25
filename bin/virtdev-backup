@@ -156,9 +156,19 @@ if (( list )); then
     for t in "${time_dirs[@]}"; do
       snapshot="${backups_project_dir}/${d}/${t}"
       size="$(du -sh "${snapshot}" 2>/dev/null | cut -f1)"
+      # Display the snapshot's recorded base version. Empty/absent
+      # = legitimate 'unknown at backup time' shows as '-'. Any
+      # non-empty value that does not match the integer convention
+      # is shown as '<corrupt>' rather than the raw string, so
+      # broken metadata is visible without polluting the column.
+      # --list is read-only and tolerant; the writer below catches
+      # the corrupt-input case at backup time and refuses then.
       version='-'
       if [[ -s "${snapshot}/version" ]]; then
         version="$(< "${snapshot}/version")"
+        if ! [[ "${version}" =~ ^[0-9]+$ ]]; then
+          version='<corrupt>'
+        fi
       fi
       time_colons="${t//-/:}"
       snap_epoch=$(date -u -d "${d} ${time_colons} UTC" +%s 2>/dev/null || echo 0)
@@ -316,9 +326,24 @@ cp "${backup_list}" "${partial}/backup.list"
 # silently overwrite the target project's home with the source's.
 printf '%s\n' "${project}" > "${partial}/project"
 
+# Read and validate the base version. Refusing to write an unreadable
+# value into the snapshot keeps the validate-everywhere convention
+# (see commit 4b82a64) consistent across the new producer site.
+# Empty / missing base version is a legitimate "pre-versioning seal"
+# state and is preserved as an empty file in the snapshot, matching
+# how virtdev-restore tolerates and displays it.
 version_file="${VIRTDEV_HOME}/system/version"
 if [[ -f "${version_file}" ]]; then
-  cp "${version_file}" "${partial}/version"
+  base_version="$(< "${version_file}")"
+  if ! [[ "${base_version}" =~ ^[0-9]+$ ]]; then
+    error 12 <<MESSAGE
+Corrupted base version file: '${version_file}'
+Contents: '${base_version}'
+Repair manually: the file must contain a single non-negative integer.
+Refusing to seal a corrupt audit trail into the snapshot.
+MESSAGE
+  fi
+  printf '%s\n' "${base_version}" > "${partial}/version"
 else
   : > "${partial}/version"
 fi
