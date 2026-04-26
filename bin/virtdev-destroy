@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 #
-# virtdev-destroy <project>
+# virtdev-destroy [--yes] <project>
 #
 # Permanently deletes a project virtual machine and all its disk images.
 # The project must not be running.
 #
-# Requires typing the project name to confirm.
+# Requires typing the project name to confirm. The --yes flag skips
+# the prompt; it exists primarily for virtdev-recreate, which drives
+# destroy as one step in the destroy/rebuild chain. Other scripted
+# callers (bulk cleanup loops, pipelines) can use it too.
+#
 # This operation is irreversible.
 #
 
@@ -27,8 +31,18 @@ import error validate lock
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
+yes=0
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --yes) yes=1; shift ;;
+    --)    shift; break ;;
+    -*)    error 1 <<<"unknown flag: ${1}" ;;
+    *)     break ;;
+  esac
+done
+
 if [[ $# -ne 1 ]]; then
-  error 1 <<<'usage: virtdev-destroy <project>'
+  error 1 <<<'usage: virtdev-destroy [--yes] <project>'
 fi
 
 project="${1}"
@@ -73,11 +87,13 @@ if [[ -d "${backups_project_dir}" ]]; then
 fi
 
 printf '\nThis operation is irreversible.\n'
-printf 'Type the project name to confirm: '
-read -r confirmation
 
-if [[ "${confirmation}" != "${project}" ]]; then
-  error 5 <<<"Aborted."
+if (( ! yes )); then
+  printf 'Type the project name to confirm: '
+  read -r confirmation
+  if [[ "${confirmation}" != "${project}" ]]; then
+    error 5 <<<"Aborted."
+  fi
 fi
 
 rm -rf "${project_directory}"
