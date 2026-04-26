@@ -69,23 +69,52 @@ project-a/.env.local
 .config/nvim/
 ```
 
-Snapshot, recreate, restore:
+The full destroy-and-rebuild cycle is one command:
+
+```
+virtdev-recreate myproject             # backup, destroy, rebuild, restore
+```
+
+Recreate chains `backup → stop → destroy → create → start → wait →
+provision → restore`. It prompts once at the top (type the project
+name to confirm), then drives each step. On any failure, recreate
+exits with a step-specific code and prints the manual command to
+resume — the snapshot from step 1 is preserved. For ephemeral
+projects without a `backup.list`, pass `--no-backup`.
+
+The backup and restore primitives are also available standalone:
 
 ```
 virtdev-backup myproject               # snapshot the running VM
 virtdev-backup --list myproject        # see snapshots
-virtdev-stop myproject
-virtdev-destroy myproject              # type project name to confirm
-virtdev-create myproject               # rebuild on current base
-virtdev-start myproject
-virtdev-wait myproject
-virtdev-ssh myproject ./provision.sh   # re-run provisioning
 virtdev-restore myproject              # restore latest snapshot
+virtdev-restore myproject 2026-04-25 14-30-22   # restore a specific one
 ```
 
 Backups live under `${VIRTDEV_HOME}/backups/<project>/<date>/<time>/`
 and are preserved across `virtdev-destroy` but removed by
 `virtdev-nuke`.
+
+### Optional provision script
+
+To make `virtdev-recreate` fully hands-free, drop a bash script at
+`~/.config/virtdev/projects/<project>/provision`. Recreate streams
+it over SSH via `virtdev-ssh <project> bash -s` between the start
+and restore steps, so the fresh VM gets the user's tools, clones,
+dotfile symlinks, etc. installed before the snapshot is overlaid.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+sudo pacman -S --noconfirm --needed neovim ripgrep fd
+git clone https://github.com/me/dotfiles ~/dotfiles
+make -C ~/dotfiles install
+```
+
+The shebang is decorative — recreate runs the script with
+`bash -s` regardless. To use a different language, exec it from a
+one-liner bash launcher. Override the discovered hook for one
+invocation with `virtdev-recreate --provision <path>`.
 
 ## Requirements
 
@@ -171,7 +200,10 @@ virtdev-ssh myproject
 | `virtdev-console <project>` | Attach to the serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is accepting connections |
 | `virtdev-list` | List all projects with port and running status |
-| `virtdev-destroy <project>` | Delete a project VM (requires confirmation) |
+| `virtdev-backup [--list] <project>` | Snapshot user-curated guest paths to a host-side timestamped directory |
+| `virtdev-restore <project> [<date> [<time>]]` | Restore a snapshot into a running project VM |
+| `virtdev-recreate [flags] <project>` | Backup, destroy, recreate, optionally provision, and restore in one command |
+| `virtdev-destroy [--yes] <project>` | Delete a project VM (requires confirmation; `--yes` skips the prompt) |
 | `virtdev-nuke` | Delete all virtdev data (requires confirmation) |
 
 ## Configuration
@@ -297,7 +329,12 @@ with exit code 75 (BSD `EX_TEMPFAIL` — temporary failure, retry possible):
   `virtdev-nuke`
 - Not locking: `virtdev-list`, `virtdev-ssh`, `virtdev-wait`,
   `virtdev-console`, `virtdev-transfer`, `virtdev-key`, `virtdev-iso`,
-  `virtdev-backup`, `virtdev-restore`
+  `virtdev-backup`, `virtdev-restore`, `virtdev-recreate`
+
+`virtdev-recreate` composes the locking primitives — each subcommand
+it spawns acquires the lock as it needs to — and avoids holding a
+top-level lock across the slow rsync transfers. The race-window
+analysis lives in `DESIGN.md`.
 
 The lock file is visible and contains the current holder's PID, so
 `cat ${VIRTDEV_HOME}/lock` during a contention error shows which process
@@ -318,8 +355,9 @@ new base.
 
 After resealing, existing project VMs in delta mode do not inherit changes
 automatically. `virtdev-start` will refuse to boot such a project because its
-recorded base version no longer matches `system/version`. Recreate the
-project with `virtdev-destroy` + `virtdev-create` and re-provision.
+recorded base version no longer matches `system/version`. Run
+`virtdev-recreate <project>` to back up state, rebuild on the new base,
+re-provision, and restore in one command.
 
 ## Provisioning
 
@@ -330,8 +368,14 @@ Project VMs are designed to be expendable. The intended workflow:
 3. `virtdev-ssh <project> ./provision.sh` — install tools, clone repos
 4. Develop
 
-When the VM accumulates unwanted state or the base is updated, destroy and
-recreate. The provision script makes this fast and repeatable.
+When the VM accumulates unwanted state or the base is updated,
+`virtdev-recreate <project>` rebuilds it on the current base and
+restores user-curated state from a backup snapshot. To make recreate
+fully hands-free, drop the provision script at
+`~/.config/virtdev/projects/<project>/provision` — recreate
+auto-discovers it and runs it via `virtdev-ssh <project> bash -s`
+between the start and restore steps. See "Backing up and restoring
+project state" above.
 
 ## Data Layout
 
@@ -359,11 +403,26 @@ ${VIRTDEV_HOME}/                         (~/.local/share/virtdev)
       port                               SSH forwarding port (present while running)
       monitor.sock                       QEMU monitor (while running)
       console.sock                       serial console (while running)
+      backup.list                        optional manifest for virtdev-backup
+                                         (project-local override; XDG fallback below)
+  backups/                               preserved across virtdev-destroy;
+    <project>/                           wiped by virtdev-nuke
+      <YYYY-MM-DD>/
+        <HH-MM-SS>/
+          backup.list                    snapshot of source manifest at backup time
+          version                        base version at backup time
+          tree/                          rsync-preserved user content
 
 ${XDG_CACHE_HOME}/virtdev/               (~/.cache/virtdev)
   virtdev.iso                            built installation ISO
   work/                                  mkarchiso work tree
   profile/                               assembled ISO profile
+
+${XDG_CONFIG_HOME}/virtdev/              (~/.config/virtdev)
+  projects/
+    <name>/
+      backup.list                        canonical backup manifest; survives nuke
+      provision                          optional bash script auto-run by virtdev-recreate
 ```
 
 ## License
