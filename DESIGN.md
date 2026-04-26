@@ -106,6 +106,15 @@ to the backing file inside the delta image. If `VIRTDEV_HOME` is moved or
 renamed after project VMs have been created, all delta images will fail to
 open. Recovery requires `qemu-img rebase` to update the stored paths.
 
+**Note on backing file content:** qcow2 records only a path to the backing
+file, not a checksum, generation counter, or any other integrity seal of its
+content. At open time QEMU resolves the path, reads whatever file is there,
+and serves the composed view. If the file behind the path has been replaced
+between the delta's creation and its next open (the exact thing
+`virtdev-maintain` does), QEMU will not detect it. The version counter
+described under "Base System Maintenance" is virtdev's own integrity seal
+layered on top of qcow2 to close this gap.
+
 ### The Base Image
 
 The base image is produced by `virtdev-install` followed by `virtdev-seal`.
@@ -273,6 +282,17 @@ The installed system runs a hardened `sshd`:
 
 The same `sshd_config` is used in both the live ISO environment and the
 installed system.
+
+Client-side, every host-to-VM SSH invocation (`virtdev-ssh`,
+`virtdev-wait`, `virtdev-maintain`, `virtdev-transfer`,
+`virtdev-backup`, `virtdev-restore`) passes
+`-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`. The
+host key changes on every base reseal and every project recreate, so
+a persistent `known_hosts` entry would produce a host-key-mismatch
+warning on every legitimate operation. The connection is restricted
+to loopback (`-netdev user,hostfwd=tcp:127.0.0.1:<port>-:22`), so the
+man-in-the-middle attacks that `StrictHostKeyChecking` defends
+against do not apply.
 
 ---
 
@@ -481,6 +501,12 @@ bound on the host. Explicit port assignment is supported via
 `virtdev-start <project> <port>`; `virtdev-start` verifies the port is free
 before launching QEMU.
 
+`virtdev-maintain` hardcodes its forwarding port to 2222, the same
+value the auto-assignment loop starts from. This is safe because
+`virtdev-maintain` holds the exclusive virtdev lock and refuses to
+run while any project VM is active, so no project can hold 2222
+during a maintenance session.
+
 ---
 
 ## Command Reference
@@ -614,11 +640,25 @@ there is no silent shadowing when both files exist.
   deltas that were created against the old base content but whose backing file
   path now resolves to the new base. qcow2 does not detect this — QEMU
   silently composes the delta against the new content. The composed filesystem
-  may be inconsistent if the delta contains any writes. **Mitigated:** a
-  version counter written by `virtdev-seal` and incremented by
-  `virtdev-maintain` is recorded at `virtdev-create` time and checked at
+  may be inconsistent if the delta contains any writes: ext4 metadata in
+  the delta (block bitmaps, inode tables, extent trees, journal) references
+  specific sector contents in the base that may have moved or changed during
+  `pacman -Syu`, which can produce dangling references, fsck errors, or in
+  the worst case a kernel panic at mount. The pacman database is a common
+  trigger — if the project VM ever ran `pacman`, its database in the delta
+  will disagree with the package files served from the updated base.
+  **Mitigated:** a version counter written by `virtdev-seal` and incremented
+  by `virtdev-maintain` is recorded at `virtdev-create` time and checked at
   `virtdev-start` time. A mismatch causes a hard refusal with an actionable
-  error message.
+  error message. The refusal is the right default even though it is
+  technically over-broad: a project VM that has never written to its system
+  disk has an empty delta and is functionally equivalent to a fresh
+  `virtdev-create` against the new base, and any sectors the project did
+  write are stored in the delta and returned as-is regardless of what the
+  backing file contains at that offset. The risk is specifically the
+  *intersection* of unmodified-by-project sectors that *did* change in the
+  base — and there is no cheap way to compute that intersection at start
+  time, so the version mismatch is treated as conclusive.
 
 - **System disk rebase after base update.** Project VMs in delta mode do not
   automatically pick up base system updates. The recommended path is destroy
