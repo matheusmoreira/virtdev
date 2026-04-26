@@ -240,8 +240,13 @@ Project VMs are designed to be expendable. The intended workflow is:
 4. Develop
 
 If the VM accumulates unwanted state or needs to pick up a base system update,
-the correct response is `virtdev-destroy <project>` followed by recreation and
-reprovisioning. The provision script makes this fast and repeatable.
+the correct response is `virtdev-recreate <project>`, which orchestrates
+backup → stop → destroy → create → start → wait → provision → restore in one
+command. The provision script lives at
+`~/.config/virtdev/projects/<name>/provision` (or is passed explicitly with
+`virtdev-recreate --provision <path>`) and is invoked via
+`virtdev-ssh <name> bash -s` on the fresh VM. The provision script makes the
+destroy-recreate cycle fast and repeatable.
 
 Dotfiles are not a special case in this model. A symlink farm applied by a
 Makefile in the provision script is the recommended pattern. Intermediate qcow2
@@ -368,7 +373,7 @@ the guard is one line and depends on the script's own state.
 
 - `virtdev-list`, `virtdev-ssh`, `virtdev-wait`, `virtdev-console`
 - `virtdev-transfer`, `virtdev-key`, `virtdev-iso`
-- `virtdev-backup`, `virtdev-restore`
+- `virtdev-backup`, `virtdev-restore`, `virtdev-recreate`
 
 `virtdev-start` is the one special case: it holds the lock until
 `systemctl --user is-active <unit>` returns true for the transient unit,
@@ -398,6 +403,26 @@ and `virtdev-nuke` refuse when the target VM is running, and backup
 requires a running VM — so backup and maintain are mutually exclusive
 without the lock. Concurrent same-project backup at the same second
 is blocked by `mkdir` EEXIST on the per-second partial directory.
+
+`virtdev-recreate` also takes no top-level lock. It composes the
+existing primitives — `virtdev-backup`, `virtdev-stop`,
+`virtdev-destroy --yes`, `virtdev-create`, `virtdev-start`,
+`virtdev-wait`, an optional provision script, and
+`virtdev-restore` — and each subcommand it spawns acquires the
+lock as it needs to. Holding a top-level lock for the chain's
+full duration (potentially many minutes during the rsync transfers)
+would block unrelated operations across all projects for no
+benefit. The cost is small inter-step race windows where another
+virtdev script could squeeze in; the snapshot taken in step 1 is
+the durable artifact across all realistic failures, so a race that
+breaks a later step still leaves the user with recoverable state.
+The one scenario where recreate's no-lock model loses data is
+concurrent `virtdev-nuke`, which wipes everything under
+`${VIRTDEV_HOME}` including `backups/` — a documented "nuke means
+nuke" outcome rather than a recreate bug. `virtdev-destroy`
+exposes a `--yes` flag for recreate and other scripted callers
+(bulk cleanup loops, pipelines); the type-the-name confirmation
+is moved to the recreate top-level so the user is asked once.
 
 ---
 
@@ -479,6 +504,7 @@ before launching QEMU.
 | `virtdev-nuke`     | Delete all virtdev data (requires typing "nuke")             |
 | `virtdev-backup`   | Snapshot user-curated guest-side paths to a host-side timestamped directory |
 | `virtdev-restore`  | Restore a snapshot into a running project VM                |
+| `virtdev-recreate` | Backup, destroy, recreate, optionally provision, and restore in one command |
 
 ---
 
@@ -560,6 +586,13 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
       backup.list       user-curated manifest, dotfile-friendly fallback;
                         used by virtdev-backup when a project-local
                         backup.list is absent. Survives virtdev-nuke.
+      provision         optional bash script run by virtdev-recreate
+                        between start/wait and restore via
+                        `virtdev-ssh <name> bash -s < provision`.
+                        XDG-only (project-local would be wiped by
+                        destroy before provision runs). Survives
+                        virtdev-nuke. Overridable per-invocation
+                        with `virtdev-recreate --provision <path>`.
 ```
 
 `virtdev-backup` consults `projects/<name>/backup.list` under
@@ -603,10 +636,16 @@ there is no silent shadowing when both files exist.
 
 - **Destroy-recreate loses state in delta-mode project VMs.** After
   `virtdev-maintain` reseals the base, delta-mode project VMs must be
-  destroyed and recreated to absorb the update. Home-disk state that is
-  not reproduced by a user-supplied provision script can be preserved
-  across this cycle via `virtdev-backup` (before destroy) and
-  `virtdev-restore` (after create). The two primitives consult a
-  per-project `projects/<name>/backup.list` manifest. A `virtdev-recreate`
-  wrapper that chains `backup + stop + destroy + create + start + provision
-  + restore` into a single command is planned but not yet implemented.
+  destroyed and recreated to absorb the update. Home-disk state that
+  is not reproduced by a user-supplied provision script is preserved
+  across this cycle by `virtdev-recreate`, which chains
+  `backup + stop + destroy + create + start + wait + provision +
+  restore` into a single command. The chain consults a per-project
+  `backup.list` (project-local first, XDG config fallback) for
+  what to back up, and an optional XDG provision script
+  (`~/.config/virtdev/projects/<name>/provision`, overridable with
+  `--provision <path>`) for what to re-install. Each chain step is
+  fail-fast with a step-specific recovery hint; the snapshot from
+  step 1 is preserved across all failures except concurrent
+  `virtdev-nuke`. Ephemeral projects without a backup.list opt
+  out via `virtdev-recreate --no-backup`.
