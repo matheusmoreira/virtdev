@@ -1,0 +1,459 @@
+#!/usr/bin/env bash
+#
+# virtdev-recreate [--provision <path>] [--no-backup] [--no-restore]
+#                  [--no-provision] [--yes] [--verbose] <project>
+#
+# Takes a project virtual machine through the destroy/rebuild cycle
+# without losing user-curated state. Composes the existing virtdev
+# primitives into a single operation gated by one type-the-name
+# confirmation prompt.
+#
+# The chain (with all defaults):
+#
+#     1. virtdev-backup        snapshot home-disk state to backups/
+#     2. virtdev-stop          ACPI shutdown
+#     3. virtdev-destroy --yes wipe project disks
+#     4. virtdev-create        rebuild on the current sealed base
+#     5. virtdev-start         boot the fresh VM
+#     6. virtdev-wait          wait for SSH to come up
+#     7. provision             optional: bash -s the provision script
+#     8. virtdev-restore       overlay the snapshot from step 1
+#
+# Provision discovery (resolves a script path or skips):
+#
+#     1. --no-provision        kill switch wins
+#     2. --provision <path>    explicit path; precondition-checked
+#     3. ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<name>/provision
+#     4. otherwise: no provision step
+#
+# Provision execution: virtdev-ssh <project> bash -s < <path>. The
+# script is interpreted as bash (the shebang is ignored). Working
+# directory is the dev user's /home/dev/. Wrap other interpreters
+# from a one-line bash launcher.
+#
+# Lock model: recreate does NOT take the virtdev lock at the top
+# level. Each subcommand takes the lock as needed (stop, destroy,
+# create, start). Backup, restore, wait, and provision do not. This
+# avoids holding the lock across the slow rsync transfers in backup
+# and restore. The narrow inter-step race windows are documented in
+# DESIGN.md; the snapshot is the durable artifact across all
+# realistic failures.
+#
+# Failure semantics: fail-fast at any non-zero subcommand exit. The
+# exit code identifies which step failed (20 backup, 21 stop, 22
+# destroy, 23 create, 24 start, 25 wait, 26 provision, 27 restore);
+# the message names the recovery command for that boundary.
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME    Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#
+
+set -euo pipefail
+
+virtdev_bin_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+virtdev_library_directory="${virtdev_bin_directory}/../lib/virtdev"
+declare -A virtdev_loaded_libraries=()
+import() {
+  local f
+  for f in "$@"; do
+    [[ -v virtdev_loaded_libraries[$f] ]] && continue
+    virtdev_loaded_libraries[$f]=1
+    # shellcheck disable=SC1090
+    source -p "${virtdev_library_directory}" "${f}"
+  done
+}
+
+import error validate
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
+
+provision_flag=""
+no_backup=0
+no_restore=0
+no_provision=0
+yes=0
+verbose=0
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    --provision)
+      if [[ $# -lt 2 ]]; then
+        error 1 <<<'--provision requires a path argument'
+      fi
+      provision_flag="${2}"
+      shift 2
+      ;;
+    --no-backup)    no_backup=1;    shift ;;
+    --no-restore)   no_restore=1;   shift ;;
+    --no-provision) no_provision=1; shift ;;
+    --yes)          yes=1;          shift ;;
+    --verbose)      verbose=1;      shift ;;
+    --)             shift; break ;;
+    -*)             error 1 <<<"unknown flag: ${1}" ;;
+    *)              break ;;
+  esac
+done
+
+if [[ $# -ne 1 ]]; then
+  error 1 <<<'usage: virtdev-recreate [--provision <path>] [--no-backup] [--no-restore] [--no-provision] [--yes] [--verbose] <project>'
+fi
+
+project="${1}"
+
+validate_project_name "${project}"
+
+unit="virtdev-${project}"
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+# Capture VM state once. Used for both the precondition check (which
+# requires it active unless --no-backup) and the do_stop decision
+# (skip stop when the VM is already down).
+unit_active=0
+if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+  unit_active=1
+fi
+
+# backup.list resolution mirrors virtdev-backup's lookup: project-local
+# first, XDG config second. Only consulted when backup is going to run.
+backup_list_project="${project_directory}/backup.list"
+backup_list_xdg="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
+
+if (( ! no_backup )); then
+  if (( ! unit_active )); then
+    error 4 <<MESSAGE
+Virtual machine is not running: ${project}
+Recreate must take a backup first, which requires SSH into the VM.
+Either start it with:    virtdev-start ${project}
+Or skip the backup with: virtdev-recreate --no-backup ${project}
+MESSAGE
+  fi
+
+  if [[ -f "${backup_list_project}" ]]; then
+    backup_list_path="${backup_list_project}"
+  elif [[ -f "${backup_list_xdg}" ]]; then
+    backup_list_path="${backup_list_xdg}"
+  else
+    error 8 <<MESSAGE
+Backup manifest not found at either of:
+    ${backup_list_project}
+    ${backup_list_xdg}
+Create one with paths to back up (one per line; '#' comments allowed).
+Or skip the backup with: virtdev-recreate --no-backup ${project}
+MESSAGE
+  fi
+
+  if ! grep -Eq '^\s*[^#[:space:]]' "${backup_list_path}"; then
+    error 8 <<MESSAGE
+Backup manifest is empty (no non-blank, non-comment lines):
+    ${backup_list_path}
+Add at least one path. Or skip the backup with:
+    virtdev-recreate --no-backup ${project}
+MESSAGE
+  fi
+fi
+
+# Provision resolution. The kill switch wins; the flag wins over the
+# hook; the hook wins over nothing. Echoed to stderr at execution time
+# so the user can spot which path actually ran.
+provision_path=""
+if (( ! no_provision )); then
+  if [[ -n "${provision_flag}" ]]; then
+    if [[ ! -f "${provision_flag}" || ! -r "${provision_flag}" ]]; then
+      error 12 <<MESSAGE
+Provision script not found or not readable: ${provision_flag}
+MESSAGE
+    fi
+    provision_path="${provision_flag}"
+  else
+    provision_hook="${XDG_CONFIG_HOME}/virtdev/projects/${project}/provision"
+    if [[ -f "${provision_hook}" && -r "${provision_hook}" ]]; then
+      provision_path="${provision_hook}"
+    fi
+  fi
+fi
+
+# Snapshot inventory: needed for the "skip restore when --no-backup
+# and no prior snapshots" rule, and for the latest-snapshot reference
+# in restore-failure recovery hints.
+has_snapshots=0
+if [[ -d "${backups_project_dir}" ]]; then
+  if find "${backups_project_dir}" -mindepth 2 -maxdepth 2 -type d \
+       -regextype posix-extended \
+       -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
+       2>/dev/null \
+       | head -n1 \
+       | grep -q .; then
+    has_snapshots=1
+  fi
+fi
+
+# Decide which steps will actually run. Computed up front so the plan
+# print is accurate and the chain executes without re-deriving.
+do_backup=$((    ! no_backup ))
+do_stop=$((      unit_active ))
+do_provision=0
+[[ -n "${provision_path}" ]] && do_provision=1
+do_restore=$((   ! no_restore ))
+
+# Restore needs something to restore from. If we are taking a backup
+# this run, that supplies it. If we are not (--no-backup), fall back
+# to any prior snapshot; if there are none, skip restore.
+restore_skip_reason=""
+if (( do_restore )); then
+  if (( ! do_backup )) && (( ! has_snapshots )); then
+    do_restore=0
+    restore_skip_reason="no prior snapshots"
+  fi
+fi
+
+# Plan print. Numbered list of every step in the chain, with skipped
+# steps annotated. The user reads this immediately before being asked
+# to type the project name to confirm.
+{
+  printf '\n'
+  printf 'Plan for recreate of %s:\n' "${project}"
+  step=1
+  if (( do_backup )); then
+    printf '  %d. backup\n' "${step}"
+  else
+    printf '  %d. backup        (skipped: --no-backup)\n' "${step}"
+  fi
+  ((step++))
+  if (( do_stop )); then
+    printf '  %d. stop\n' "${step}"
+  else
+    printf '  %d. stop          (skipped: VM already stopped)\n' "${step}"
+  fi
+  ((step++))
+  printf '  %d. destroy --yes\n' "${step}"; ((step++))
+  printf '  %d. create\n'        "${step}"; ((step++))
+  printf '  %d. start\n'         "${step}"; ((step++))
+  printf '  %d. wait\n'          "${step}"; ((step++))
+  if (( do_provision )); then
+    printf '  %d. provision     %s\n' "${step}" "${provision_path}"
+  elif (( no_provision )); then
+    printf '  %d. provision     (skipped: --no-provision)\n' "${step}"
+  else
+    printf '  %d. provision     (skipped: no script found)\n' "${step}"
+  fi
+  ((step++))
+  if (( do_restore )); then
+    if (( do_backup )); then
+      printf '  %d. restore       (latest snapshot taken in step 1)\n' "${step}"
+    else
+      printf '  %d. restore       (latest existing snapshot)\n' "${step}"
+    fi
+  elif (( no_restore )); then
+    printf '  %d. restore       (skipped: --no-restore)\n' "${step}"
+  else
+    printf '  %d. restore       (skipped: %s)\n' "${step}" "${restore_skip_reason}"
+  fi
+  printf '\n'
+  printf 'This is irreversible.\n'
+} >&2
+
+if (( ! yes )); then
+  printf 'Type the project name to confirm: ' >&2
+  read -r confirmation
+  if [[ "${confirmation}" != "${project}" ]]; then
+    error 13 <<<'Aborted.'
+  fi
+fi
+
+# Subcommand invocation goes through the resolved bin directory so the
+# dev tree and the pacman-installed package both work without relying
+# on PATH ordering (a user with both installed could otherwise mix
+# versions inside a single recreate run).
+backup() {
+  local opts=()
+  (( verbose )) && opts+=(--verbose)
+  "${virtdev_bin_directory}/virtdev-backup" "${opts[@]}" "${project}"
+}
+
+stop() {
+  "${virtdev_bin_directory}/virtdev-stop" "${project}"
+}
+
+destroy() {
+  "${virtdev_bin_directory}/virtdev-destroy" --yes "${project}"
+}
+
+create() {
+  "${virtdev_bin_directory}/virtdev-create" "${project}"
+}
+
+start() {
+  "${virtdev_bin_directory}/virtdev-start" "${project}"
+}
+
+wait_ssh() {
+  "${virtdev_bin_directory}/virtdev-wait" "${project}"
+}
+
+provision() {
+  "${virtdev_bin_directory}/virtdev-ssh" "${project}" bash -s < "${provision_path}"
+}
+
+restore() {
+  local opts=()
+  (( verbose )) && opts+=(--verbose)
+  "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" "${project}"
+}
+
+# Helper to point the user at the most recent snapshot in failure
+# messages. Returns the snapshot's <date>/<time> path component, or
+# the empty string if none exists.
+latest_snapshot() {
+  if [[ ! -d "${backups_project_dir}" ]]; then
+    return 0
+  fi
+  find "${backups_project_dir}" -mindepth 2 -maxdepth 2 -type d \
+       -regextype posix-extended \
+       -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
+       2>/dev/null \
+       | sort \
+       | tail -n1 \
+       | sed -E "s|^${backups_project_dir}/||"
+}
+
+# Chain execution. Each step prints its banner first so the user can
+# see where they are in the plan; on failure the matching error block
+# tells them what state the project is in now and which command to
+# run by hand to resume.
+if (( do_backup )); then
+  printf '\n[1/8] backup\n' >&2
+  if ! backup; then
+    error 20 <<MESSAGE
+backup failed (virtdev-backup exited non-zero).
+Project ${project} is unchanged. Investigate the rsync output above
+and rerun:
+    virtdev-recreate ${project}
+MESSAGE
+  fi
+fi
+
+if (( do_stop )); then
+  printf '\n[2/8] stop\n' >&2
+  if ! stop; then
+    snap="$(latest_snapshot)"
+    snap_hint=""
+    [[ -n "${snap}" ]] && snap_hint="
+Snapshot from this run: ${backups_project_dir}/${snap}/"
+    error 21 <<MESSAGE
+stop failed (virtdev-stop exited non-zero).
+The VM may be in an indeterminate state. Inspect with:
+    systemctl --user status ${unit}
+Stop it manually, then rerun with --no-backup (the snapshot is
+already on disk):
+    virtdev-stop ${project}
+    virtdev-recreate --no-backup ${project}${snap_hint}
+MESSAGE
+  fi
+fi
+
+printf '\n[3/8] destroy\n' >&2
+if ! destroy; then
+  snap="$(latest_snapshot)"
+  snap_hint=""
+  [[ -n "${snap}" ]] && snap_hint="
+Snapshot is preserved at: ${backups_project_dir}/${snap}/"
+  error 22 <<MESSAGE
+destroy failed (virtdev-destroy exited non-zero).
+The project still exists. Inspect, fix, and rerun with --no-backup:
+    virtdev-recreate --no-backup ${project}${snap_hint}
+MESSAGE
+fi
+
+printf '\n[4/8] create\n' >&2
+if ! create; then
+  snap="$(latest_snapshot)"
+  snap_hint=""
+  [[ -n "${snap}" ]] && snap_hint="
+Snapshot is preserved at: ${backups_project_dir}/${snap}/"
+  error 23 <<MESSAGE
+create failed (virtdev-create exited non-zero).
+Project directory was destroyed but the new one was not built.
+Investigate, then rerun with --no-backup:
+    virtdev-recreate --no-backup ${project}${snap_hint}
+MESSAGE
+fi
+
+printf '\n[5/8] start\n' >&2
+if ! start; then
+  snap="$(latest_snapshot)"
+  snap_hint=""
+  [[ -n "${snap}" ]] && snap_hint="
+Snapshot path: ${backups_project_dir}/${snap}/"
+  error 24 <<MESSAGE
+start failed (virtdev-start exited non-zero).
+A fresh project exists for ${project} but is not running.
+Resume manually:
+    virtdev-start ${project}
+    virtdev-wait ${project}
+    virtdev-restore ${project}${snap_hint}
+MESSAGE
+fi
+
+printf '\n[6/8] wait\n' >&2
+if ! wait_ssh; then
+  snap="$(latest_snapshot)"
+  snap_hint=""
+  [[ -n "${snap}" ]] && snap_hint="
+Snapshot path: ${backups_project_dir}/${snap}/"
+  error 25 <<MESSAGE
+wait failed (virtdev-wait exited non-zero).
+The fresh VM is up at the systemd level but SSH did not come up
+within the timeout. Inspect with:
+    journalctl --user -u ${unit}
+Once SSH is up, restore manually:
+    virtdev-restore ${project}${snap_hint}
+MESSAGE
+fi
+
+if (( do_provision )); then
+  printf '\n[7/8] provision %s\n' "${provision_path}" >&2
+  if ! provision; then
+    snap="$(latest_snapshot)"
+    snap_hint=""
+    [[ -n "${snap}" ]] && snap_hint="
+Snapshot path: ${backups_project_dir}/${snap}/"
+    error 26 <<MESSAGE
+provision failed (script exited non-zero): ${provision_path}
+The fresh VM is up; the guest is in whatever state the script left it.
+Inspect, fix the script, and either re-run it manually:
+    virtdev-ssh ${project} bash -s < ${provision_path}
+Or finish the chain by hand:
+    virtdev-restore ${project}${snap_hint}
+MESSAGE
+  fi
+fi
+
+if (( do_restore )); then
+  printf '\n[8/8] restore\n' >&2
+  if ! restore; then
+    snap="$(latest_snapshot)"
+    snap_hint=""
+    [[ -n "${snap}" ]] && snap_hint="
+Latest snapshot: ${backups_project_dir}/${snap}/
+Retry with explicit date/time:
+    virtdev-restore ${project} ${snap%%/*} ${snap##*/}"
+    error 27 <<MESSAGE
+restore failed (virtdev-restore exited non-zero).
+The fresh VM is up and provisioned but the snapshot was not
+applied.${snap_hint}
+MESSAGE
+  fi
+fi
+
+printf '\n'
+if (( do_restore )); then
+  printf 'Project recreated: %s\n' "${project}"
+else
+  printf 'Project recreated: %s (restore skipped)\n' "${project}"
+fi
