@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# arguments library: declarative flag parser.
+# Public:
+#   arguments_parse <spec_name> <flags_name> <positional_name> "$@"
+# Exit codes:
+#   64  usage error (unknown flag, missing value, missing required,
+#       bool with value, invalid spec type tag)
+#
+# Spec format (assoc array, key = flag name without leading --):
+#   bool      Flag takes no value; presence sets to 1, absence to 0.
+#   value     Flag takes one value; absence leaves "".
+#   required  Same as value, plus post-parse error if not given.
+#
+# Result format:
+#   flags        assoc array, populated with parsed values
+#   positional   indexed array, every non-flag arg + everything after
+#                a -- terminator
+#
+# The library prepends -- when matching against argv. Spec keys keep
+# hyphens verbatim. Caller may pre-set flags[<key>] before calling to
+# override the default; pre-set required keys are exempt from the
+# missing-value check.
+#
+# --flag=value form is supported for value/required types. -- is the
+# end-of-flags terminator. -* (single-dash) and unknown long flags
+# error 64.
+#
+set -euo pipefail
+import error
+
+readonly arguments_usage_exit_code=64
+
+arguments_parse() {
+  local -n _arguments_spec="${1}"
+  local -n _arguments_flags="${2}"
+  local -n _arguments_positional="${3}"
+  shift 3
+
+  local key type
+  for key in "${!_arguments_spec[@]}"; do
+    type="${_arguments_spec[$key]}"
+    case "${type}" in
+      bool|value|required) ;;
+      *)
+        error "${arguments_usage_exit_code}" \
+          <<<"invalid argument type for --${key}: ${type}"
+        ;;
+    esac
+  done
+
+  for key in "${!_arguments_spec[@]}"; do
+    [[ -v _arguments_flags[$key] ]] && continue
+    case "${_arguments_spec[$key]}" in
+      bool)  _arguments_flags["${key}"]=0 ;;
+      value) _arguments_flags["${key}"]="" ;;
+      required) ;;
+    esac
+  done
+
+  local arg flag_name flag_value
+  while (( $# > 0 )); do
+    arg="${1}"
+    case "${arg}" in
+      --)
+        shift
+        _arguments_positional+=("$@")
+        return 0
+        ;;
+      --*=*)
+        flag_name="${arg%%=*}"
+        flag_name="${flag_name#--}"
+        flag_value="${arg#*=}"
+        if [[ ! -v _arguments_spec[$flag_name] ]]; then
+          error "${arguments_usage_exit_code}" \
+            <<<"unknown flag: --${flag_name}"
+        fi
+        if [[ "${_arguments_spec[$flag_name]}" == "bool" ]]; then
+          error "${arguments_usage_exit_code}" \
+            <<<"--${flag_name} does not take a value"
+        fi
+        _arguments_flags["${flag_name}"]="${flag_value}"
+        shift
+        ;;
+      --*)
+        flag_name="${arg#--}"
+        if [[ ! -v _arguments_spec[$flag_name] ]]; then
+          error "${arguments_usage_exit_code}" \
+            <<<"unknown flag: --${flag_name}"
+        fi
+        case "${_arguments_spec[$flag_name]}" in
+          bool)
+            _arguments_flags["${flag_name}"]=1
+            shift
+            ;;
+          value|required)
+            if (( $# < 2 )) || [[ "${2}" == "--" ]]; then
+              error "${arguments_usage_exit_code}" \
+                <<<"--${flag_name} requires a value"
+            fi
+            _arguments_flags["${flag_name}"]="${2}"
+            shift 2
+            ;;
+        esac
+        ;;
+      -*)
+        error "${arguments_usage_exit_code}" \
+          <<<"unknown flag: ${arg}"
+        ;;
+      *)
+        _arguments_positional+=("$@")
+        return 0
+        ;;
+    esac
+  done
+
+  local -a missing=()
+  for key in "${!_arguments_spec[@]}"; do
+    if [[ "${_arguments_spec[$key]}" == "required" ]] \
+       && [[ ! -v _arguments_flags[$key] ]]; then
+      missing+=("--${key}")
+    fi
+  done
+  if (( ${#missing[@]} > 0 )); then
+    error "${arguments_usage_exit_code}" \
+      <<<"missing required flag(s): ${missing[*]}"
+  fi
+}
