@@ -72,7 +72,7 @@ import() {
   done
 }
 
-import error validate
+import error validate arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -80,20 +80,15 @@ import error validate
 
 umask 077
 
-verbose=0
-list=0
-while [[ $# -gt 0 ]]; do
-  case "${1}" in
-    --verbose) verbose=1; shift ;;
-    --list)    list=1;    shift ;;
-    --)        shift; break ;;
-    -*)        error 1 <<<"unknown flag: ${1}" ;;
-    *)         break ;;
-  esac
-done
+# shellcheck disable=SC2034  # spec is read via nameref by arguments_parse
+declare -A spec=([verbose]=bool [list]=bool)
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
 
 if [[ $# -ne 1 ]]; then
-  if (( list )); then
+  if (( flags[list] )); then
     error 1 <<<'usage: virtdev-backup --list <project>'
   else
     error 1 <<<'usage: virtdev-backup [--verbose] <project>'
@@ -111,7 +106,7 @@ if [[ ! -d "${project_directory}" ]]; then
 fi
 
 # List mode stops here; it lists past snapshots regardless of VM state.
-if (( list )); then
+if (( flags[list] )); then
   backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
   if [[ ! -d "${backups_project_dir}" ]]; then
     printf 'No snapshots.\n'
@@ -362,7 +357,7 @@ printf -v ssh_command \
     "${VIRTDEV_SSH_KEY}" "${port}"
 
 rsync_opts=(-a --no-D --ignore-missing-args --stats)
-(( verbose )) && rsync_opts+=(--info=progress2)
+(( flags[verbose] )) && rsync_opts+=(--info=progress2)
 
 rsync_log="$(mktemp)"
 
