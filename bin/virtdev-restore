@@ -48,22 +48,19 @@ import() {
   done
 }
 
-import error validate
+import error validate arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 
 umask 077
 
-verbose=0
-while [[ $# -gt 0 ]]; do
-  case "${1}" in
-    --verbose) verbose=1; shift ;;
-    --)        shift; break ;;
-    -*)        error 1 <<<"unknown flag: ${1}" ;;
-    *)         break ;;
-  esac
-done
+# shellcheck disable=SC2034  # spec is read via nameref by arguments_parse
+declare -A spec=([verbose]=bool)
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
 
 if [[ $# -lt 1 || $# -gt 3 ]]; then
   error 1 <<<'usage: virtdev-restore [--verbose] <project> [<date> [<time>]]'
@@ -265,7 +262,7 @@ printf -v ssh_command \
     "${VIRTDEV_SSH_KEY}" "${port}"
 
 rsync_opts=(-a --no-D --ignore-missing-args --stats)
-(( verbose )) && rsync_opts+=(--info=progress2)
+(( flags[verbose] )) && rsync_opts+=(--info=progress2)
 
 rsync_log="$(mktemp)"
 trap 'rm -f "${rsync_log}"' EXIT
