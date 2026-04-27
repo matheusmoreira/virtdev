@@ -27,19 +27,16 @@ import() {
   done
 }
 
-import error validate lock
+import error validate lock arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
-yes=0
-while [[ $# -gt 0 ]]; do
-  case "${1}" in
-    --yes) yes=1; shift ;;
-    --)    shift; break ;;
-    -*)    error 1 <<<"unknown flag: ${1}" ;;
-    *)     break ;;
-  esac
-done
+# shellcheck disable=SC2034  # spec is read via nameref by arguments_parse
+declare -A spec=([yes]=bool)
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
 
 if [[ $# -ne 1 ]]; then
   error 1 <<<'usage: virtdev-destroy [--yes] <project>'
@@ -88,7 +85,7 @@ fi
 
 printf '\nThis operation is irreversible.\n'
 
-if (( ! yes )); then
+if (( ! flags[yes] )); then
   printf 'Type the project name to confirm: '
   read -r confirmation
   if [[ "${confirmation}" != "${project}" ]]; then
