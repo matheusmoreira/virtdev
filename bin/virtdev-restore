@@ -63,7 +63,7 @@ arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
 
 if [[ $# -lt 1 || $# -gt 3 ]]; then
-  error 1 <<<'usage: virtdev-restore [--verbose] <project> [<date> [<time>]]'
+  error 64 <<<'usage: virtdev-restore [--verbose] <project> [<date> [<time>]]'
 fi
 
 project="${1}"

@@ -52,7 +52,7 @@ import error lock
 : "${OVMF_VARS:="/usr/share/edk2/x64/OVMF_VARS.4m.fd"}"
 
 if [[ $# -gt 1 ]]; then
-  error 1 <<<'usage: virtdev-install [iso]'
+  error 64 <<<'usage: virtdev-install [iso]'
 fi
 
 if [[ $# -eq 1 ]]; then
@@ -62,21 +62,21 @@ fi
 lock_acquire
 
 if [[ ! -f "${VIRTDEV_ISO}" ]]; then
-  error 2 <<<"ISO not found: '${VIRTDEV_ISO}'"
+  error 3 <<<"ISO not found: '${VIRTDEV_ISO}'"
 fi
 
 if [[ ! -f "${OVMF_CODE}" ]]; then
-  error 3 <<<"OVMF_CODE not found: '${OVMF_CODE}'"
+  error 4 <<<"OVMF_CODE not found: '${OVMF_CODE}'"
 fi
 
 if [[ ! -f "${OVMF_VARS}" ]]; then
-  error 4 <<<"OVMF_VARS not found: '${OVMF_VARS}'"
+  error 5 <<<"OVMF_VARS not found: '${OVMF_VARS}'"
 fi
 
 installation_directory="${VIRTDEV_HOME}"/installation
 
 if [[ -d "${installation_directory}" ]]; then
-  error 5 <<MESSAGE
+  error 6 <<MESSAGE
 Installation directory already exists: '${installation_directory}'
 Use virtdev-seal to seal the installation, or remove it manually to reinstall.
 MESSAGE
@@ -85,7 +85,7 @@ fi
 system_directory="${VIRTDEV_HOME}"/system
 
 if [[ -d "${system_directory}" ]]; then
-  error 6 <<MESSAGE
+  error 7 <<MESSAGE
 Sealed base system images already present: '${system_directory}'
 Remove the system directory manually to reinstall.
 MESSAGE

@@ -33,7 +33,7 @@ import error lock
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
 if [[ $# -ne 0 ]]; then
-  error 1 <<<'usage: virtdev-seal'
+  error 64 <<<'usage: virtdev-seal'
 fi
 
 lock_acquire
@@ -42,11 +42,11 @@ installation_directory="${VIRTDEV_HOME}/installation"
 system_directory="${VIRTDEV_HOME}/system"
 
 if [[ ! -d "${installation_directory}" ]]; then
-  error 2 <<<"Installation directory not found: '${installation_directory}'"
+  error 3 <<<"Installation directory not found: '${installation_directory}'"
 fi
 
 if [[ -d "${system_directory}" ]]; then
-  error 3 <<MESSAGE
+  error 4 <<MESSAGE
 Sealed base system images already present: '${system_directory}'
 Remove the system directory manually to reseal.
 MESSAGE
@@ -58,16 +58,16 @@ nvram="${installation_directory}/nvram"
 
 for f in "${system_disk}" "${home_disk}" "${nvram}"; do
   if [[ ! -f "${f}" ]]; then
-    error 4 <<<"Installation file not found: '${f}'"
+    error 5 <<<"Installation file not found: '${f}'"
   fi
 done
 
 printf 'Checking image integrity...\n'
 if ! qemu-img check -q "${system_disk}"; then
-  error 5 <<<"System disk image integrity check failed: '${system_disk}'"
+  error 6 <<<"System disk image integrity check failed: '${system_disk}'"
 fi
 if ! qemu-img check -q "${home_disk}"; then
-  error 6 <<<"Home disk image integrity check failed: '${home_disk}'"
+  error 7 <<<"Home disk image integrity check failed: '${home_disk}'"
 fi
 
 mkdir -p "${system_directory}"

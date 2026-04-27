@@ -89,9 +89,9 @@ set -- "${positional[@]}"
 
 if [[ $# -ne 1 ]]; then
   if (( flags[list] )); then
-    error 1 <<<'usage: virtdev-backup --list <project>'
+    error 64 <<<'usage: virtdev-backup --list <project>'
   else
-    error 1 <<<'usage: virtdev-backup [--verbose] <project>'
+    error 64 <<<'usage: virtdev-backup [--verbose] <project>'
   fi
 fi
 

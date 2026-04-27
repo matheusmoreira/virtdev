@@ -50,7 +50,7 @@ import error validate
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 
 if [[ $# -ne 3 ]]; then
-  error 1 <<<'usage: virtdev-transfer <project> <src> <dest>'
+  error 64 <<<'usage: virtdev-transfer <project> <src> <dest>'
 fi
 
 project="${1}"

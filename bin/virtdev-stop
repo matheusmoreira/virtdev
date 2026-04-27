@@ -35,7 +35,7 @@ import error validate lock
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
 
 if [[ $# -ne 1 ]]; then
-  error 1 <<<'usage: virtdev-stop <project>'
+  error 64 <<<'usage: virtdev-stop <project>'
 fi
 
 project="${1}"

@@ -38,7 +38,7 @@ import error validate
 : "${VIRTDEV_WAIT_TIMEOUT:=120}"
 
 if [[ $# -ne 1 ]]; then
-  error 1 <<<'usage: virtdev-wait <project>'
+  error 64 <<<'usage: virtdev-wait <project>'
 fi
 
 project="${1}"

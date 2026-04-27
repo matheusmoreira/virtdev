@@ -32,7 +32,7 @@ import error validate
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
 if [[ $# -ne 1 ]]; then
-  error 1 <<<'usage: virtdev-console <project>'
+  error 64 <<<'usage: virtdev-console <project>'
 fi
 
 project="${1}"

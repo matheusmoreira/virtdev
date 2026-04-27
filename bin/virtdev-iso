@@ -43,7 +43,7 @@ import error
 : "${VIRTDEV_TIMEZONE:="UTC"}"
 
 if [[ $# -ne 0 ]]; then
-  error 1 <<<'usage: virtdev-iso'
+  error 64 <<<'usage: virtdev-iso'
 fi
 
 #
@@ -62,19 +62,19 @@ else
 fi
 
 if [[ ! -f "${iso_profile}/profiledef.sh" ]]; then
-  error 2 <<<"ISO profile not found: '${iso_profile}'"
+  error 3 <<<"ISO profile not found: '${iso_profile}'"
 fi
 
 if ! command -v mkarchiso &>/dev/null; then
-  error 3 <<<'mkarchiso not found, install archiso'
+  error 4 <<<'mkarchiso not found, install archiso'
 fi
 
 if ! command -v jq &>/dev/null; then
-  error 4 <<<'jq not found, install jq'
+  error 5 <<<'jq not found, install jq'
 fi
 
 if [[ ! -f "${VIRTDEV_SSH_KEY}.pub" ]]; then
-  error 5 <<MESSAGE
+  error 6 <<MESSAGE
 SSH public key not found: '${VIRTDEV_SSH_KEY}.pub'
 Generate it with virtdev-key.
 MESSAGE
@@ -83,7 +83,7 @@ fi
 profile=/usr/share/archiso/configs/releng
 
 if [[ ! -d "${profile}" ]]; then
-  error 6 <<<"archiso releng profile not found: '${profile}'"
+  error 7 <<<"archiso releng profile not found: '${profile}'"
 fi
 
 public_key="$(< "${VIRTDEV_SSH_KEY}.pub")"
@@ -121,11 +121,11 @@ sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_dir
 mapfile -t built_isos < <(find "${output_directory}" -maxdepth 1 -name '*-x86_64.iso')
 
 if [[ ${#built_isos[@]} -eq 0 ]]; then
-  error 7 <<<"Failed to create installation media in '${output_directory}'"
+  error 8 <<<"Failed to create installation media in '${output_directory}'"
 fi
 
 if [[ ${#built_isos[@]} -gt 1 ]]; then
-  error 8 <<<"Multiple ISOs found in '${output_directory}'"
+  error 9 <<<"Multiple ISOs found in '${output_directory}'"
 fi
 
 iso="${output_directory}/virtdev.iso"

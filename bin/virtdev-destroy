@@ -39,7 +39,7 @@ arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
 
 if [[ $# -ne 1 ]]; then
-  error 1 <<<'usage: virtdev-destroy [--yes] <project>'
+  error 64 <<<'usage: virtdev-destroy [--yes] <project>'
 fi
 
 project="${1}"

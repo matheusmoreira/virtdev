@@ -95,7 +95,7 @@ readonly maintenance_port=2222
 readonly unit=virtdev-maintenance
 
 if [[ $# -ne 0 ]]; then
-  error 1 <<<'usage: virtdev-maintain'
+  error 64 <<<'usage: virtdev-maintain'
 fi
 
 # Held for the entire maintenance session, which may last hours while
@@ -149,7 +149,7 @@ if [[ -d "${trash_directory}" ]]; then
 fi
 
 if [[ ! -d "${system_directory}" ]]; then
-  error 2 <<MESSAGE
+  error 3 <<MESSAGE
 Sealed base system not found: '${system_directory}'
 Create it with virtdev-iso, virtdev-install and virtdev-seal.
 MESSAGE
@@ -157,12 +157,12 @@ fi
 
 for file in system.qcow2 home.qcow2 nvram; do
   if [[ ! -f "${system_directory}/${file}" ]]; then
-    error 3 <<<"Base system image missing: '${system_directory}/${file}'"
+    error 4 <<<"Base system image missing: '${system_directory}/${file}'"
   fi
 done
 
 if [[ -d "${maintenance_directory}" ]]; then
-  error 4 <<MESSAGE
+  error 5 <<MESSAGE
 Maintenance staging directory already exists: '${maintenance_directory}'
 A previous virtdev-maintain session may have failed or been interrupted.
 Inspect the directory and remove it manually to proceed:
@@ -174,11 +174,11 @@ MESSAGE
 fi
 
 if [[ ! -f "${OVMF_CODE}" ]]; then
-  error 5 <<<"Firmware not found: '${OVMF_CODE}'"
+  error 6 <<<"Firmware not found: '${OVMF_CODE}'"
 fi
 
 if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
-  error 6 <<MESSAGE
+  error 7 <<MESSAGE
 SSH key not found: '${VIRTDEV_SSH_KEY}'
 Generate it with virtdev-key then recreate and reinstall base system image.
 MESSAGE
@@ -194,7 +194,7 @@ fi
 # staging directory already exists" check should not then be told
 # to stop nonexistent project VMs.
 if systemctl --user --quiet is-active virtdev-maintenance 2>/dev/null; then
-  error 7 <<MESSAGE
+  error 8 <<MESSAGE
 Orphaned maintenance virtual machine is running (virtdev-maintenance).
 A previous virtdev-maintain session was likely interrupted before it
 could stop the virtual machine. Terminate it, then retry:
@@ -209,7 +209,7 @@ fi
 # Replacing it while a project virtual machine is running would corrupt it.
 if systemctl --user list-units --state=active --no-legend 'virtdev-*.service' \
        2>/dev/null | grep -q .; then
-  error 7 <<MESSAGE
+  error 8 <<MESSAGE
 One or more project virtual machines are running.
 Stop all project virtual machines before running virtdev-maintain:
 
@@ -219,7 +219,7 @@ MESSAGE
 fi
 
 if [[ -n "$(ss -tlnH "sport = :${maintenance_port}" 2>/dev/null)" ]]; then
-  error 8 <<<"Port ${maintenance_port} is already in use on this host"
+  error 9 <<<"Port ${maintenance_port} is already in use on this host"
 fi
 
 mkdir -p "${maintenance_directory}"
@@ -346,7 +346,7 @@ if [[ "${ssh_up}" -eq 0 ]]; then
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
   rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
   rmdir "${maintenance_project}" 2>/dev/null || true
-  error 9 <<MESSAGE
+  error 10 <<MESSAGE
 SSH did not become available within ${VIRTDEV_WAIT_TIMEOUT}s.
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
@@ -414,7 +414,7 @@ case "${qemu_exit}" in
     : # Clean guest poweroff. Fall through to the reseal prompt below.
     ;;
   143)
-    error 10 <<MESSAGE
+    error 11 <<MESSAGE
 Maintenance virtual machine exited abnormally.
 Unit exit status: 143 (SIGTERM).
 
@@ -445,7 +445,7 @@ proper guest-level shutdown and QEMU will then exit 0.
 MESSAGE
     ;;
   *)
-    error 10 <<MESSAGE
+    error 11 <<MESSAGE
 Maintenance virtual machine exited abnormally.
 Unit exit status: ${qemu_exit}
 
@@ -469,7 +469,7 @@ printf 'Virtual machine exited cleanly.\n'
 printf 'Reseal the base system? [y/N] '
 read -r confirm
 if [[ "${confirm}" != 'y' && "${confirm}" != 'Y' ]]; then
-  error 11 <<MESSAGE
+  error 12 <<MESSAGE
 Reseal cancelled.
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
@@ -479,10 +479,10 @@ fi
 
 printf 'Checking maintenance image integrity...\n'
 if ! qemu-img check -q "${system_disk}"; then
-  error 12 <<<"System disk integrity check failed: '${system_disk}'"
+  error 13 <<<"System disk integrity check failed: '${system_disk}'"
 fi
 if ! qemu-img check -q "${home_disk}"; then
-  error 13 <<<"Home disk integrity check failed: '${home_disk}'"
+  error 14 <<<"Home disk integrity check failed: '${home_disk}'"
 fi
 
 # Read and validate the old version counter BEFORE the rename

@@ -38,7 +38,7 @@ import error validate
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 
 if [[ $# -lt 1 ]]; then
-  error 1 <<<'usage: virtdev-ssh <project> [ssh-args...]'
+  error 64 <<<'usage: virtdev-ssh <project> [ssh-args...]'
 fi
 
 project="${1}"

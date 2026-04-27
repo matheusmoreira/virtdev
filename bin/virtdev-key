@@ -37,7 +37,7 @@ import error
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 
 if [[ $# -ne 0 ]]; then
-  error 1 <<<'usage: virtdev-key'
+  error 64 <<<'usage: virtdev-key'
 fi
 
 key_directory="$(dirname "${VIRTDEV_SSH_KEY}")"

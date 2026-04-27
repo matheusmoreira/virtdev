@@ -84,7 +84,7 @@ arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
 
 if [[ $# -ne 1 ]]; then
-  error 1 <<<'usage: virtdev-recreate [--provision <path>] [--no-backup] [--no-restore] [--no-provision] [--yes] [--verbose] <project>'
+  error 64 <<<'usage: virtdev-recreate [--provision <path>] [--no-backup] [--no-restore] [--no-provision] [--yes] [--verbose] <project>'
 fi
 
 project="${1}"
@@ -127,7 +127,7 @@ MESSAGE
   elif [[ -f "${backup_list_xdg}" ]]; then
     backup_list_path="${backup_list_xdg}"
   else
-    error 8 <<MESSAGE
+    error 5 <<MESSAGE
 Backup manifest not found at either of:
     ${backup_list_project}
     ${backup_list_xdg}
@@ -137,7 +137,7 @@ MESSAGE
   fi
 
   if ! grep -Eq '^\s*[^#[:space:]]' "${backup_list_path}"; then
-    error 8 <<MESSAGE
+    error 5 <<MESSAGE
 Backup manifest is empty (no non-blank, non-comment lines):
     ${backup_list_path}
 Add at least one path. Or skip the backup with:
@@ -153,7 +153,7 @@ provision_path=""
 if (( ! flags[no-provision] )); then
   if [[ -n "${flags[provision]}" ]]; then
     if [[ ! -f "${flags[provision]}" || ! -r "${flags[provision]}" ]]; then
-      error 12 <<MESSAGE
+      error 6 <<MESSAGE
 Provision script not found or not readable: ${flags[provision]}
 MESSAGE
     fi
@@ -250,7 +250,7 @@ if (( ! flags[yes] )); then
   printf 'Type the project name to confirm: ' >&2
   read -r confirmation
   if [[ "${confirmation}" != "${project}" ]]; then
-    error 13 <<<'Aborted.'
+    error 7 <<<'Aborted.'
   fi
 fi
 

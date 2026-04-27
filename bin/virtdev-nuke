@@ -34,7 +34,7 @@ import error lock
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
 
 if [[ $# -ne 0 ]]; then
-  error 1 <<<'usage: virtdev-nuke'
+  error 64 <<<'usage: virtdev-nuke'
 fi
 
 # Refuse to operate on any path that is not strictly under $HOME.
@@ -46,7 +46,7 @@ home_real="$(realpath "${HOME}")"
 for path in "${VIRTDEV_HOME}" "${VIRTDEV_CACHE}"; do
   real="$(realpath -m "${path}")"
   if [[ "${real}" != "${home_real}"/?* ]]; then
-    error 2 <<MESSAGE
+    error 3 <<MESSAGE
 Path is not strictly under \$HOME: '${path}'
 	Resolved: '${real}'
 	Home:     '${home_real}'
@@ -64,7 +64,7 @@ projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
   while IFS= read -r project; do
     if systemctl --user --quiet is-active virtdev-"${project}" 2>/dev/null; then
-      error 3 <<MESSAGE
+      error 4 <<MESSAGE
 Project virtual machine is running: ${project}
 Stop it with: virtdev-stop ${project}
 All virtual machines must be stopped before nuking
@@ -116,7 +116,7 @@ printf 'Type "nuke" to confirm: '
 read -r confirmation
 
 if [[ "${confirmation}" != "nuke" ]]; then
-  error 4 <<<"Aborted."
+  error 5 <<<"Aborted."
 fi
 
 [[ -d "${VIRTDEV_HOME}"  ]] && rm -rf "${VIRTDEV_HOME}"

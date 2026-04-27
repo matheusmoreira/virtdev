@@ -38,7 +38,7 @@ import error validate lock
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
 if [[ $# -ne 1 ]]; then
-  error 1 <<<'usage: virtdev-create <project>'
+  error 64 <<<'usage: virtdev-create <project>'
 fi
 
 project="${1}"
@@ -75,7 +75,7 @@ done
 if [[ -f "${system_directory}/version" ]]; then
   base_version="$(< "${system_directory}/version")"
   if ! [[ "${base_version}" =~ ^[0-9]+$ ]]; then
-    error 8 <<MESSAGE
+    error 7 <<MESSAGE
 Corrupted base version file: '${system_directory}/version'
 Contents: '${base_version}'
 Repair manually: the file must contain a single non-negative integer.

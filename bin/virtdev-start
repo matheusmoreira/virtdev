@@ -42,7 +42,7 @@ port_in_use() {
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  error 1 <<<'usage: virtdev-start <project> [port]'
+  error 64 <<<'usage: virtdev-start <project> [port]'
 fi
 
 project="${1}"
@@ -115,7 +115,7 @@ project_version="$(< "${project_version_file}")"
 # would otherwise coerce bad input to 0 and match a zero on the
 # other side.
 if ! [[ "${system_version}" =~ ^[0-9]+$ ]]; then
-  error 14 <<MESSAGE
+  error 13 <<MESSAGE
 Corrupted base version file: '${system_version_file}'
 Contents: '${system_version}'
 Repair manually: the file must contain a single non-negative integer.
@@ -123,7 +123,7 @@ MESSAGE
 fi
 
 if ! [[ "${project_version}" =~ ^[0-9]+$ ]]; then
-  error 15 <<MESSAGE
+  error 14 <<MESSAGE
 Corrupted project version file: '${project_version_file}'
 Contents: '${project_version}'
 Repair manually: the file must contain a single non-negative integer.
@@ -284,7 +284,7 @@ auto-assignment will pick the next free port:
 MESSAGE
         fi
       fi
-      error 13 <<MESSAGE
+      error 12 <<MESSAGE
 Unit exited before becoming active: ${unit}
 ActiveState: ${state}
 QEMU exit status: ${exit_status}
@@ -295,7 +295,7 @@ MESSAGE
       ;;
     *)
       if (( SECONDS >= deadline )); then
-        error 13 <<MESSAGE
+        error 12 <<MESSAGE
 Unit did not become active within 5s: ${unit}
 ActiveState: ${state:-unknown}
 systemd-run reported success but systemctl does not see the unit active.
