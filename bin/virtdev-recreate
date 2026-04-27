@@ -64,36 +64,24 @@ import() {
   done
 }
 
-import error validate
+import error validate arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
-provision_flag=""
-no_backup=0
-no_restore=0
-no_provision=0
-yes=0
-verbose=0
-while [[ $# -gt 0 ]]; do
-  case "${1}" in
-    --provision)
-      if [[ $# -lt 2 ]]; then
-        error 1 <<<'--provision requires a path argument'
-      fi
-      provision_flag="${2}"
-      shift 2
-      ;;
-    --no-backup)    no_backup=1;    shift ;;
-    --no-restore)   no_restore=1;   shift ;;
-    --no-provision) no_provision=1; shift ;;
-    --yes)          yes=1;          shift ;;
-    --verbose)      verbose=1;      shift ;;
-    --)             shift; break ;;
-    -*)             error 1 <<<"unknown flag: ${1}" ;;
-    *)              break ;;
-  esac
-done
+# shellcheck disable=SC2034  # spec is read via nameref by arguments_parse
+declare -A spec=(
+  [provision]=value
+  [no-backup]=bool
+  [no-restore]=bool
+  [no-provision]=bool
+  [yes]=bool
+  [verbose]=bool
+)
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
 
 if [[ $# -ne 1 ]]; then
   error 1 <<<'usage: virtdev-recreate [--provision <path>] [--no-backup] [--no-restore] [--no-provision] [--yes] [--verbose] <project>'
@@ -124,7 +112,7 @@ fi
 backup_list_project="${project_directory}/backup.list"
 backup_list_xdg="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
 
-if (( ! no_backup )); then
+if (( ! flags[no-backup] )); then
   if (( ! unit_active )); then
     error 4 <<MESSAGE
 Virtual machine is not running: ${project}
@@ -162,14 +150,14 @@ fi
 # hook; the hook wins over nothing. Echoed to stderr at execution time
 # so the user can spot which path actually ran.
 provision_path=""
-if (( ! no_provision )); then
-  if [[ -n "${provision_flag}" ]]; then
-    if [[ ! -f "${provision_flag}" || ! -r "${provision_flag}" ]]; then
+if (( ! flags[no-provision] )); then
+  if [[ -n "${flags[provision]}" ]]; then
+    if [[ ! -f "${flags[provision]}" || ! -r "${flags[provision]}" ]]; then
       error 12 <<MESSAGE
-Provision script not found or not readable: ${provision_flag}
+Provision script not found or not readable: ${flags[provision]}
 MESSAGE
     fi
-    provision_path="${provision_flag}"
+    provision_path="${flags[provision]}"
   else
     provision_hook="${XDG_CONFIG_HOME}/virtdev/projects/${project}/provision"
     if [[ -f "${provision_hook}" && -r "${provision_hook}" ]]; then
@@ -195,11 +183,11 @@ fi
 
 # Decide which steps will actually run. Computed up front so the plan
 # print is accurate and the chain executes without re-deriving.
-do_backup=$((    ! no_backup ))
+do_backup=$((    ! flags[no-backup] ))
 do_stop=$((      unit_active ))
 do_provision=0
 [[ -n "${provision_path}" ]] && do_provision=1
-do_restore=$((   ! no_restore ))
+do_restore=$((   ! flags[no-restore] ))
 
 # Restore needs something to restore from. If we are taking a backup
 # this run, that supplies it. If we are not (--no-backup), fall back
@@ -237,7 +225,7 @@ fi
   printf '  %d. wait\n'          "${step}"; ((step++))
   if (( do_provision )); then
     printf '  %d. provision     %s\n' "${step}" "${provision_path}"
-  elif (( no_provision )); then
+  elif (( flags[no-provision] )); then
     printf '  %d. provision     (skipped: --no-provision)\n' "${step}"
   else
     printf '  %d. provision     (skipped: no script found)\n' "${step}"
@@ -249,7 +237,7 @@ fi
     else
       printf '  %d. restore       (latest existing snapshot)\n' "${step}"
     fi
-  elif (( no_restore )); then
+  elif (( flags[no-restore] )); then
     printf '  %d. restore       (skipped: --no-restore)\n' "${step}"
   else
     printf '  %d. restore       (skipped: %s)\n' "${step}" "${restore_skip_reason}"
@@ -258,7 +246,7 @@ fi
   printf 'This is irreversible.\n'
 } >&2
 
-if (( ! yes )); then
+if (( ! flags[yes] )); then
   printf 'Type the project name to confirm: ' >&2
   read -r confirmation
   if [[ "${confirmation}" != "${project}" ]]; then
@@ -272,7 +260,7 @@ fi
 # versions inside a single recreate run).
 backup() {
   local opts=()
-  (( verbose )) && opts+=(--verbose)
+  (( flags[verbose] )) && opts+=(--verbose)
   "${virtdev_bin_directory}/virtdev-backup" "${opts[@]}" "${project}"
 }
 
@@ -302,7 +290,7 @@ provision() {
 
 restore() {
   local opts=()
-  (( verbose )) && opts+=(--verbose)
+  (( flags[verbose] )) && opts+=(--verbose)
   "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" "${project}"
 }
 
