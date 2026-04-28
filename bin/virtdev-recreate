@@ -433,8 +433,8 @@ if (( do_restore )); then
     snap_hint=""
     [[ -n "${snap}" ]] && snap_hint="
 Latest snapshot: ${backups_project_dir}/${snap}/
-Retry with explicit date/time:
-    virtdev-restore ${project} ${snap%%/*} ${snap##*/}"
+Retry with explicit snapshot:
+    virtdev-restore ${project} ${snap}"
     error 27 <<MESSAGE
 restore failed (virtdev-restore exited non-zero).
 The fresh VM is up and provisioned but the snapshot was not
