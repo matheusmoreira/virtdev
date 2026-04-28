@@ -104,8 +104,42 @@ output_directory="${build_directory}"
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile
 
+# Defense in depth around the privileged cleanup below. mkarchiso
+# produces root-owned files in the work directory, so a naive cleanup
+# would need sudo rm -rf on a path computed from environment variables.
+# Three independent guards make a wrong-path delete extremely unlikely:
+#
+#   Layer 1: refuse if either rm target resolves outside $HOME. Catches
+#            HOME or XDG_CACHE_HOME pointed somewhere unexpected.
+#   Layer 2: refuse if the work/profile suffixes do not match the
+#            expected construction. Catches a future code bug that
+#            would happen to land under $HOME but at the wrong path.
+#   Layer 3: chown the targets to the invoking user, then plain rm.
+#            A wrong-path chown is recoverable; a wrong-path rm -rf
+#            is not. After chown, plain rm is bounded by user perms.
+
+home_real="$(realpath "${HOME}")"
+for path in "${work_directory}" "${profile_directory}"; do
+  real="$(realpath -m "${path}")"
+  if [[ "${real}" != "${home_real}"/?* ]]; then
+    error 10 <<MESSAGE
+Build path is not strictly under \$HOME: '${path}'
+    Resolved: '${real}'
+    Home:     '${home_real}'
+ISO build aborted.
+MESSAGE
+  fi
+done
+
+if [[ "${work_directory}" != "${build_directory}/work" \
+   || "${profile_directory}" != "${build_directory}/profile" ]]; then
+  error 11 <<<"build path construction mismatch (internal bug)"
+fi
+
 printf 'Clearing build tree...\n'
-sudo rm -rf "${work_directory:?}" "${profile_directory:?}"
+[[ -e "${work_directory}"    ]] && sudo chown -R "${USER}:${USER}" "${work_directory}"
+[[ -e "${profile_directory}" ]] && sudo chown -R "${USER}:${USER}" "${profile_directory}"
+rm -rf "${work_directory:?}" "${profile_directory:?}"
 mkdir -p "${work_directory}" "${profile_directory}"
 
 printf "Copying profile: '%s'\n" "${profile}"
