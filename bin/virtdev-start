@@ -166,8 +166,10 @@ fi
 # Resolve SSH port
 port_file="${project_directory}"/port
 
+explicit_port=0
 if [[ $# -eq 2 ]]; then
   # Explicit port from command line
+  explicit_port=1
   port="${2}"
   if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
     error 7 <<<"Invalid port: '${port}' (must be 1024-65535)"
@@ -277,7 +279,7 @@ while true; do
       # it could not bind. (TIME_WAIT sockets do not match -tln, so
       # this does not false-positive on QEMU's own brief lifetime.)
       if port_in_use "${port}"; then
-        if [[ $# -eq 2 ]]; then
+        if (( explicit_port )); then
           error 8 <<MESSAGE
 Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
 Between virtdev-start's pre-flight port check and qemu's bind() call,
