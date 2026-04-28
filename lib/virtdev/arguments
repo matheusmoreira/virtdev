@@ -24,14 +24,19 @@
 # missing-value check.
 #
 # --flag=value form is supported for value/required types. -- is the
-# end-of-flags terminator. -* (single-dash) and unknown long flags
-# error 64.
+# end-of-flags terminator. Unknown long flags error 64.
+#
+# Short aliases: single-dash single-character flags (-v, -y, -p val)
+# are supported when a <spec_name>_short companion array exists.
+# Keys are single characters, values are the long flag names they
+# alias. Without the companion, all -* args error 64.
 #
 # Usage generation:
 #   arguments_usage derives a usage line from the spec and optional
 #   companion arrays discovered by naming convention:
-#     <spec_name>_placeholders  assoc  placeholder text for value/required
-#     <spec_name>_positionals   indexed  positional args (suffix encoding)
+#     <spec_name>_short          assoc  short-to-long flag aliases
+#     <spec_name>_placeholders   assoc  placeholder text for value/required
+#     <spec_name>_positionals    indexed  positional args (suffix encoding)
 #   Positional suffixes: (none)=required, ?=optional, +=variadic 1+,
 #   *=variadic 0+. Script name auto-detected via basename "$0".
 #
@@ -44,9 +49,18 @@ arguments_parse() {
   local -n _arguments_spec="${1}"
   local -n _arguments_flags="${2}"
   local -n _arguments_positional="${3}"
+
+  local _arguments_short_name="${1}_short"
+  local _arguments_has_short=0
+  if declare -p "${_arguments_short_name}" &>/dev/null; then
+    # shellcheck disable=SC2178  # nameref, not scalar reassignment
+    local -n _arguments_short="${_arguments_short_name}"
+    _arguments_has_short=1
+  fi
+
   shift 3
 
-  local key type
+  local key type short_key short_target
   for key in "${!_arguments_spec[@]}"; do
     type="${_arguments_spec[$key]}"
     case "${type}" in
@@ -58,6 +72,20 @@ arguments_parse() {
     esac
   done
 
+  if (( _arguments_has_short )); then
+    for short_key in "${!_arguments_short[@]}"; do
+      if [[ "${#short_key}" -ne 1 ]]; then
+        error "${arguments_usage_exit_code}" \
+          <<<"invalid short flag key: '${short_key}' (must be a single character)"
+      fi
+      short_target="${_arguments_short[$short_key]}"
+      if [[ ! -v _arguments_spec[$short_target] ]]; then
+        error "${arguments_usage_exit_code}" \
+          <<<"short flag -${short_key} aliases unknown flag: --${short_target}"
+      fi
+    done
+  fi
+
   for key in "${!_arguments_spec[@]}"; do
     [[ -v _arguments_flags[$key] ]] && continue
     case "${_arguments_spec[$key]}" in
@@ -67,7 +95,7 @@ arguments_parse() {
     esac
   done
 
-  local arg flag_name flag_value
+  local arg flag_name flag_value short_char
   while (( $# > 0 )); do
     arg="${1}"
     case "${arg}" in
@@ -112,6 +140,30 @@ arguments_parse() {
             ;;
         esac
         ;;
+      -?)
+        short_char="${arg#-}"
+        if (( _arguments_has_short )) \
+           && [[ -v _arguments_short[$short_char] ]]; then
+          flag_name="${_arguments_short[$short_char]}"
+        else
+          error "${arguments_usage_exit_code}" \
+            <<<"unknown flag: ${arg}"
+        fi
+        case "${_arguments_spec[$flag_name]}" in
+          bool)
+            _arguments_flags["${flag_name}"]=1
+            shift
+            ;;
+          value|required)
+            if (( $# < 2 )) || [[ "${2}" == "--" ]]; then
+              error "${arguments_usage_exit_code}" \
+                <<<"-${short_char} (--${flag_name}) requires a value"
+            fi
+            _arguments_flags["${flag_name}"]="${2}"
+            shift 2
+            ;;
+        esac
+        ;;
       -*)
         error "${arguments_usage_exit_code}" \
           <<<"unknown flag: ${arg}"
@@ -138,10 +190,18 @@ arguments_parse() {
 
 arguments_usage() {
   local -n _au_spec="${1}"
+  local _au_short_name="${1}_short"
   local _au_ph_name="${1}_placeholders"
   local _au_pos_name="${1}_positionals"
+  local _au_has_short=0
   local _au_has_ph=0
   local _au_has_pos=0
+
+  if declare -p "${_au_short_name}" &>/dev/null; then
+    # shellcheck disable=SC2178  # nameref, not scalar reassignment
+    local -n _au_short="${_au_short_name}"
+    _au_has_short=1
+  fi
 
   if declare -p "${_au_ph_name}" &>/dev/null; then
     # shellcheck disable=SC2178  # nameref, not scalar reassignment
@@ -153,6 +213,14 @@ arguments_usage() {
     # shellcheck disable=SC2178  # nameref, not scalar reassignment
     local -n _au_pos="${_au_pos_name}"
     _au_has_pos=1
+  fi
+
+  local -A _au_long_to_short=()
+  if (( _au_has_short )); then
+    local _au_s
+    for _au_s in "${!_au_short[@]}"; do
+      _au_long_to_short["${_au_short[$_au_s]}"]="${_au_s}"
+    done
   fi
 
   local -a _au_required=() _au_value=() _au_bool=()
@@ -178,14 +246,18 @@ arguments_usage() {
 
   local _au_out
   _au_out="usage: $(basename "$0")"
-  local _au_placeholder
+  local _au_placeholder _au_flag_label
 
   for _au_key in "${_au_required[@]}"; do
     _au_placeholder="value"
     if (( _au_has_ph )) && [[ -v _au_ph[$_au_key] ]]; then
       _au_placeholder="${_au_ph[$_au_key]}"
     fi
-    _au_out+=" --${_au_key} <${_au_placeholder}>"
+    _au_flag_label="--${_au_key}"
+    if [[ -v _au_long_to_short[$_au_key] ]]; then
+      _au_flag_label="-${_au_long_to_short[$_au_key]}|${_au_flag_label}"
+    fi
+    _au_out+=" ${_au_flag_label} <${_au_placeholder}>"
   done
 
   for _au_key in "${_au_value[@]}"; do
@@ -193,11 +265,19 @@ arguments_usage() {
     if (( _au_has_ph )) && [[ -v _au_ph[$_au_key] ]]; then
       _au_placeholder="${_au_ph[$_au_key]}"
     fi
-    _au_out+=" [--${_au_key} <${_au_placeholder}>]"
+    _au_flag_label="--${_au_key}"
+    if [[ -v _au_long_to_short[$_au_key] ]]; then
+      _au_flag_label="-${_au_long_to_short[$_au_key]}|${_au_flag_label}"
+    fi
+    _au_out+=" [${_au_flag_label} <${_au_placeholder}>]"
   done
 
   for _au_key in "${_au_bool[@]}"; do
-    _au_out+=" [--${_au_key}]"
+    _au_flag_label="--${_au_key}"
+    if [[ -v _au_long_to_short[$_au_key] ]]; then
+      _au_flag_label="-${_au_long_to_short[$_au_key]}|${_au_flag_label}"
+    fi
+    _au_out+=" [${_au_flag_label}]"
   done
 
   if (( _au_has_pos )); then
