@@ -10,7 +10,10 @@
 #
 #     virtdev-ssh myproject
 #     virtdev-ssh myproject -- ls -la
-#     virtdev-ssh myproject -L 3000:localhost:3000
+#     virtdev-ssh myproject -- -L 3000:localhost:3000
+#
+# Use -- before SSH arguments that start with a dash
+# so the argument parser does not interpret them as flags.
 #
 # The SSH key is read from VIRTDEV_SSH_KEY,
 # defaulting to ${VIRTDEV_HOME}/ssh/id.

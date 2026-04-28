@@ -18,6 +18,9 @@
 #   positional   indexed array, every non-flag arg + everything after
 #                a -- terminator
 #
+# Flags and positionals may be interleaved (GNU-style). Use -- to
+# force all remaining arguments into positional regardless of prefix.
+#
 # The library prepends -- when matching against argv. Spec keys keep
 # hyphens verbatim. Caller may pre-set flags[<key>] before calling to
 # override the default; pre-set required keys are exempt from the
@@ -214,8 +217,8 @@ arguments_parse() {
         done
         ;;
       *)
-        _arguments_positional+=("$@")
-        return 0
+        _arguments_positional+=("${arg}")
+        shift
         ;;
     esac
   done
