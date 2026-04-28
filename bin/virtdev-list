@@ -61,8 +61,8 @@ if [[ ${#projects[@]} -eq 0 ]]; then
   exit 0
 fi
 
-printf '%-24s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS'
-printf '%-24s %-8s %s\n' '-------' '----' '------'
+printf '%-50s %-5s %s\n' 'PROJECT' 'PORT' 'STATUS'
+printf '%-50s %-5s %s\n' '-------' '----' '------'
 
 for project in "${projects[@]}"; do
   [[ "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
@@ -81,5 +81,5 @@ for project in "${projects[@]}"; do
     port='-'
   fi
 
-  printf '%-24s %-8s %s\n' "${project}" "${port}" "${status}"
+  printf '%-50s %-5s %s\n' "${project}" "${port}" "${status}"
 done
