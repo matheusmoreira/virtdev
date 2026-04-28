@@ -63,11 +63,11 @@ fi
 #   2. Adjacent to script (git checkout: bin/../iso)
 #   3. Installed system path (package: /usr/share/virtdev/profile)
 #
-script_dir="$(cd "$(dirname "${0}")" && pwd)"
+script_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 if [[ -n "${VIRTDEV_ISO_PROFILE:-}" ]]; then
   iso_profile="${VIRTDEV_ISO_PROFILE}"
 elif [[ -f "${script_dir}/../iso/profiledef.sh" ]]; then
-  iso_profile="$(cd "${script_dir}/../iso" && pwd)"
+  iso_profile="$(cd "${script_dir}/../iso" && pwd -P)"
 else
   iso_profile="/usr/share/virtdev/profile"
 fi
