@@ -294,38 +294,26 @@ arguments_usage() {
 
   local _au_out
   _au_out="usage: $(basename "$0")"
-  local _au_placeholder _au_flag_label
+  local _au_placeholder _au_flag_label _au_type
 
-  for _au_key in "${_au_required[@]}"; do
-    _au_placeholder="value"
-    if (( _au_has_ph )) && [[ -v _au_ph[$_au_key] ]]; then
-      _au_placeholder="${_au_ph[$_au_key]}"
-    fi
+  for _au_key in "${_au_required[@]}" "${_au_value[@]}" "${_au_bool[@]}"; do
     _au_flag_label="--${_au_key}"
     if [[ -v _au_long_to_short[$_au_key] ]]; then
       _au_flag_label="-${_au_long_to_short[$_au_key]}|${_au_flag_label}"
     fi
-    _au_out+=" ${_au_flag_label} <${_au_placeholder}>"
-  done
-
-  for _au_key in "${_au_value[@]}"; do
-    _au_placeholder="value"
-    if (( _au_has_ph )) && [[ -v _au_ph[$_au_key] ]]; then
-      _au_placeholder="${_au_ph[$_au_key]}"
+    _au_type="${_au_spec[$_au_key]}"
+    if [[ "${_au_type}" == bool ]]; then
+      _au_out+=" [${_au_flag_label}]"
+    else
+      _au_placeholder="value"
+      (( _au_has_ph )) && [[ -v _au_ph[$_au_key] ]] \
+        && _au_placeholder="${_au_ph[$_au_key]}"
+      if [[ "${_au_type}" == required ]]; then
+        _au_out+=" ${_au_flag_label} <${_au_placeholder}>"
+      else
+        _au_out+=" [${_au_flag_label} <${_au_placeholder}>]"
+      fi
     fi
-    _au_flag_label="--${_au_key}"
-    if [[ -v _au_long_to_short[$_au_key] ]]; then
-      _au_flag_label="-${_au_long_to_short[$_au_key]}|${_au_flag_label}"
-    fi
-    _au_out+=" [${_au_flag_label} <${_au_placeholder}>]"
-  done
-
-  for _au_key in "${_au_bool[@]}"; do
-    _au_flag_label="--${_au_key}"
-    if [[ -v _au_long_to_short[$_au_key] ]]; then
-      _au_flag_label="-${_au_long_to_short[$_au_key]}|${_au_flag_label}"
-    fi
-    _au_out+=" [${_au_flag_label}]"
   done
 
   if (( _au_has_pos )); then
