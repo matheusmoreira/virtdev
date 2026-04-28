@@ -238,7 +238,7 @@ else
 Backup manifest not found. Checked (in order):
 	${backup_list_project}
 	${backup_list_config}
-Create either; one path per line (relative to /home/dev or absolute).
+Create either; one path per line, relative to /home/dev/.
 Blank lines and '#' comments are ignored.
 MESSAGE
 fi
