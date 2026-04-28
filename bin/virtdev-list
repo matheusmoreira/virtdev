@@ -65,6 +65,7 @@ printf '%-24s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS'
 printf '%-24s %-8s %s\n' '-------' '----' '------'
 
 for project in "${projects[@]}"; do
+  [[ "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
   project_directory="${projects_directory}"/"${project}"
   port_file="${project_directory}"/port
 
