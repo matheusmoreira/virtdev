@@ -332,6 +332,26 @@ done
 if [[ "${ssh_up}" -eq 0 ]]; then
   printf ' failed.\n'
 
+  # Distinguish a port-bind race from a generic boot failure. The
+  # pre-flight ss check above is a TOCTOU: another process can bind
+  # port 2222 between our check and QEMU's bind(). If the port is
+  # now in use and the unit already exited, the cause is almost
+  # certainly the port collision, not a guest boot problem.
+  if [[ "${unit_state}" != active && "${unit_state}" != activating ]] \
+     && [[ -n "$(ss -tlnH "sport = :${maintenance_port}" 2>/dev/null)" ]]; then
+    systemctl --user reset-failed "${unit}" 2>/dev/null || true
+    rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
+    rmdir "${maintenance_project}" 2>/dev/null || true
+    error 9 <<MESSAGE
+Port ${maintenance_port} is bound by another process.
+Between virtdev-maintain's pre-flight port check and QEMU's bind()
+call, another process took the port. The sealed base images are
+intact: '${system_directory}'
+Maintenance images preserved for inspection: '${maintenance_directory}'
+Remove manually to retry: rm -rf '${maintenance_directory}'
+MESSAGE
+  fi
+
   systemctl --user stop "${unit}" 2>/dev/null || true
 
   # Wait for the unit to actually leave active state before tearing
