@@ -58,6 +58,8 @@ umask 077
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=([verbose]=bool)
 # shellcheck disable=SC2034
+declare -A spec_short=([v]=verbose)
+# shellcheck disable=SC2034
 declare -a spec_positionals=(project "snapshot?")
 case "${1:-}" in
   --help|-h) arguments_usage spec ; exit 0 ;;

@@ -79,6 +79,8 @@ declare -A spec=(
   [verbose]=bool
 )
 # shellcheck disable=SC2034
+declare -A spec_short=([p]=provision [y]=yes [v]=verbose)
+# shellcheck disable=SC2034
 declare -A spec_placeholders=([provision]=path)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project)

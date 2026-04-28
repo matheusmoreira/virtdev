@@ -83,6 +83,8 @@ umask 077
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=([verbose]=bool [list]=bool)
 # shellcheck disable=SC2034
+declare -A spec_short=([v]=verbose [l]=list)
+# shellcheck disable=SC2034
 declare -a spec_positionals=(project)
 case "${1:-}" in
   --help|-h) arguments_usage spec ; exit 0 ;;
@@ -94,9 +96,9 @@ set -- "${positional[@]}"
 
 if [[ $# -ne 1 ]]; then
   if (( flags[list] )); then
-    error 64 <<<'usage: virtdev-backup --list <project>'
+    error 64 <<<'usage: virtdev-backup -l|--list <project>'
   else
-    error 64 <<<'usage: virtdev-backup [--verbose] <project>'
+    error 64 <<<'usage: virtdev-backup [-v|--verbose] <project>'
   fi
 fi
 
