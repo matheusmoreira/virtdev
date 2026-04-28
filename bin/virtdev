@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+#
+# virtdev <command> [<args>]
+#
+# Dispatches to virtdev-<command>.
+# Resolution order: adjacent sibling scripts first, then PATH.
+#
+#     virtdev start myproject  ->  exec virtdev-start myproject
+#
+# Exit codes:
+#   0   --help
+#   64  no command, unknown option, unknown command, invalid command name
+#
+
+set -euo pipefail
+
+virtdev_library_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev"
+declare -A virtdev_loaded_libraries=()
+import() {
+  local f
+  for f in "$@"; do
+    [[ -v virtdev_loaded_libraries[$f] ]] && continue
+    virtdev_loaded_libraries[$f]=1
+    # shellcheck disable=SC1090
+    source -p "${virtdev_library_directory}" "${f}"
+  done
+}
+
+import error
+
+self_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+
+list_commands() {
+  local f name
+  for f in "${self_dir}"/virtdev-*; do
+    [[ -x "${f}" ]] || continue
+    name="${f##*/virtdev-}"
+    printf '  %s\n' "${name}"
+  done | sort
+}
+
+usage() {
+  printf 'usage: virtdev <command> [<args>]\n\n'
+  printf 'Available commands:\n'
+  list_commands
+}
+
+case "${1:-}" in
+  "")
+    usage >&2
+    exit 64
+    ;;
+  --help|-h)
+    usage
+    exit 0
+    ;;
+  --)
+    shift
+    ;;
+  -*)
+    error 64 <<<"Unknown option: ${1}"
+    ;;
+esac
+
+if [[ $# -eq 0 ]]; then
+  usage >&2
+  exit 64
+fi
+
+cmd="${1}"
+shift
+
+if [[ "${cmd}" == "." || "${cmd}" == ".." || "${cmd}" == */* ]]; then
+  error 64 <<<"virtdev: '${cmd}' is not a virtdev command"
+fi
+
+if [[ -x "${self_dir}/virtdev-${cmd}" ]]; then
+  exec "${self_dir}/virtdev-${cmd}" "$@"
+fi
+
+if type -P "virtdev-${cmd}" &>/dev/null; then
+  exec "virtdev-${cmd}" "$@"
+fi
+
+error 64 <<<"virtdev: '${cmd}' is not a virtdev command"
