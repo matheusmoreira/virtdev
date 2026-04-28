@@ -31,15 +31,17 @@ import error validate lock arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
-# shellcheck disable=SC2034  # spec is read via nameref by arguments_parse
+# shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=([yes]=bool)
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
 
 if [[ $# -ne 1 ]]; then
-  error 64 <<<'usage: virtdev-destroy [--yes] <project>'
+  error 64 <<<"$(arguments_usage spec)"
 fi
 
 project="${1}"
