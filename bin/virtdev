@@ -31,6 +31,12 @@ import error
 
 self_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
+reject_path_traversal() {
+  if [[ "${1}" == "." || "${1}" == ".." || "${1}" == */* ]]; then
+    error 64 <<<"virtdev: '${1}' is not a virtdev command"
+  fi
+}
+
 list_commands() {
   local f name
   for f in "${self_dir}"/virtdev-*; do
@@ -72,9 +78,7 @@ fi
 cmd="${1}"
 shift
 
-if [[ "${cmd}" == "." || "${cmd}" == ".." || "${cmd}" == */* ]]; then
-  error 64 <<<"virtdev: '${cmd}' is not a virtdev command"
-fi
+reject_path_traversal "${cmd}"
 
 if [[ "${cmd}" == "help" ]]; then
   if [[ $# -ne 1 ]]; then
@@ -82,9 +86,7 @@ if [[ "${cmd}" == "help" ]]; then
     exit 64
   fi
   cmd="${1}"
-  if [[ "${cmd}" == "." || "${cmd}" == ".." || "${cmd}" == */* ]]; then
-    error 64 <<<"virtdev: '${cmd}' is not a virtdev command"
-  fi
+  reject_path_traversal "${cmd}"
   set -- --help
 fi
 
