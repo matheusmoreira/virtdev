@@ -58,12 +58,13 @@ Base system maintenance is in progress (virtdev-maintain, PID ${pid}).
 Wait for it to finish or inspect its virtual machine:
     systemctl --user status virtdev-maintenance
 MESSAGE
-  fi
-  error "${lock_contention_exit_code}" <<MESSAGE
+  else
+    error "${lock_contention_exit_code}" <<MESSAGE
 Another virtdev operation is in progress.
 Lock file: ${lock_file}
 Holder PID: ${pid:-unknown}
 MESSAGE
+  fi
 }
 
 lock_die_for_maintain() {
@@ -75,10 +76,11 @@ Another virtdev-maintain is already running (PID ${pid}).
 Wait for it to finish or inspect its virtual machine:
     systemctl --user status virtdev-maintenance
 MESSAGE
-  fi
-  error "${lock_contention_exit_code}" <<MESSAGE
+  else
+    error "${lock_contention_exit_code}" <<MESSAGE
 Another virtdev operation is in progress.
 Lock file: ${lock_file}
 Holder PID: ${pid:-unknown}
 MESSAGE
+  fi
 }
