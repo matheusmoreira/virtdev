@@ -6,9 +6,10 @@
 # Resolution order: adjacent sibling scripts first, then PATH.
 #
 #     virtdev start myproject  ->  exec virtdev-start myproject
+#     virtdev help start       ->  exec virtdev-start --help
 #
 # Exit codes:
-#   0   --help
+#   0   --help, help <command>
 #   64  no command, unknown option, unknown command, invalid command name
 #
 
@@ -40,7 +41,8 @@ list_commands() {
 }
 
 usage() {
-  printf 'usage: virtdev <command> [<args>]\n\n'
+  printf 'usage: virtdev <command> [<args>]\n'
+  printf '       virtdev help <command>\n\n'
   printf 'Available commands:\n'
   list_commands
 }
@@ -72,6 +74,18 @@ shift
 
 if [[ "${cmd}" == "." || "${cmd}" == ".." || "${cmd}" == */* ]]; then
   error 64 <<<"virtdev: '${cmd}' is not a virtdev command"
+fi
+
+if [[ "${cmd}" == "help" ]]; then
+  if [[ $# -ne 1 ]]; then
+    usage >&2
+    exit 64
+  fi
+  cmd="${1}"
+  if [[ "${cmd}" == "." || "${cmd}" == ".." || "${cmd}" == */* ]]; then
+    error 64 <<<"virtdev: '${cmd}' is not a virtdev command"
+  fi
+  set -- --help
 fi
 
 if [[ -x "${self_dir}/virtdev-${cmd}" ]]; then
