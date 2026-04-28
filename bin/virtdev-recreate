@@ -82,6 +82,9 @@ declare -A spec=(
 declare -A spec_placeholders=([provision]=path)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project)
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"

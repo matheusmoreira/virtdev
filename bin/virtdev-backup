@@ -80,8 +80,13 @@ import error validate arguments
 
 umask 077
 
-# shellcheck disable=SC2034  # spec is read via nameref by arguments_parse
+# shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=([verbose]=bool [list]=bool)
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"

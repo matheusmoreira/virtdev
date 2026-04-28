@@ -35,6 +35,9 @@ import error validate lock arguments
 declare -A spec=([yes]=bool)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project)
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"
