@@ -173,6 +173,13 @@ arguments_parse() {
           error "${arguments_usage_exit_code}" \
             <<<"unknown flag: ${arg}"
         fi
+        # Expand the cluster character by character. Intermediate
+        # characters must be bool (no value to consume); only the last
+        # character may be value/required (consuming the next argv
+        # element). The shift that retires the cluster arg from argv
+        # happens inside the last-character case, not after the loop,
+        # because value/required needs shift 2 (cluster + value arg)
+        # while bool needs shift 1 (cluster only).
         local _arguments_cluster="${arg#-}"
         local _arguments_ci _arguments_cc
         for (( _arguments_ci=0; _arguments_ci < ${#_arguments_cluster}; _arguments_ci++ )); do
