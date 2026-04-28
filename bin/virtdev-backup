@@ -197,7 +197,7 @@ fi
 
 port_file="${project_directory}/port"
 if [[ ! -f "${port_file}" ]]; then
-  error 4 <<MESSAGE
+  error 13 <<MESSAGE
 Project has no port assigned: ${project}
 Start the virtual machine first: virtdev-start ${project}
 MESSAGE
@@ -213,7 +213,7 @@ fi
 
 key_permissions="$(stat -c '%a' "${VIRTDEV_SSH_KEY}")"
 if [[ "${key_permissions}" != "600" && "${key_permissions}" != "400" ]]; then
-  error 5 <<MESSAGE
+  error 14 <<MESSAGE
 SSH key permissions too open: '${VIRTDEV_SSH_KEY}' (${key_permissions})
 Fix with: chmod 600 '${VIRTDEV_SSH_KEY}'
 MESSAGE
@@ -260,7 +260,7 @@ fi
 # entries even with surrounding whitespace.
 abs_lines="$(grep -nE '^\s*/' "${backup_list}" || true)"
 if [[ -n "${abs_lines}" ]]; then
-  error 9 <<MESSAGE
+  error 15 <<MESSAGE
 Backup manifest contains absolute paths: ${backup_list}
 ${abs_lines}
 Manifest entries must be relative to the guest's /home/dev/.
@@ -284,7 +284,7 @@ bad_shape="$(awk '
   /[[:cntrl:]]/   { printf("%d: control character: %s\n", NR, $0); next }
 ' "${backup_list}")"
 if [[ -n "${bad_shape}" ]]; then
-  error 9 <<MESSAGE
+  error 16 <<MESSAGE
 Backup manifest has malformed path entries: ${backup_list}
 ${bad_shape}
 Each path must start at column 0, end with a non-whitespace

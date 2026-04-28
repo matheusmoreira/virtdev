@@ -103,7 +103,7 @@ fi
 
 port_file="${project_directory}/port"
 if [[ ! -f "${port_file}" ]]; then
-  error 4 <<MESSAGE
+  error 15 <<MESSAGE
 Project has no port assigned: ${project}
 Start the virtual machine first: virtdev-start ${project}
 MESSAGE
@@ -119,7 +119,7 @@ fi
 
 key_permissions="$(stat -c '%a' "${VIRTDEV_SSH_KEY}")"
 if [[ "${key_permissions}" != "600" && "${key_permissions}" != "400" ]]; then
-  error 5 <<MESSAGE
+  error 19 <<MESSAGE
 SSH key permissions too open: '${VIRTDEV_SSH_KEY}' (${key_permissions})
 Fix with: chmod 600 '${VIRTDEV_SSH_KEY}'
 MESSAGE
@@ -189,10 +189,10 @@ if [[ ! -f "${snapshot}/backup.list" ]]; then
   error 10 <<<"Snapshot missing backup.list: ${snapshot}"
 fi
 if [[ ! -d "${snapshot}/tree" ]]; then
-  error 10 <<<"Snapshot missing tree/: ${snapshot}"
+  error 23 <<<"Snapshot missing tree/: ${snapshot}"
 fi
 if [[ ! -f "${snapshot}/project" ]]; then
-  error 10 <<MESSAGE
+  error 24 <<MESSAGE
 Snapshot missing 'project' marker: ${snapshot}
 This snapshot was likely produced by an older virtdev-backup that
 did not record the source project, so cross-project restoration
@@ -231,7 +231,7 @@ MESSAGE
 fi
 project_version="$(< "${project_version_file}")"
 if ! [[ "${project_version}" =~ ^[0-9]+$ ]]; then
-  error 13 <<MESSAGE
+  error 20 <<MESSAGE
 Corrupted project version file: '${project_version_file}'
 Contents: '${project_version}'
 Repair manually: the file must contain a single non-negative integer.
@@ -303,7 +303,7 @@ skip files that already match.
 MESSAGE
       ;;
     255)
-      error 7 <<MESSAGE
+      error 21 <<MESSAGE
 rsync transfer failed during restore of ${project} (exit 255: transport).
 The SSH connection to the guest could not be established or was lost.
 The guest's filesystem was not modified.
@@ -314,7 +314,7 @@ Verify the VM is reachable, then retry:
 MESSAGE
       ;;
     *)
-      error 7 <<MESSAGE
+      error 22 <<MESSAGE
 rsync transfer failed during restore of ${project} (exit ${rsync_exit}).
 The transfer aborted before completion. See the per-file output
 above for the cause. The guest filesystem may be unmodified or
