@@ -36,6 +36,17 @@ how it's structured. Don't duplicate their content here — point to them.
   that mutates virtdev state. See `DESIGN.md`'s "Concurrency and Locking"
   section for which scripts lock and why.
 - Defaults `VIRTDEV_HOME` via `: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"`.
+- Handles `--help` / `-h` via a guard before `arguments_parse`, and
+  generates usage lines from the spec via `arguments_usage`.
+
+### The `virtdev` dispatcher
+
+`bin/virtdev` is the unified entry point. `virtdev start myproject`
+dispatches to `virtdev-start myproject`; `virtdev help start` dispatches
+to `virtdev-start --help`. Resolution order: adjacent sibling scripts
+first, then `PATH`. The dispatcher does not use the arguments library
+(it has its own option handling since it pre-dates the library and its
+parsing needs are different).
 
 ### Library-owned exit codes
 
@@ -45,11 +56,14 @@ Same error → same code, everywhere:
 | Code | Meaning | Source |
 |---|---|---|
 | 2 | invalid project name | `validate_project_name` |
+| 64 | usage error (unknown flag, missing value, etc.) | `arguments_parse` |
 | 75 | lock contention (BSD `EX_TEMPFAIL` — retry possible) | `lock_acquire*` |
 
 Per-script exit codes are still numbered locally for things that aren't
-factored into a library (e.g., "project not found", "VM not running"); these
-should be documented in the script's header comment when added.
+factored into a library (e.g., "project not found", "VM not running").
+**Every exit code within a script must be unique** — distinct failure
+modes get distinct codes so programmatic callers (like `virtdev-recreate`)
+can discriminate them.
 
 ### Bootstrap (top of every consumer script)
 
@@ -81,6 +95,46 @@ symlinks and normalises to the script's actual location.
 The three named symbols (`virtdev_library_directory`,
 `virtdev_loaded_libraries`, `import`) live in the consumer's shell scope, so
 sourced libraries inherit them automatically — composition is free.
+
+### Argument parsing (`lib/virtdev/arguments`)
+
+The `arguments` library provides declarative flag parsing and usage
+generation. A script declares its interface via associative arrays and
+the library handles `--long`, `-s` short, `--flag=value`, `--`
+terminator, and clustered short flags (`-vy`).
+
+```bash
+declare -A spec=([yes]=bool [provision]=value)
+declare -A spec_short=([y]=yes [p]=provision)    # optional: short aliases
+declare -A spec_placeholders=([provision]=path)   # optional: usage text
+declare -a spec_positionals=(project)             # optional: usage text
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+```
+
+Spec types: `bool` (presence/absence), `value` (takes one arg),
+`required` (like value, but errors if missing).
+
+Parsing is **GNU-style**: flags and positionals may be interleaved.
+`virtdev-destroy myproject --yes` works. Use `--` to force all
+remaining arguments into positional regardless of prefix — required
+for scripts like `virtdev-ssh` that pass flag-like args through.
+
+**Positional suffixes** (for `spec_positionals`, used only by
+`arguments_usage`): bare name = required, `?` = optional, `+` =
+variadic 1+, `*` = variadic 0+. Example: `(project "ssh-args*")`.
+
+Companion arrays are discovered by naming convention:
+`<spec>_short`, `<spec>_placeholders`, `<spec>_positionals`.
+
+`virtdev-recreate` extends the standard bootstrap with
+`virtdev_bin_directory` so it can invoke sibling scripts by resolved
+path, avoiding PATH ordering issues between the dev tree and the
+installed package.
 
 ### Library file rules (`lib/virtdev/*`)
 
