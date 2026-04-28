@@ -30,7 +30,7 @@ import() {
   done
 }
 
-import error validate lock
+import error validate lock arguments
 
 port_in_use() {
   [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
@@ -41,8 +41,21 @@ port_in_use() {
 : "${VIRTDEV_VM_CPUS:=4}"
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project "port?")
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
 if [[ $# -lt 1 || $# -gt 2 ]]; then
-  error 64 <<<'usage: virtdev-start <project> [port]'
+  error 64 <<<"$(arguments_usage spec)"
 fi
 
 project="${1}"

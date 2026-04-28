@@ -13,6 +13,35 @@
 
 set -euo pipefail
 
+virtdev_library_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev"
+declare -A virtdev_loaded_libraries=()
+import() {
+  local f
+  for f in "$@"; do
+    [[ -v virtdev_loaded_libraries[$f] ]] && continue
+    virtdev_loaded_libraries[$f]=1
+    # shellcheck disable=SC1090
+    source -p "${virtdev_library_directory}" "${f}"
+  done
+}
+
+import error arguments
+
+# shellcheck disable=SC2034  # spec read via nameref
+declare -A spec=()
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 0 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
 projects_directory="${VIRTDEV_HOME}/projects"

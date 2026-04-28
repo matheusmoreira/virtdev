@@ -36,14 +36,25 @@ import() {
   done
 }
 
-import error
+import error arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_TIMEZONE:="UTC"}"
 
+# shellcheck disable=SC2034  # spec read via nameref
+declare -A spec=()
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
 if [[ $# -ne 0 ]]; then
-  error 64 <<<'usage: virtdev-iso'
+  error 64 <<<"$(arguments_usage spec)"
 fi
 
 #

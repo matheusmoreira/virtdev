@@ -40,7 +40,7 @@ import() {
   done
 }
 
-import error lock
+import error lock arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_ISO:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev/virtdev.iso"}"
@@ -51,8 +51,21 @@ import error lock
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 : "${OVMF_VARS:="/usr/share/edk2/x64/OVMF_VARS.4m.fd"}"
 
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=("iso?")
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
 if [[ $# -gt 1 ]]; then
-  error 64 <<<'usage: virtdev-install [iso]'
+  error 64 <<<"$(arguments_usage spec)"
 fi
 
 if [[ $# -eq 1 ]]; then

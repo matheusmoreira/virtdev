@@ -81,7 +81,7 @@ import() {
   done
 }
 
-import error lock
+import error lock arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -94,8 +94,19 @@ import error lock
 readonly maintenance_port=2222
 readonly unit=virtdev-maintenance
 
+# shellcheck disable=SC2034  # spec read via nameref
+declare -A spec=()
+case "${1:-}" in
+  --help|-h) arguments_usage spec ; exit 0 ;;
+esac
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
 if [[ $# -ne 0 ]]; then
-  error 64 <<<'usage: virtdev-maintain'
+  error 64 <<<"$(arguments_usage spec)"
 fi
 
 # Held for the entire maintenance session, which may last hours while
