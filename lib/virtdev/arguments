@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
-# arguments library: declarative flag parser.
+# arguments library: declarative flag parser and usage generator.
 # Public:
 #   arguments_parse <spec_name> <flags_name> <positional_name> "$@"
+#   arguments_usage <spec_name>
 # Exit codes:
 #   64  usage error (unknown flag, missing value, missing required,
 #       bool with value, invalid spec type tag)
@@ -25,6 +26,14 @@
 # --flag=value form is supported for value/required types. -- is the
 # end-of-flags terminator. -* (single-dash) and unknown long flags
 # error 64.
+#
+# Usage generation:
+#   arguments_usage derives a usage line from the spec and optional
+#   companion arrays discovered by naming convention:
+#     <spec_name>_placeholders  assoc  placeholder text for value/required
+#     <spec_name>_positionals   indexed  positional args (suffix encoding)
+#   Positional suffixes: (none)=required, ?=optional, +=variadic 1+,
+#   *=variadic 0+. Script name auto-detected via basename "$0".
 #
 set -euo pipefail
 import error
@@ -125,4 +134,84 @@ arguments_parse() {
     error "${arguments_usage_exit_code}" \
       <<<"missing required flag(s): ${missing[*]}"
   fi
+}
+
+arguments_usage() {
+  local -n _au_spec="${1}"
+  local _au_ph_name="${1}_placeholders"
+  local _au_pos_name="${1}_positionals"
+  local _au_has_ph=0
+  local _au_has_pos=0
+
+  if declare -p "${_au_ph_name}" &>/dev/null; then
+    # shellcheck disable=SC2178  # nameref, not scalar reassignment
+    local -n _au_ph="${_au_ph_name}"
+    _au_has_ph=1
+  fi
+
+  if declare -p "${_au_pos_name}" &>/dev/null; then
+    # shellcheck disable=SC2178  # nameref, not scalar reassignment
+    local -n _au_pos="${_au_pos_name}"
+    _au_has_pos=1
+  fi
+
+  local -a _au_required=() _au_value=() _au_bool=()
+  local _au_key _au_type
+  for _au_key in "${!_au_spec[@]}"; do
+    _au_type="${_au_spec[$_au_key]}"
+    case "${_au_type}" in
+      required) _au_required+=("${_au_key}") ;;
+      value)    _au_value+=("${_au_key}") ;;
+      bool)     _au_bool+=("${_au_key}") ;;
+    esac
+  done
+
+  if (( ${#_au_required[@]} > 0 )); then
+    readarray -t _au_required < <(printf '%s\n' "${_au_required[@]}" | sort)
+  fi
+  if (( ${#_au_value[@]} > 0 )); then
+    readarray -t _au_value < <(printf '%s\n' "${_au_value[@]}" | sort)
+  fi
+  if (( ${#_au_bool[@]} > 0 )); then
+    readarray -t _au_bool < <(printf '%s\n' "${_au_bool[@]}" | sort)
+  fi
+
+  local _au_out
+  _au_out="usage: $(basename "$0")"
+  local _au_placeholder
+
+  for _au_key in "${_au_required[@]}"; do
+    _au_placeholder="value"
+    if (( _au_has_ph )) && [[ -v _au_ph[$_au_key] ]]; then
+      _au_placeholder="${_au_ph[$_au_key]}"
+    fi
+    _au_out+=" --${_au_key} <${_au_placeholder}>"
+  done
+
+  for _au_key in "${_au_value[@]}"; do
+    _au_placeholder="value"
+    if (( _au_has_ph )) && [[ -v _au_ph[$_au_key] ]]; then
+      _au_placeholder="${_au_ph[$_au_key]}"
+    fi
+    _au_out+=" [--${_au_key} <${_au_placeholder}>]"
+  done
+
+  for _au_key in "${_au_bool[@]}"; do
+    _au_out+=" [--${_au_key}]"
+  done
+
+  if (( _au_has_pos )); then
+    local _au_entry _au_mod _au_name
+    for _au_entry in "${_au_pos[@]}"; do
+      _au_mod="${_au_entry: -1}"
+      case "${_au_mod}" in
+        '?') _au_name="${_au_entry%?}" ; _au_out+=" [${_au_name}]" ;;
+        '+') _au_name="${_au_entry%?}" ; _au_out+=" <${_au_name}...>" ;;
+        '*') _au_name="${_au_entry%?}" ; _au_out+=" [${_au_name}...]" ;;
+        *)   _au_out+=" <${_au_entry}>" ;;
+      esac
+    done
+  fi
+
+  printf '%s\n' "${_au_out}"
 }
