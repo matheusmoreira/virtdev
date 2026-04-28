@@ -136,6 +136,7 @@ chmod 644 "${nvram}"
 
 if [[ -f "${system_directory}/version" ]]; then
   cp "${system_directory}/version" "${project_directory}/version"
+  chmod 644 "${project_directory}/version"
 fi
 
 create_succeeded=1
