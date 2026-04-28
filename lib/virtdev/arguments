@@ -31,6 +31,10 @@
 # Keys are single characters, values are the long flag names they
 # alias. Without the companion, all -* args error 64.
 #
+# Clustered short flags: -vy expands to -v -y. All characters except
+# the last must be bool. The last may be value/required, consuming the
+# next arg. Requires the _short companion array.
+#
 # Usage generation:
 #   arguments_usage derives a usage line from the spec and optional
 #   companion arrays discovered by naming convention:
@@ -165,8 +169,42 @@ arguments_parse() {
         esac
         ;;
       -*)
-        error "${arguments_usage_exit_code}" \
-          <<<"unknown flag: ${arg}"
+        if (( ! _arguments_has_short )); then
+          error "${arguments_usage_exit_code}" \
+            <<<"unknown flag: ${arg}"
+        fi
+        local _arguments_cluster="${arg#-}"
+        local _arguments_ci _arguments_cc
+        for (( _arguments_ci=0; _arguments_ci < ${#_arguments_cluster}; _arguments_ci++ )); do
+          _arguments_cc="${_arguments_cluster:_arguments_ci:1}"
+          if [[ ! -v _arguments_short[$_arguments_cc] ]]; then
+            error "${arguments_usage_exit_code}" \
+              <<<"unknown flag: -${_arguments_cc} (in ${arg})"
+          fi
+          flag_name="${_arguments_short[$_arguments_cc]}"
+          if (( _arguments_ci < ${#_arguments_cluster} - 1 )); then
+            if [[ "${_arguments_spec[$flag_name]}" != "bool" ]]; then
+              error "${arguments_usage_exit_code}" \
+                <<<"-${_arguments_cc} (--${flag_name}) requires a value and cannot be clustered"
+            fi
+            _arguments_flags["${flag_name}"]=1
+          else
+            case "${_arguments_spec[$flag_name]}" in
+              bool)
+                _arguments_flags["${flag_name}"]=1
+                shift
+                ;;
+              value|required)
+                if (( $# < 2 )) || [[ "${2}" == "--" ]]; then
+                  error "${arguments_usage_exit_code}" \
+                    <<<"-${_arguments_cc} (--${flag_name}) requires a value"
+                fi
+                _arguments_flags["${flag_name}"]="${2}"
+                shift 2
+                ;;
+            esac
+          fi
+        done
         ;;
       *)
         _arguments_positional+=("$@")
