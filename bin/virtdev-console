@@ -58,16 +58,23 @@ if [[ ! -d "${project_directory}" ]]; then
   error 3 <<<"Project virtual machine not found: ${project}"
 fi
 
-console_sock="${project_directory}/console.sock"
-if [[ ! -S "${console_sock}" ]]; then
+if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
   error 4 <<MESSAGE
 Project virtual machine is not running: ${project}
 Start it with: virtdev-start ${project}
 MESSAGE
 fi
 
+console_sock="${project_directory}/console.sock"
+if [[ ! -S "${console_sock}" ]]; then
+  error 5 <<MESSAGE
+Console socket not found: ${console_sock}
+The virtual machine may have started without a serial console.
+MESSAGE
+fi
+
 if ! command -v socat &>/dev/null; then
-  error 5 <<<'socat not found, install with: pacman -S socat'
+  error 6 <<<'socat not found, install with: pacman -S socat'
 fi
 
 printf 'Attaching to serial console of %s.\nDetach with Ctrl-].\n\n' "${project}"
