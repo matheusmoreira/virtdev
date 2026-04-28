@@ -95,7 +95,20 @@ printf 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
 
 printf 'Removing installation directory...\n'
-rmdir "${installation_directory}"
+if ! rmdir "${installation_directory}" 2>/dev/null; then
+  # rmdir refused: something is in the directory beyond the three
+  # files we just moved out. Surface what is left so the user can
+  # decide what to do; leave system/ as the successfully sealed
+  # base. Don't rm -rf — the leftover state may be the user's work.
+  remaining="$(find "${installation_directory}" -mindepth 1 -printf '  %P\n' 2>/dev/null)"
+  error 8 <<MESSAGE
+Installation directory not empty after sealing: '${installation_directory}'
+${remaining}
+The base system is sealed at '${system_directory}'.
+Inspect the leftover files and remove the directory manually:
+    rm -rf '${installation_directory}'
+MESSAGE
+fi
 
 printf "Base system sealed: '%s'\n" "${system_directory}"
 printf 'Run virtdev-create <name> to derive a virtual machine.\n'
