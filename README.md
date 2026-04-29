@@ -148,11 +148,15 @@ directory adjacent to the `bin/` directory. No installation step is required.
 To install system-wide:
 
 ```
-sudo install -Dm755 bin/virtdev-* -t /usr/bin/
+sudo install -Dm755 bin/virtdev bin/virtdev-* -t /usr/bin/
 sudo install -Dm644 lib/virtdev/* -t /usr/lib/virtdev/
 sudo install -Dm644 iso/* -Dt /usr/share/virtdev/profile/
 # Repeat for subdirectories under iso/
 ```
+
+`bin/virtdev` is the unified dispatcher (`virtdev start myproject` →
+`virtdev-start myproject`) and is installed alongside the
+per-command scripts.
 
 The `bin/` and `lib/virtdev/` directories must end up as siblings under
 the install prefix (e.g., `/usr/bin/` and `/usr/lib/virtdev/`); the
