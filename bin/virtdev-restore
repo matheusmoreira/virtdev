@@ -273,7 +273,12 @@ rsync_opts=(-a --no-D --ignore-missing-args --stats)
 rsync_log="$(mktemp)"
 trap 'rm -f "${rsync_log}"' EXIT
 
-if ! rsync "${rsync_opts[@]}" \
+# Force LC_ALL=C so rsync's --stats output is in English. The
+# partial-transfer counter and the zero-files guard parse the
+# 'Number of regular files transferred:' line; under a non-English
+# locale rsync would emit a translated label and the parse would
+# fail silently. Mirrors the equivalent guard in virtdev-backup.
+if ! LC_ALL=C rsync "${rsync_opts[@]}" \
     --files-from=<(grep -Ev '^\s*(#|$)' "${snapshot}/backup.list") \
     -e "${ssh_command}" \
     "${snapshot}/tree/" \
