@@ -8,6 +8,18 @@
 #   64  usage error (unknown flag, missing value, missing required,
 #       bool with value, invalid spec type tag)
 #
+# --help and -h are recognized as universal flags by arguments_parse.
+# When either appears anywhere in argv before the -- terminator, the
+# parser prints the usage line via arguments_usage and exits 0 — so
+# `cmd --help`, `cmd foo --help`, and `cmd -h` all work without each
+# consumer writing a manual intercept. Declaring --help or -h in a
+# spec does NOT shadow this behavior; the universal check fires
+# first inside the parse loop. Consumers that want richer help (a
+# description, examples, env-var docs) can intercept --help/-h
+# themselves before calling arguments_parse — the library's check
+# never fires in that path. After the -- terminator everything is
+# positional, including a literal --help.
+#
 # Spec format (assoc array, key = flag name without leading --):
 #   bool      Flag takes no value; presence sets to 1, absence to 0.
 #   value     Flag takes one value; absence leaves "".
@@ -62,6 +74,10 @@ arguments_parse() {
   local -n _arguments_flags="${2}"
   local -n _arguments_positional="${3}"
 
+  # Saved for the universal --help/-h handler in the parse loop
+  # below. arguments_usage takes the spec name, not the nameref.
+  local _arguments_spec_name="${1}"
+
   local _arguments_short_name="${1}_short"
   local _arguments_has_short=0
   if declare -p "${_arguments_short_name}" &>/dev/null; then
@@ -111,6 +127,17 @@ arguments_parse() {
   while (( $# > 0 )); do
     arg="${1}"
     case "${arg}" in
+      --help|-h)
+        # Universal help; fires before -- because the user almost
+        # certainly wants help even if they typed `cmd -- --help`
+        # by accident — but actually no: -- comes first in this
+        # case (matches "--" exactly while "--help" doesn't), so
+        # `cmd -- --help` correctly treats --help as positional.
+        # This branch only catches standalone --help/-h before any
+        # explicit terminator.
+        arguments_usage "${_arguments_spec_name}"
+        exit 0
+        ;;
       --)
         shift
         _arguments_positional+=("$@")

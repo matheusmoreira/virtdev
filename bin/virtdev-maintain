@@ -92,9 +92,6 @@ readonly unit=virtdev-maintenance
 
 # shellcheck disable=SC2034  # spec read via nameref
 declare -A spec=()
-case "${1:-}" in
-  --help|-h) arguments_usage spec ; exit 0 ;;
-esac
 # shellcheck disable=SC2034
 declare -A flags=()
 declare -a positional=()

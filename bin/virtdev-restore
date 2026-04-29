@@ -61,9 +61,6 @@ declare -A spec=([verbose]=bool)
 declare -A spec_short=([v]=verbose)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project "snapshot?")
-case "${1:-}" in
-  --help|-h) arguments_usage spec ; exit 0 ;;
-esac
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"

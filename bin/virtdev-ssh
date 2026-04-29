@@ -44,9 +44,6 @@ import error validate arguments ssh
 declare -A spec=()
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project "ssh-args*")
-case "${1:-}" in
-  --help|-h) arguments_usage spec ; exit 0 ;;
-esac
 # shellcheck disable=SC2034
 declare -A flags=()
 declare -a positional=()

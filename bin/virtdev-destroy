@@ -37,9 +37,6 @@ declare -A spec=([yes]=bool)
 declare -A spec_short=([y]=yes)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project)
-case "${1:-}" in
-  --help|-h) arguments_usage spec ; exit 0 ;;
-esac
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"
