@@ -11,7 +11,12 @@
 # Spec format (assoc array, key = flag name without leading --):
 #   bool      Flag takes no value; presence sets to 1, absence to 0.
 #   value     Flag takes one value; absence leaves "".
-#   required  Same as value, plus post-parse error if not given.
+#   required  Same as value, plus post-parse error if not given. The
+#             missing-value check is syntactic: --required-flag must
+#             appear in argv. An empty value (--flag= or -f '') counts
+#             as given and passes the check; consumers that need
+#             non-empty validation must do it themselves on
+#             flags["${key}"] after parsing.
 #
 # Result format:
 #   flags        assoc array, populated with parsed values
