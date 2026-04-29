@@ -64,7 +64,7 @@ import() {
   done
 }
 
-import error validate arguments
+import error validate arguments snapshot
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -102,7 +102,7 @@ validate_project_name "${project}"
 
 unit="virtdev-${project}"
 project_directory="${VIRTDEV_HOME}/projects/${project}"
-backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
+backups_project_dir="$(snapshot_directory "${project}")"
 
 if [[ ! -d "${project_directory}" ]]; then
   error 3 <<<"Project not found: ${project}"
@@ -179,16 +179,7 @@ fi
 # and no prior snapshots" rule, and for the latest-snapshot reference
 # in restore-failure recovery hints.
 has_snapshots=0
-if [[ -d "${backups_project_dir}" ]]; then
-  if find "${backups_project_dir}" -mindepth 2 -maxdepth 2 -type d \
-       -regextype posix-extended \
-       -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
-       2>/dev/null \
-       | head -n1 \
-       | grep -q .; then
-    has_snapshots=1
-  fi
-fi
+snapshot_any "${project}" && has_snapshots=1
 
 # Decide which steps will actually run. Computed up front so the plan
 # print is accurate and the chain executes without re-deriving.
@@ -305,17 +296,7 @@ restore() {
 # messages. Returns the snapshot's <date>/<time> path component, or
 # the empty string if none exists.
 latest_snapshot() {
-  if [[ ! -d "${backups_project_dir}" ]]; then
-    return 0
-  fi
-  local path
-  path="$(find "${backups_project_dir}" -mindepth 2 -maxdepth 2 -type d \
-       -regextype posix-extended \
-       -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
-       2>/dev/null \
-       | sort \
-       | tail -n1)"
-  printf '%s\n' "${path#"${backups_project_dir}/"}"
+  snapshot_latest "${project}"
 }
 
 # Chain execution. Each step prints its banner first so the user can

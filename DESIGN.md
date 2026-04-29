@@ -478,6 +478,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`) | 64 |
 | `lock` | exclusive `flock(2)` acquisition on `${VIRTDEV_HOME}/lock`, with maintain-aware diagnostics | 75 |
 | `ssh` | SSH key file existence and permission validation (`ssh_key_validate`) | 77, 78 |
+| `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 
 Libraries are self-contained: each imports its own dependencies
 (e.g., `validate` imports `error` because it calls `error()` on

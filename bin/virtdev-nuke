@@ -28,7 +28,7 @@ import() {
   done
 }
 
-import error lock arguments
+import error lock arguments snapshot
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -109,13 +109,7 @@ if [[ -d "${backups_root}" ]]; then
     printf '\nBackup snapshots:\n'
     for bp in "${backup_projects[@]}"; do
       bp_dir="${backups_root}/${bp}"
-      count=$(
-        find "${bp_dir}" -mindepth 2 -maxdepth 2 -type d \
-             -regextype posix-extended \
-             -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
-          2>/dev/null \
-          | wc -l
-      )
+      count="$(snapshot_count "${bp}")"
       size="$(du -sh "${bp_dir}" 2>/dev/null | cut -f1)"
       printf '\t%s\t%s\t(%d snapshots)\n' "${size}" "${bp_dir}" "${count}"
     done

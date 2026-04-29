@@ -60,6 +60,7 @@ Same error → same code, everywhere:
 | 75 | lock contention (BSD `EX_TEMPFAIL` — retry possible) | `lock_acquire*` |
 | 77 | SSH key not found | `ssh_key_validate` |
 | 78 | SSH key permissions too open | `ssh_key_validate` |
+| 79 | invalid snapshot format | `snapshot_validate_format` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").

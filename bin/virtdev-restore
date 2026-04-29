@@ -48,7 +48,7 @@ import() {
   done
 }
 
-import error validate arguments ssh
+import error validate arguments ssh snapshot
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -78,10 +78,7 @@ project="${1}"
 given_date=""
 given_time=""
 if (( $# == 2 )); then
-  snapshot_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}$'
-  if [[ ! "${2}" =~ ${snapshot_regex} ]]; then
-    error 9 <<<"Invalid snapshot format: '${2}' (expected YYYY-MM-DD/HH-MM-SS)"
-  fi
+  snapshot_validate_format "${2}"
   given_date="${2%%/*}"
   given_time="${2##*/}"
 fi
@@ -119,31 +116,14 @@ Install it with: pacman -S rsync
 MESSAGE
 fi
 
-backups_project_dir="${VIRTDEV_HOME}/backups/${project}"
-
-date_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-time_regex='^[0-9]{2}-[0-9]{2}-[0-9]{2}$'
-
-list_day_dirs() {
-  if [[ ! -d "${backups_project_dir}" ]]; then return 0; fi
-  find "${backups_project_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
-    | grep -E "${date_regex}" \
-    | sort
-}
-
-list_time_dirs() {
-  local -r day="${1}"
-  find "${backups_project_dir}/${day}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
-    | grep -E "${time_regex}" \
-    | sort
-}
+backups_project_dir="$(snapshot_directory "${project}")"
 
 # Resolve date component. Resolution failures get codes distinct
 # from the syntactic ones above: 16 = date directory absent,
 # 17 = date directory empty (no times under it), 18 = time directory
 # absent within an existing date.
 if [[ -z "${given_date}" ]]; then
-  resolved_date="$(list_day_dirs | tail -n1)"
+  resolved_date="$(snapshot_list_days "${project}" | tail -n1)"
   if [[ -z "${resolved_date}" ]]; then
     error 8 <<MESSAGE
 No snapshots for this project: ${project}
@@ -159,7 +139,7 @@ fi
 
 # Resolve time component.
 if [[ -z "${given_time}" ]]; then
-  resolved_time="$(list_time_dirs "${resolved_date}" | tail -n1)"
+  resolved_time="$(snapshot_list_times "${project}" "${resolved_date}" | tail -n1)"
   if [[ -z "${resolved_time}" ]]; then
     error 17 <<<"No snapshots on date ${resolved_date}"
   fi

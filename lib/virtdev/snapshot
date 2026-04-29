@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+#
+# snapshot library: virtdev-backup snapshot directory utilities.
+#
+# Snapshots produced by virtdev-backup live at:
+#
+#     ${VIRTDEV_HOME}/backups/<project>/<YYYY-MM-DD>/<HH-MM-SS>/
+#
+# This library centralizes the regexes and find invocations that
+# enumerate, count, and select those directories. Listing functions
+# print to stdout and never error on a missing project tree — they
+# just produce empty output, leaving the existence check to the
+# consumer where the resulting message can be specific to the
+# operation in flight (no snapshots vs. no snapshots on a given day,
+# etc.).
+#
+# Public:
+#
+#   snapshot_directory <project>
+#       Print the absolute snapshots root for <project>.
+#
+#   snapshot_validate_format <snapshot-string>
+#       Verify a user-supplied "YYYY-MM-DD/HH-MM-SS" string. Errors
+#       with code 79 on format mismatch.
+#
+#   snapshot_list_days <project>
+#       Print sorted day directory names. Empty if no snapshots dir.
+#
+#   snapshot_list_times <project> <day>
+#       Print sorted time directory names within <project>/<day>.
+#       Empty if the day directory does not exist.
+#
+#   snapshot_list <project>
+#       Print sorted "YYYY-MM-DD/HH-MM-SS" pairs for <project>.
+#       Empty if there are no snapshots.
+#
+#   snapshot_count <project>
+#       Print the number of snapshots for <project>.
+#
+#   snapshot_any <project>
+#       Exit 0 if <project> has at least one snapshot, 1 otherwise.
+#
+#   snapshot_latest <project>
+#       Print the most recent "YYYY-MM-DD/HH-MM-SS" pair for
+#       <project>. Empty if there are no snapshots.
+#
+# Public constants (readonly):
+#
+#   snapshot_date_regex      ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+#   snapshot_time_regex      ^[0-9]{2}-[0-9]{2}-[0-9]{2}$
+#   snapshot_format_regex    ^[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}$
+#
+# Exit codes:
+#   79  invalid snapshot format (snapshot_validate_format)
+#
+set -euo pipefail
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+import error
+
+readonly snapshot_invalid_format_exit_code=79
+readonly snapshot_date_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+readonly snapshot_time_regex='^[0-9]{2}-[0-9]{2}-[0-9]{2}$'
+readonly snapshot_format_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}$'
+
+snapshot_directory() {
+  local -r project="${1}"
+  printf '%s\n' "${VIRTDEV_HOME}/backups/${project}"
+}
+
+snapshot_validate_format() {
+  local -r snapshot="${1}"
+  if [[ ! "${snapshot}" =~ ${snapshot_format_regex} ]]; then
+    error "${snapshot_invalid_format_exit_code}" \
+      <<<"Invalid snapshot format: '${snapshot}' (expected YYYY-MM-DD/HH-MM-SS)"
+  fi
+}
+
+snapshot_list_days() {
+  local -r project="${1}"
+  local -r dir="${VIRTDEV_HOME}/backups/${project}"
+  [[ -d "${dir}" ]] || return 0
+  find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
+    | grep -E "${snapshot_date_regex}" \
+    | sort
+}
+
+snapshot_list_times() {
+  local -r project="${1}"
+  local -r day="${2}"
+  local -r dir="${VIRTDEV_HOME}/backups/${project}/${day}"
+  [[ -d "${dir}" ]] || return 0
+  find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
+    | grep -E "${snapshot_time_regex}" \
+    | sort
+}
+
+snapshot_list() {
+  local -r project="${1}"
+  local -r dir="${VIRTDEV_HOME}/backups/${project}"
+  [[ -d "${dir}" ]] || return 0
+  # find -regex matches the full path; -printf %P prints with the
+  # start point removed, so callers see "YYYY-MM-DD/HH-MM-SS" rather
+  # than "${dir}/YYYY-MM-DD/HH-MM-SS".
+  find "${dir}" -mindepth 2 -maxdepth 2 -type d \
+       -regextype posix-extended \
+       -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
+       -printf '%P\n' 2>/dev/null \
+    | sort
+}
+
+snapshot_count() {
+  local -r project="${1}"
+  snapshot_list "${project}" | wc -l
+}
+
+snapshot_any() {
+  local -r project="${1}"
+  (( $(snapshot_count "${project}") > 0 ))
+}
+
+snapshot_latest() {
+  local -r project="${1}"
+  snapshot_list "${project}" | tail -n1
+}
