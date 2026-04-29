@@ -77,7 +77,7 @@ import() {
   done
 }
 
-import error lock arguments
+import error lock arguments ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -184,12 +184,7 @@ if [[ ! -f "${OVMF_CODE}" ]]; then
   error 6 <<<"Firmware not found: '${OVMF_CODE}'"
 fi
 
-if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
-  error 7 <<MESSAGE
-SSH key not found: '${VIRTDEV_SSH_KEY}'
-Generate it with virtdev-key then recreate and reinstall base system image.
-MESSAGE
-fi
+ssh_key_validate "${VIRTDEV_SSH_KEY}"
 
 # Check for an orphaned virtdev-maintenance unit from a previous
 # session before the generic "any virtdev-*.service active" check

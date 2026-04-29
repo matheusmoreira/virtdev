@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# ssh library: SSH key validation for virtdev guest connections.
+#
+# Public:
+#   ssh_key_validate <key-path>
+#       Verify the file at <key-path> exists and has acceptable
+#       permissions (mode 600 or 400). Errors with code 77 if
+#       missing, 78 if the mode is too open. The two checks are
+#       paired because a key file with a wide mode is almost always
+#       a setup mistake (umask leftover, copy from another host with
+#       relaxed perms) and ssh would refuse it anyway with a less
+#       targeted message.
+#
+# Exit codes:
+#   77  SSH key not found
+#   78  SSH key permissions too open
+#
+set -euo pipefail
+import error
+
+readonly ssh_key_not_found_exit_code=77
+readonly ssh_key_permissions_exit_code=78
+
+ssh_key_validate() {
+  local -r key="${1}"
+  if [[ ! -f "${key}" ]]; then
+    error "${ssh_key_not_found_exit_code}" <<MESSAGE
+SSH key not found: '${key}'
+Generate one with virtdev-key, place an existing key at that path,
+or override the location with VIRTDEV_SSH_KEY.
+MESSAGE
+  fi
+  local -r perms="$(stat -c '%a' "${key}")"
+  if [[ "${perms}" != "600" && "${perms}" != "400" ]]; then
+    error "${ssh_key_permissions_exit_code}" <<MESSAGE
+SSH key permissions too open: '${key}' (${perms})
+Fix with: chmod 600 '${key}'
+MESSAGE
+  fi
+}

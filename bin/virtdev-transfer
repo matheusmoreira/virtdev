@@ -44,7 +44,7 @@ import() {
   done
 }
 
-import error validate arguments
+import error validate arguments ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -95,20 +95,7 @@ Run it with: virtdev-start ${project}
 MESSAGE
 fi
 
-if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
-  error 6 <<MESSAGE
-SSH key not found: '${VIRTDEV_SSH_KEY}'
-Place the private key at that path, link it, or set VIRTDEV_SSH_KEY.
-MESSAGE
-fi
-
-key_permissions="$(stat -c '%a' "${VIRTDEV_SSH_KEY}")"
-if [[ "${key_permissions}" != "600" && "${key_permissions}" != "400" ]]; then
-  error 7 <<MESSAGE
-SSH key permissions too open: '${VIRTDEV_SSH_KEY}' (${key_permissions})
-Fix with: chmod 600 '${VIRTDEV_SSH_KEY}'
-MESSAGE
-fi
+ssh_key_validate "${VIRTDEV_SSH_KEY}"
 
 if ! command -v rsync &>/dev/null; then
   error 8 <<MESSAGE

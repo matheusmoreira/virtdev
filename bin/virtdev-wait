@@ -31,7 +31,7 @@ import() {
   done
 }
 
-import error validate arguments
+import error validate arguments ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -74,13 +74,7 @@ fi
 
 port="$(< "${port_file}")"
 
-if [[ ! -f "${VIRTDEV_SSH_KEY}" ]]; then
-  error 5 <<MESSAGE
-SSH key not found: '${VIRTDEV_SSH_KEY}'
-Generate it with virtdev-key then recreate and reinstall base system,
-or set VIRTDEV_SSH_KEY.
-MESSAGE
-fi
+ssh_key_validate "${VIRTDEV_SSH_KEY}"
 
 printf 'Waiting for %s to bind SSH on port %d with timeout %ds...\n' \
        "${project}" "${port}" "${VIRTDEV_WAIT_TIMEOUT}"

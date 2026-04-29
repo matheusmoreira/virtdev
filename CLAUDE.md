@@ -58,6 +58,8 @@ Same error → same code, everywhere:
 | 2 | invalid project name | `validate_project_name` |
 | 64 | usage error (unknown flag, missing value, etc.) | `arguments_parse` |
 | 75 | lock contention (BSD `EX_TEMPFAIL` — retry possible) | `lock_acquire*` |
+| 77 | SSH key not found | `ssh_key_validate` |
+| 78 | SSH key permissions too open | `ssh_key_validate` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").
