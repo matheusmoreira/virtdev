@@ -18,8 +18,16 @@ set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 import error
 
-readonly lock_file="${VIRTDEV_HOME}/lock"
 readonly lock_contention_exit_code=75
+
+# lock_file is deliberately NOT declared as a top-level readonly:
+# its value derives from VIRTDEV_HOME, and a top-level binding would
+# capture VIRTDEV_HOME's current value at source time — freezing the
+# lock target even if a consumer rebinds VIRTDEV_HOME afterward
+# (e.g., from a --virtdev-home flag parsed after the import). Each
+# function that needs the path declares it as `local -r` at entry,
+# which still forbids rebinding within the call but evaluates
+# ${VIRTDEV_HOME} fresh each time.
 
 lock_acquire() {
   lock_open_and_flock || lock_die_for_other
@@ -30,6 +38,7 @@ lock_acquire_for_maintain() {
 }
 
 lock_open_and_flock() {
+  local -r lock_file="${VIRTDEV_HOME}/lock"
   mkdir -p "${VIRTDEV_HOME}"
   exec 9>>"${lock_file}"
   if flock -n 9; then
@@ -41,6 +50,7 @@ lock_open_and_flock() {
 }
 
 lock_holder_pid_and_cmdline() {
+  local -r lock_file="${VIRTDEV_HOME}/lock"
   local pid cmdline=""
   pid="$(cat "${lock_file}" 2>/dev/null || true)"
   if [[ -n "${pid}" && -r "/proc/${pid}/cmdline" ]]; then
@@ -50,6 +60,7 @@ lock_holder_pid_and_cmdline() {
 }
 
 lock_die_for_other() {
+  local -r lock_file="${VIRTDEV_HOME}/lock"
   local pid cmdline
   IFS=$'\t' read -r pid cmdline < <(lock_holder_pid_and_cmdline)
   if [[ "${cmdline}" == *virtdev-maintain* ]]; then
@@ -68,6 +79,7 @@ MESSAGE
 }
 
 lock_die_for_maintain() {
+  local -r lock_file="${VIRTDEV_HOME}/lock"
   local pid cmdline
   IFS=$'\t' read -r pid cmdline < <(lock_holder_pid_and_cmdline)
   if [[ "${cmdline}" == *virtdev-maintain* ]]; then

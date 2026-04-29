@@ -155,8 +155,14 @@ variable scope, process, and shell options:
    exits the process is a bug.
 4. **`local` for everything inside functions.** If a global must escape,
    namespace it with `VIRTDEV_*` so the consumer can see the contract.
-5. **`readonly` for constants.** Library-level constants get `readonly`
-   (or `declare -r`) so they can't be accidentally rebound by a consumer.
+5. **`readonly` for true constants only.** Library-level values that
+   don't depend on mutable env vars get `readonly` (or `declare -r`)
+   so they can't be accidentally rebound by a consumer. Values
+   *derived* from mutable env vars (`VIRTDEV_HOME`, etc.) must be
+   computed inside the functions that use them — `local -r` at
+   function entry preserves immutability without freezing the env
+   var's source-time value (which would break any consumer that
+   rebinds the env var after `import`).
 6. **Self-contained dependencies.** Each library imports the libraries it
    uses (e.g., `validate` does `import error` because it calls `error()`)
    and self-defaults the env vars it reads (e.g., `lock` defaults
