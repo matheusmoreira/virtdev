@@ -188,13 +188,34 @@ else
   done
 fi
 
-printf '%d\n' "${port}" > "${port_file}"
-
 system_disk="${project_directory}"/system.qcow2
 home_disk="${project_directory}"/home.qcow2
 nvram="${project_directory}"/nvram
 monitor_sock="${project_directory}"/monitor.sock
 console_sock="${project_directory}"/console.sock
+
+# Cleanup-on-failure: every error path between here and the wait-loop
+# success marker must leave the host in the same shape it found it.
+# The presence of port_file is virtdev's signal that a VM is running
+# (consulted by virtdev-ssh, virtdev-list, virtdev-backup, etc.); a
+# leftover port_file after an aborted start would lure later commands
+# into trusting a unit that does not exist. The trap fires on any
+# exit (set -e error, signal, or explicit error N) before
+# vm_started=1 is set; if the systemd unit is somehow still active
+# (e.g. error 12 on a slow boot whose unit eventually reaches active
+# after our 5s deadline), best-effort stop it so file state and unit
+# state stay consistent.
+vm_started=0
+cleanup_failed_start() {
+  (( vm_started )) && return 0
+  if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+    systemctl --user stop "${unit}" 2>/dev/null || true
+  fi
+  rm -f "${port_file}" "${monitor_sock}" "${console_sock}"
+}
+trap cleanup_failed_start EXIT
+
+printf '%d\n' "${port}" > "${port_file}"
 
 # Remove stale sockets from a previous unclean shutdown
 rm -f "${monitor_sock}" "${console_sock}"
@@ -321,6 +342,8 @@ MESSAGE
       ;;
   esac
 done
+
+vm_started=1
 
 printf 'VM started.\n'
 printf 'SSH will be available after boot at: 127.0.0.1:%d\n' "${port}"
