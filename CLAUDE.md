@@ -36,8 +36,11 @@ how it's structured. Don't duplicate their content here — point to them.
   that mutates virtdev state. See `DESIGN.md`'s "Concurrency and Locking"
   section for which scripts lock and why.
 - Defaults `VIRTDEV_HOME` via `: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"`.
-- Handles `--help` / `-h` via a guard before `arguments_parse`, and
-  generates usage lines from the spec via `arguments_usage`.
+- Calls `arguments_parse` to parse argv and `arguments_usage` to
+  generate usage lines from the spec. `arguments_parse` intercepts
+  `--help` and `-h` automatically (anywhere in argv before the `--`
+  terminator) and prints the usage line; consumers don't need a
+  manual help intercept.
 
 ### The `virtdev` dispatcher
 
@@ -111,16 +114,17 @@ declare -A spec=([yes]=bool [provision]=value)
 declare -A spec_short=([y]=yes [p]=provision)    # optional: short aliases
 declare -A spec_placeholders=([provision]=path)   # optional: usage text
 declare -a spec_positionals=(project)             # optional: usage text
-case "${1:-}" in
-  --help|-h) arguments_usage spec ; exit 0 ;;
-esac
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"
 ```
 
-Spec types: `bool` (presence/absence), `value` (takes one arg),
-`required` (like value, but errors if missing).
+Spec types: `bool` (presence/absence), `value` (takes one arg —
+defaults to `""` if absent), `required` (like value, but errors if
+not given). `--help`/`-h` is reserved by the library; declaring
+either in a spec does not shadow the universal handling. The
+"required" check is syntactic — `--flag=` counts as given; consumers
+needing non-empty validation must do it after parsing.
 
 Parsing is **GNU-style**: flags and positionals may be interleaved.
 `virtdev-destroy myproject --yes` works. Use `--` to force all
