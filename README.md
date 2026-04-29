@@ -88,7 +88,7 @@ The backup and restore primitives are also available standalone:
 virtdev-backup myproject               # snapshot the running VM
 virtdev-backup --list myproject        # see snapshots
 virtdev-restore myproject              # restore latest snapshot
-virtdev-restore myproject 2026-04-25 14-30-22   # restore a specific one
+virtdev-restore myproject 2026-04-25/14-30-22   # restore a specific one
 ```
 
 Backups live under `${VIRTDEV_HOME}/backups/<project>/<date>/<time>/`
@@ -201,7 +201,7 @@ virtdev-ssh myproject
 | `virtdev-wait <project>` | Poll until SSH is accepting connections |
 | `virtdev-list` | List all projects with port and running status |
 | `virtdev-backup [--list] <project>` | Snapshot user-curated guest paths to a host-side timestamped directory |
-| `virtdev-restore <project> [<date> [<time>]]` | Restore a snapshot into a running project VM |
+| `virtdev-restore <project> [<snapshot>]` | Restore a snapshot (`<date>/<time>`) into a running project VM |
 | `virtdev-recreate [flags] <project>` | Backup, destroy, recreate, optionally provision, and restore in one command |
 | `virtdev-destroy [--yes] <project>` | Delete a project VM (requires confirmation; `--yes` skips the prompt) |
 | `virtdev-nuke` | Delete all virtdev data (requires confirmation) |
