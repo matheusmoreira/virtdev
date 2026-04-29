@@ -376,10 +376,45 @@ if ! rsync "${rsync_opts[@]}" \
     "dev@127.0.0.1:/home/dev/" \
     "${partial}/tree/" \
     | tee "${rsync_log}"; then
-  error 7 <<MESSAGE
-rsync transfer failed during backup of ${project}.
-Partial snapshot removed: ${partial}
+  # PIPESTATUS[0] is rsync's exit code; pipefail propagates it as the
+  # pipeline's non-zero status. Distinguish the partial-transfer
+  # codes (23, 24) from a transport failure (255) and from any other
+  # rsync-level error so the user sees a targeted hint, mirroring
+  # virtdev-restore. The trap removes the partial snapshot in all
+  # paths, so host-side state stays consistent across the dispatch.
+  rsync_exit="${PIPESTATUS[0]}"
+  case "${rsync_exit}" in
+    23|24)
+      partial_count="$(awk -F: '/^Number of regular files transferred:/ {
+        gsub(/[ ,]/, "", $2); print $2
+      }' "${rsync_log}")"
+      error 7 <<MESSAGE
+rsync transfer of ${project} completed with errors (exit ${rsync_exit}).
+${partial_count:-?} files were transferred; the rest were skipped or failed.
+The partial snapshot has been removed.
+See the per-file output above for which entries failed; verify the
+manifest against the guest with: virtdev-ssh ${project} ls -la
 MESSAGE
+      ;;
+    255)
+      error 17 <<MESSAGE
+rsync transfer failed during backup of ${project} (exit 255: transport).
+The SSH connection to the guest could not be established or was lost.
+The partial snapshot has been removed.
+Verify the VM is reachable, then retry:
+
+    virtdev-ssh ${project} true
+    virtdev-backup ${project}
+MESSAGE
+      ;;
+    *)
+      error 18 <<MESSAGE
+rsync transfer failed during backup of ${project} (exit ${rsync_exit}).
+The transfer aborted before completion. See the per-file output
+above for the cause. The partial snapshot has been removed.
+MESSAGE
+      ;;
+  esac
 fi
 
 # Refuse a snapshot that received zero files. The manifest may
