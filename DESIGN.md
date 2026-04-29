@@ -457,10 +457,13 @@ extension point: the libraries are internal-only and have no stable API.
 The mechanism is bash 5.2's `source -p <colon-search-path> <name>`,
 which lets a script source a library by name without computing or
 hardcoding its path. Each script in `bin/` opens with a uniform
-4-symbol bootstrap: it derives the library directory from its own
-location via `readlink -f` on `BASH_SOURCE[0]`, defines an `import`
-helper that de-duplicates via an associative array, and then issues
-`import` calls for the libraries it uses.
+3-symbol bootstrap: it derives the library directory from its own
+location via `readlink -f` on `BASH_SOURCE[0]`
+(`virtdev_library_directory`), defines an associative array for
+de-duplication (`virtdev_loaded_libraries`), and defines an
+`import` function that consults the array before sourcing. Once
+those three are in scope, the script issues `import` calls for the
+libraries it uses.
 
 The same `<bin>/../lib/virtdev` relative path resolves correctly for
 both the dev tree (`~/dev/virtdev/bin → ~/dev/virtdev/lib/virtdev`)
@@ -490,8 +493,9 @@ them, so the same error condition produces the same exit code in
 every script.
 
 The full discipline rules (no top-level side effects, function
-naming convention, `local` everywhere, `readonly` for constants,
-header comment format) are documented in `CLAUDE.md`.
+naming convention, `local` everywhere, `readonly` for true
+constants only, header comment format) are documented in
+`CLAUDE.md`.
 
 ---
 
@@ -499,10 +503,14 @@ header comment format) are documented in `CLAUDE.md`.
 
 SSH forwarding ports are assigned at VM start time and recorded in
 `projects/<name>/port` while the VM is running. The port file is removed on
-clean shutdown. Auto-assignment finds the lowest port >= 2222 not currently
-bound on the host. Explicit port assignment is supported via
-`virtdev-start <project> <port>`; `virtdev-start` verifies the port is free
-before launching QEMU.
+clean shutdown by `virtdev-stop`, and on failed activation by
+`virtdev-start`'s cleanup-on-failure trap (which also stops the
+unit if it's still active). The presence of the port file is
+virtdev's signal that the VM is running — it must never linger past
+a stopped or failed unit. Auto-assignment finds the lowest port >=
+2222 not currently bound on the host. Explicit port assignment is
+supported via `virtdev-start <project> <port>`; `virtdev-start`
+verifies the port is free before launching QEMU.
 
 `virtdev-maintain` hardcodes its forwarding port to 2222, the same
 value the auto-assignment loop starts from. This is safe because
