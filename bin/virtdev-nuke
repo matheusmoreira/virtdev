@@ -70,10 +70,17 @@ done
 # virtdev-start cannot slip a VM in between the check and the rm -rf.
 lock_acquire
 
-# Refuse if any project VMs are running
+# Refuse if any project VMs are running. Skip directories whose name
+# does not match the project-name schema: only virtdev itself creates
+# projects/<name>/ entries (always validated against the schema), but
+# a user could have hand-dropped something else under that path. An
+# unvalidated name in 'systemctl is-active virtdev-${project}' would
+# split into multiple args on whitespace and produce a confusing
+# error from systemctl rather than the targeted message we want.
 projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
   while IFS= read -r project; do
+    [[ "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
     if systemctl --user --quiet is-active virtdev-"${project}" 2>/dev/null; then
       error 4 <<MESSAGE
 Project virtual machine is running: ${project}
