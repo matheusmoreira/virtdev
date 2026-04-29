@@ -3,7 +3,8 @@
 # virtdev-iso
 #
 # Builds the virtdev Arch Linux installation ISO.
-# The resulting ISO is written to the current directory.
+# The resulting ISO is written to ${XDG_CACHE_HOME:-~/.cache}/virtdev/virtdev.iso,
+# which is the default VIRTDEV_ISO consumed by virtdev-install.
 #
 # Configuration via environment variables:
 #
