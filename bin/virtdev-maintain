@@ -47,13 +47,9 @@
 # as a backing file. Replacing it under a running
 # virtual machine would corrupt its delta image.
 #
-# After resealing:
-#
-#   - Project virtual machines in delta mode
-#     do not pick up changes automatically.
-#     Recreate them with virtdev-destroy + virtdev-create.
-#   - Project virtual machines in shared read-only mode
-#     pick up changes to the system disk on next boot.
+# After resealing, project virtual machines do not pick up changes
+# automatically. Recreate them with virtdev-destroy + virtdev-create,
+# or use virtdev-recreate to do that with backup/restore around it.
 #
 # Configuration via environment variables:
 #
