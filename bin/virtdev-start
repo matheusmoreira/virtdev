@@ -168,10 +168,15 @@ port_file="${project_directory}"/port
 
 explicit_port=0
 if [[ $# -eq 2 ]]; then
-  # Explicit port from command line
+  # Explicit port from command line.
+  # The 10# prefix forces base-10 in the arithmetic comparison: bash
+  # otherwise reads a leading-zero literal as octal, so '02222' would
+  # evaluate to 1170 decimal and trip the < 1024 rejection with a
+  # confusing "Invalid port" message. The regex rules out non-digits,
+  # so 10#${port} is always well-formed.
   explicit_port=1
   port="${2}"
-  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
+  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( 10#${port} < 1024 || 10#${port} > 65535 )); then
     error 7 <<<"Invalid port: '${port}' (must be 1024-65535)"
   fi
   if port_in_use "${port}"; then
