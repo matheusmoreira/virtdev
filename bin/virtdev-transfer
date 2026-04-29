@@ -105,8 +105,8 @@ fi
 key_permissions="$(stat -c '%a' "${VIRTDEV_SSH_KEY}")"
 if [[ "${key_permissions}" != "600" && "${key_permissions}" != "400" ]]; then
   error 7 <<MESSAGE
-SSH key permissions too open: ${key_permissions} '${VIRTDEV_SSH_KEY}' 
-Fix permissions with: chmod 600 '${VIRTDEV_SSH_KEY}'
+SSH key permissions too open: '${VIRTDEV_SSH_KEY}' (${key_permissions})
+Fix with: chmod 600 '${VIRTDEV_SSH_KEY}'
 MESSAGE
 fi
 
