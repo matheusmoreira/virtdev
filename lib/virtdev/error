@@ -5,10 +5,20 @@
 #   error <exit-code>            (message via stdin / heredoc)
 # Exit codes: none reserved (caller-supplied via parameter).
 #
+# error() reads its message from stdin and writes it to stderr. Every
+# in-tree caller passes a heredoc or here-string. If a future caller
+# forgets the redirection, cat would block reading from the controlling
+# terminal — refuse that case explicitly so the bug surfaces with a
+# diagnostic instead of a hang.
+#
 set -euo pipefail
 
 error() {
   local -r code="${1}"
+  if [[ -t 0 ]]; then
+    printf 'internal error: error() called without stdin redirection\n' >&2
+    exit "${code}"
+  fi
   cat >&2
   exit "${code}"
 }
