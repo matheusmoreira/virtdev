@@ -149,6 +149,7 @@
 
     "tmux",
     "strace",
+    "gdb",
     "lsof",
     "inetutils",
     "openbsd-netcat",
@@ -157,6 +158,8 @@
     "patch",
 
     "bash-completion",
+    "shellcheck",
+    "time",
     "github-cli",
     "ncdu",
     "hyperfine",
