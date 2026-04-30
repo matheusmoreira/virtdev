@@ -1,432 +1,281 @@
 # virtdev
 
-Isolated virtual development machines on KVM/QEMU.
+Per-project KVM/QEMU virtual machines for isolated development.
 
-virtdev automates the creation and management of lightweight Arch Linux VMs
-for software development. Each project gets its own VM backed by qcow2 delta
-images over a shared sealed base, providing hypervisor-level isolation between
-projects with minimal disk overhead.
+Each project gets its own Arch Linux VM backed by a thin qcow2 delta
+over a shared sealed base. The isolation boundary is a hardware-assisted
+hypervisor, not a namespace or permission system.
 
-## Motivation
+## Getting started
 
-The primary motivation is defense against npm supply chain attacks. Language
-package registries routinely serve compromised packages that exfiltrate
-credentials, read source trees, and establish persistence. OS-level sandboxing
-shares the same kernel and user session as the host. Running each project in a
-separate KVM virtual machine raises the bar to a hardware-assisted hypervisor
-escape, which is a qualitatively different and much harder attack.
+### Requirements
 
-virtdev reduces the operational overhead of managing per-project VMs to the
-point where the isolation is practical for day-to-day development.
+- Arch Linux host, bash >= 5.2
+- KVM-capable CPU, QEMU (`qemu-system-x86`), OVMF (`edk2-ovmf`)
+- OpenSSH (`openssh`), socat, rsync, jq, archiso
 
-## How It Works
+### Install
 
-1. **Generate SSH keys** for VM authentication
-2. **Build an ISO** — an automated Arch Linux installer
-3. **Install a base system** — headless Arch Linux on qcow2 disks
-4. **Seal the base** — mark it read-only
-5. **Create project VMs** — thin qcow2 delta layers over the sealed base
-6. **SSH in and develop** — each VM is an independent, isolated environment
-
-```
-virtdev-key                          # Generate SSH key pair
-virtdev-iso                          # Build installation ISO
-virtdev-install                      # Install base system
-virtdev-seal                         # Seal as read-only base
-
-virtdev-create myproject             # Derive a project VM
-virtdev-start myproject              # Start the VM
-virtdev-wait myproject               # Wait for SSH to come up
-virtdev-ssh myproject                # SSH into the VM
-virtdev-ssh myproject ./provision.sh # Run a provisioning script
-virtdev-stop myproject               # Clean shutdown
-```
-
-## Backing up and restoring project state
-
-When a base system update forces delta-mode project VMs to be
-recreated (see `DESIGN.md`), `virtdev-backup` and `virtdev-restore`
-preserve state that the provision script cannot reproduce —
-Claude Code project memories, untracked files in git working
-trees, hand-edited dotfiles, shell history.
-
-Write a manifest. The canonical location is
-`~/.config/virtdev/projects/<project>/backup.list` — dotfile-friendly
-and survives `virtdev-nuke`. A project-local copy at
-`${VIRTDEV_HOME}/projects/<project>/backup.list` takes precedence
-when present (handy for one-off experiments; discarded with the VM).
-
-```
-# Claude Code project memories
-.claude/
-
-# Untracked files in git working trees
-project-a/notes.md
-project-a/.env.local
-
-# Shell config
-.bashrc
-.config/nvim/
-```
-
-The full destroy-and-rebuild cycle is one command:
-
-```
-virtdev-recreate myproject             # backup, destroy, rebuild, restore
-```
-
-Recreate chains `backup → stop → destroy → create → start → wait →
-provision → restore`. It prompts once at the top (type the project
-name to confirm), then drives each step. On any failure, recreate
-exits with a step-specific code and prints the manual command to
-resume — the snapshot from step 1 is preserved. For ephemeral
-projects without a `backup.list`, pass `--no-backup`.
-
-The backup and restore primitives are also available standalone:
-
-```
-virtdev-backup myproject               # snapshot the running VM
-virtdev-backup --list myproject        # see snapshots
-virtdev-restore myproject              # restore latest snapshot
-virtdev-restore myproject 2026-04-25/14-30-22   # restore a specific one
-```
-
-Backups live under `${VIRTDEV_HOME}/backups/<project>/<date>/<time>/`
-and are preserved across `virtdev-destroy` but removed by
-`virtdev-nuke`.
-
-### Optional provision script
-
-To make `virtdev-recreate` fully hands-free, drop a bash script at
-`~/.config/virtdev/projects/<project>/provision`. Recreate streams
-it over SSH via `virtdev-ssh <project> bash -s` between the start
-and restore steps, so the fresh VM gets the user's tools, clones,
-dotfile symlinks, etc. installed before the snapshot is overlaid.
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-sudo pacman -S --noconfirm --needed neovim ripgrep fd
-git clone https://github.com/me/dotfiles ~/dotfiles
-make -C ~/dotfiles install
-```
-
-The shebang is decorative — recreate runs the script with
-`bash -s` regardless. To use a different language, exec it from a
-one-liner bash launcher. Override the discovered hook for one
-invocation with `virtdev-recreate --provision <path>`.
-
-## Requirements
-
-- Arch Linux host
-- bash 5.2 or later (the scripts use `source -p` for the shared library system)
-- KVM-capable CPU (`lscpu | grep Virtualization`)
-- QEMU with x86_64 system emulation (`qemu-system-x86`)
-- OVMF UEFI firmware (`edk2-ovmf`)
-- OpenSSH client and server (`openssh`)
-- socat (`socat`) — for monitor/console socket interaction
-- rsync (`rsync`) — for file transfer between host and VM; must also be installed in the guest
-- jq (`jq`) — for ISO building
-- archiso (`archiso`) — for ISO building
-
-### Installation from AUR
+From the AUR:
 
 ```
 yay -S virtdev
 ```
 
-### Installation from Source
+From source (no install step needed — scripts auto-detect the layout):
 
 ```
 git clone https://github.com/matheusmoreira/virtdev.git
 cd virtdev
 ```
 
-When running from a git checkout, the scripts auto-detect the ISO profile
-directory adjacent to the `bin/` directory. No installation step is required.
+### One-time setup
 
-To install system-wide:
-
-```
-sudo install -Dm755 bin/virtdev bin/virtdev-* -t /usr/bin/
-sudo install -Dm644 lib/virtdev/* -t /usr/lib/virtdev/
-sudo install -Dm644 iso/* -Dt /usr/share/virtdev/profile/
-# Repeat for subdirectories under iso/
-```
-
-`bin/virtdev` is the unified dispatcher (`virtdev start myproject` →
-`virtdev-start myproject`) and is installed alongside the
-per-command scripts.
-
-The `bin/` and `lib/virtdev/` directories must end up as siblings under
-the install prefix (e.g., `/usr/bin/` and `/usr/lib/virtdev/`); the
-scripts resolve the library directory relative to their own location and
-will not find it otherwise.
-
-## Quick Start
+Build the base system that all project VMs derive from:
 
 ```bash
-# 1. Generate SSH keys
-virtdev-key
+virtdev key                       # generate SSH key pair
+virtdev iso                       # build Arch Linux installer ISO
+virtdev install                   # install base system to qcow2 disks
+virtdev seal                      # mark base read-only
+```
 
-# 2. Build the installation ISO (requires archiso, jq, sudo)
-virtdev-iso
+### Create a project
 
-# 3. Install the base system (runs QEMU, waits for auto-install)
-virtdev-install
+```bash
+virtdev create myproject          # derive a thin delta VM
+virtdev start myproject           # boot it (systemd user service)
+virtdev wait myproject            # wait for SSH
+virtdev ssh myproject             # connect
+```
 
-# 4. Seal the base images (marks them read-only)
-virtdev-seal
+### Day-to-day
 
-# 5. Create and start a project VM
-virtdev-create myproject
-virtdev-start myproject
-virtdev-wait myproject
+```bash
+virtdev ssh myproject             # develop
+virtdev stop myproject            # shut down (ACPI, SIGTERM fallback)
+virtdev start myproject           # boot again later
+```
 
-# 6. Connect
-virtdev-ssh myproject
+### Provisioning
+
+Project VMs are expendable. Automate setup with a provision script:
+
+```bash
+# ~/.config/virtdev/projects/myproject/provision
+sudo pacman -S --noconfirm --needed neovim ripgrep fd
+git clone https://github.com/me/dotfiles ~/dotfiles
+make -C ~/dotfiles install
+```
+
+Run it manually on a fresh VM:
+
+```bash
+virtdev ssh myproject bash -s < ~/.config/virtdev/projects/myproject/provision
+```
+
+Or let `virtdev-recreate` run it automatically (see below).
+
+### Backup and restore
+
+Preserve state that provisioning cannot reproduce (project memories,
+untracked files, dotfiles, shell history).
+
+Write a backup manifest at `~/.config/virtdev/projects/myproject/backup.list`:
+
+```
+.claude/
+project-a/notes.md
+project-a/.env.local
+.bashrc
+.config/nvim/
+```
+
+Paths are relative to `/home/dev/` in the guest. Then:
+
+```bash
+virtdev backup myproject          # snapshot listed paths to host
+virtdev backup --list myproject   # list existing snapshots
+virtdev restore myproject         # restore latest snapshot
+virtdev restore myproject 2026-04-25/14-30-22  # restore a specific one
+```
+
+Backups survive `virtdev-destroy` but are removed by `virtdev-nuke`.
+A project-local manifest at `${VIRTDEV_HOME}/projects/myproject/backup.list`
+takes precedence when present (for one-off experiments; discarded with the VM).
+
+### Recreate
+
+Rebuild a project VM on the current sealed base without losing state:
+
+```bash
+virtdev recreate myproject
+```
+
+This chains: backup, stop, destroy, create, start, wait, provision, restore.
+It prompts once (type the project name), then drives each step. On failure,
+it prints the command to resume from the failed step.
+
+If there is a provision script at
+`~/.config/virtdev/projects/myproject/provision`, recreate discovers and
+runs it automatically between start and restore.
+
+Flags: `--no-backup`, `--no-restore`, `--no-provision`, `--provision <path>`,
+`--yes`/`-y`, `--verbose`/`-v`.
+
+### Base system maintenance
+
+Update the sealed base (system packages, dotfiles, etc.):
+
+```bash
+virtdev maintain                  # copies base to staging, boots writable VM
+# ... perform maintenance inside the VM ...
+sudo poweroff                     # triggers reseal prompt
+```
+
+After resealing, existing project VMs refuse to boot (version mismatch).
+Recreate them:
+
+```bash
+virtdev recreate myproject
 ```
 
 ## Commands
 
+All commands are available as `virtdev <command>` (dispatcher) or
+`virtdev-<command>` (direct). `virtdev help <command>` shows usage.
+
+### Setup
+
 | Command | Description |
 |---------|-------------|
-| `virtdev-key` | Generate ed25519 SSH key pair for VM authentication |
+| `virtdev-key` | Generate ed25519 SSH key pair |
 | `virtdev-iso` | Build the Arch Linux installation ISO |
-| `virtdev-install [iso]` | Install base system to fresh qcow2 disks |
-| `virtdev-seal` | Seal installation as read-only base images |
+| `virtdev-install [iso]` | Install base system to qcow2 disks |
+| `virtdev-seal` | Seal installation as read-only base |
 | `virtdev-maintain` | Boot sealed base for maintenance, reseal on exit |
+
+### Project lifecycle
+
+| Command | Description |
+|---------|-------------|
 | `virtdev-create <project>` | Derive a project VM from the sealed base |
-| `virtdev-start <project> [port]` | Start a project VM as a systemd user service; assigns SSH port |
-| `virtdev-stop <project>` | Clean ACPI shutdown with SIGTERM fallback |
-| `virtdev-ssh <project> [args...]` | SSH into a running project VM |
-| `virtdev-transfer <project> <src> <dest>` | Copy files between host and VM (prefix remote path with `:`) |
-| `virtdev-console <project>` | Attach to the serial console (detach: Ctrl-]) |
-| `virtdev-wait <project>` | Poll until SSH is accepting connections |
-| `virtdev-list` | List all projects with port and running status |
-| `virtdev-backup [--list] <project>` | Snapshot user-curated guest paths to a host-side timestamped directory |
-| `virtdev-restore <project> [<snapshot>]` | Restore a snapshot (`<date>/<time>`) into a running project VM |
-| `virtdev-recreate [flags] <project>` | Backup, destroy, recreate, optionally provision, and restore in one command |
-| `virtdev-destroy [--yes] <project>` | Delete a project VM (requires confirmation; `--yes` skips the prompt) |
-| `virtdev-nuke` | Delete all virtdev data (requires confirmation) |
+| `virtdev-start <project> [port]` | Start VM as a systemd user service |
+| `virtdev-stop <project>` | ACPI shutdown with SIGTERM fallback |
+| `virtdev-destroy [-y] <project>` | Delete a project VM (confirmation required) |
+| `virtdev-recreate [flags] <project>` | Backup, destroy, rebuild, provision, restore |
+| `virtdev-nuke` | Delete all virtdev data (confirmation required) |
+
+### Access
+
+| Command | Description |
+|---------|-------------|
+| `virtdev-ssh <project> [args...]` | SSH into a running VM |
+| `virtdev-console <project>` | Serial console (detach: Ctrl-]) |
+| `virtdev-wait <project>` | Poll until SSH is available |
+| `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
+| `virtdev-list` | List projects with port and status |
+
+### Backup
+
+| Command | Description |
+|---------|-------------|
+| `virtdev-backup [--list] [--verbose] <project>` | Snapshot guest paths to host |
+| `virtdev-restore [--verbose] <project> [snapshot]` | Restore a snapshot into a running VM |
 
 ## Configuration
 
-All commands respect these environment variables:
+Environment variables (defaults shown):
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `VIRTDEV_HOME` | `${XDG_DATA_HOME}/virtdev` | Base directory for all virtdev data |
-| `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` | Path to the ed25519 private key |
-| `VIRTDEV_TIMEZONE` | `UTC` | Timezone for the installed system |
-| `VIRTDEV_ISO_PROFILE` | Auto-detected | Path to the ISO profile directory |
-| `VIRTDEV_ISO` | `${XDG_CACHE_HOME}/virtdev/virtdev.iso` | Path to the built ISO |
-| `VIRTDEV_SYSTEM_DISK_SIZE` | `24G` | System disk qcow2 size |
-| `VIRTDEV_HOME_DISK_SIZE` | `48G` | Home disk qcow2 size |
-| `VIRTDEV_VM_MEMORY` | `4096` | VM RAM in megabytes |
-| `VIRTDEV_VM_CPUS` | `4` | Number of VM CPU cores |
-| `VIRTDEV_STOP_TIMEOUT` | `60` | Seconds to wait for ACPI shutdown |
-| `VIRTDEV_WAIT_TIMEOUT` | `120` | Seconds to wait for SSH availability |
-| `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` | UEFI firmware code |
-| `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` | UEFI firmware variables |
+| Variable | Default |
+|----------|---------|
+| `VIRTDEV_HOME` | `~/.local/share/virtdev` |
+| `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` |
+| `VIRTDEV_CACHE` | `~/.cache/virtdev` |
+| `VIRTDEV_TIMEZONE` | `UTC` |
+| `VIRTDEV_ISO_PROFILE` | auto-detected |
+| `VIRTDEV_ISO` | `${VIRTDEV_CACHE}/virtdev.iso` |
+| `VIRTDEV_SYSTEM_DISK_SIZE` | `24G` |
+| `VIRTDEV_HOME_DISK_SIZE` | `48G` |
+| `VIRTDEV_VM_MEMORY` | `4096` (MB) |
+| `VIRTDEV_VM_CPUS` | `4` |
+| `VIRTDEV_STOP_TIMEOUT` | `60` (seconds) |
+| `VIRTDEV_WAIT_TIMEOUT` | `120` (seconds) |
+| `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
+| `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` |
+
+`VIRTDEV_HOME` and `VIRTDEV_CACHE` follow XDG defaults
+(`${XDG_DATA_HOME}` and `${XDG_CACHE_HOME}` respectively).
 
 ## Architecture
 
-### Two-Disk Design
+See `DESIGN.md` for the full architecture, threat model, locking model,
+SSH hardening, and known limitations.
 
-Every VM uses two separate qcow2 disks:
+### Image hierarchy
+
+```
+system/                    sealed base (mode 444)
+  system.qcow2             OS, bootloader, packages
+  home.qcow2               /home/dev template
+  nvram                    UEFI variable store
+  version                  monotonic counter, bumped on reseal
+
+projects/<name>/           per-project (writable deltas)
+  system.qcow2  --backs--> system/system.qcow2
+  home.qcow2    --backs--> system/home.qcow2
+  nvram                    copy of system/nvram
+  version                  must match system/version to boot
+```
+
+Project VMs are thin deltas. Only divergent writes consume disk space.
+
+### Two-disk design
 
 - **vda** (system) — OS, bootloader, installed packages
 - **vdb** (home) — `/home/dev` and all project work
 
-This enables independent lifecycle management: the system disk can be updated
-or replaced without touching project state.
+The system disk can be updated or replaced without touching project state.
 
-### Image Hierarchy
+### Runtime
 
-```
-system/                          (sealed, read-only, mode 444)
-  system.qcow2                  base system disk
-  home.qcow2                    base home disk
-  nvram                         base UEFI variable store
-  version                       monotonic counter, bumped by each reseal
+VMs run as transient systemd user services (`virtdev-<project>.service`):
 
-projects/<name>/                 (per-project, writable)
-  system.qcow2  ---backing-->   system/system.qcow2
-  home.qcow2    ---backing-->   system/home.qcow2
-  nvram                         per-project UEFI variable store copy
-  version                       copy of system/version at create time
-  port                          SSH forwarding port (present while running)
-```
-
-Project VMs are thin delta layers. Only writes that differ from the sealed base
-consume disk space. Creating a new project VM is nearly instantaneous.
-
-The `version` counter guards against a subtle corruption scenario:
-`virtdev-maintain` replaces the sealed base, but existing project deltas hold
-absolute paths to `system/*.qcow2` and would silently compose against the new
-content. `virtdev-start` compares versions and refuses to boot a project whose
-delta was created against an older base.
-
-### Partition Layout
-
-**System disk (vda):**
-
-| Partition | Size | Filesystem | Mount | Purpose |
-|-----------|------|------------|-------|---------|
-| vda1 | 512 MiB | fat32 | `/efi` | EFI System Partition |
-| vda2 | 1024 MiB | fat32 | `/boot` | XBOOTLDR (systemd-boot) |
-| vda3 | remainder | ext4 | `/` | Root filesystem |
-
-**Home disk (vdb):**
-
-| Partition | Size | Filesystem | Mount | Purpose |
-|-----------|------|------------|-------|---------|
-| vdb1 | 100% | ext4 | `/home` | Home directory (LABEL=home) |
-
-### Networking
-
-VMs use QEMU user-mode networking with SSH port forwarding bound to
-`127.0.0.1`. DNS is configured to use Quad9 (9.9.9.9) directly, bypassing
-QEMU's DNS proxy.
-
-### SSH Security
-
-The installed system runs a hardened `sshd`:
-
-- ed25519 host key only
-- Public key authentication only
-- All password-based authentication disabled
-- All accounts locked (`passwd -l`)
-- CBC ciphers removed, NIST ECDH kex removed, weak MACs removed
-- `AllowUsers dev`, `PermitRootLogin no`
-
-### VM Runtime
-
-Project VMs run as transient systemd user services:
-
-```
-systemd-run --user --unit=virtdev-<project> -- qemu-system-x86_64 ...
-```
-
-Standard systemd tools work for inspection:
-
-```
+```bash
 systemctl --user status virtdev-myproject
 journalctl --user -u virtdev-myproject
 ```
 
-`virtdev-stop` sends ACPI power-down via the QEMU monitor socket and waits
-for the unit to exit, with `VIRTDEV_STOP_TIMEOUT` bounding the wait. On
-timeout — or if the monitor is unreachable — it falls back to SIGTERM via
-`systemctl stop`. It reports the QEMU exit status alongside the confirmation
-(`0` for a clean guest poweroff, `143` for a SIGTERM fallback).
-
 ### Concurrency
 
-Commands that mutate virtdev state take an exclusive `flock(2)` on
-`${VIRTDEV_HOME}/lock` for their duration and fail fast on contention
-with exit code 75 (BSD `EX_TEMPFAIL` — temporary failure, retry possible):
+Mutating commands take an exclusive `flock(2)` on `${VIRTDEV_HOME}/lock`
+and fail fast on contention (exit 75). `cat ${VIRTDEV_HOME}/lock` shows
+the holder's PID.
 
-- Locking: `virtdev-install`, `virtdev-seal`, `virtdev-maintain`,
-  `virtdev-create`, `virtdev-start`, `virtdev-stop`, `virtdev-destroy`,
-  `virtdev-nuke`
-- Not locking: `virtdev-list`, `virtdev-ssh`, `virtdev-wait`,
-  `virtdev-console`, `virtdev-transfer`, `virtdev-key`, `virtdev-iso`,
-  `virtdev-backup`, `virtdev-restore`, `virtdev-recreate`
-
-`virtdev-recreate` composes the locking primitives — each subcommand
-it spawns acquires the lock as it needs to — and avoids holding a
-top-level lock across the slow rsync transfers. The race-window
-analysis lives in `DESIGN.md`.
-
-The lock file is visible and contains the current holder's PID, so
-`cat ${VIRTDEV_HOME}/lock` during a contention error shows which process
-to wait on. If the holder is `virtdev-maintain`, the error message points
-at the maintenance VM specifically, since a maintenance session can hold
-the lock for hours.
-
-## Base System Maintenance
-
-```bash
-virtdev-maintain
-```
-
-This copies the sealed base to a staging area, boots it as a writable VM,
-and waits for you to perform maintenance (system updates, dotfile changes,
-etc.). On clean `sudo poweroff`, it offers to reseal the updated images as the
-new base.
-
-After resealing, existing project VMs in delta mode do not inherit changes
-automatically. `virtdev-start` will refuse to boot such a project because its
-recorded base version no longer matches `system/version`. Run
-`virtdev-recreate <project>` to back up state, rebuild on the new base,
-re-provision, and restore in one command.
-
-## Provisioning
-
-Project VMs are designed to be expendable. The intended workflow:
-
-1. `virtdev-create <project>` — derive a fresh VM
-2. `virtdev-start <project>` — start it
-3. `virtdev-ssh <project> ./provision.sh` — install tools, clone repos
-4. Develop
-
-When the VM accumulates unwanted state or the base is updated,
-`virtdev-recreate <project>` rebuilds it on the current base and
-restores user-curated state from a backup snapshot. To make recreate
-fully hands-free, drop the provision script at
-`~/.config/virtdev/projects/<project>/provision` — recreate
-auto-discovers it and runs it via `virtdev-ssh <project> bash -s`
-between the start and restore steps. See "Backing up and restoring
-project state" above.
-
-## Data Layout
+## Data layout
 
 ```
-${VIRTDEV_HOME}/                         (~/.local/share/virtdev)
-  lock                                   flock(2) target; holder PID inside
-  ssh/
-    id                                   ed25519 private key (mode 600)
-    id.pub                               ed25519 public key
-  system/                                sealed base (mode 444)
-    system.qcow2
-    home.qcow2
-    nvram
-    version                              base generation counter
-  maintenance/                           transient; present while virtdev-maintain is active
-    system.qcow2
-    home.qcow2
-    nvram
-  projects/
-    <name>/
-      system.qcow2                       delta over system/system.qcow2
-      home.qcow2                         delta over system/home.qcow2
-      nvram                              per-project UEFI variable store
-      version                            base generation this project was derived from
-      port                               SSH forwarding port (present while running)
-      monitor.sock                       QEMU monitor (while running)
-      console.sock                       serial console (while running)
-      backup.list                        optional manifest for virtdev-backup
-                                         (project-local override; XDG fallback below)
-  backups/                               preserved across virtdev-destroy;
-    <project>/                           wiped by virtdev-nuke
-      <YYYY-MM-DD>/
-        <HH-MM-SS>/
-          backup.list                    snapshot of source manifest at backup time
-          version                        base version at backup time
-          tree/                          rsync-preserved user content
+${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
+  lock                              flock(2) target; holder PID
+  ssh/id, ssh/id.pub                SSH key pair
+  system/                           sealed base (mode 444)
+  maintenance/                      transient staging for virtdev-maintain
+  projects/<name>/
+    system.qcow2, home.qcow2       delta disks
+    nvram, version                  UEFI state, base version
+    port, monitor.sock, console.sock  runtime (while running)
+    backup.list                     optional project-local manifest
+  backups/<project>/<date>/<time>/
+    project, backup.list, version   metadata
+    tree/                           user content
 
-${XDG_CACHE_HOME}/virtdev/               (~/.cache/virtdev)
-  virtdev.iso                            built installation ISO
-  work/                                  mkarchiso work tree
-  profile/                               assembled ISO profile
+${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
+  virtdev.iso                       built ISO
+  work/, profile/                   mkarchiso artifacts
 
-${XDG_CONFIG_HOME}/virtdev/              (~/.config/virtdev)
-  projects/
-    <name>/
-      backup.list                        canonical backup manifest; survives nuke
-      provision                          optional bash script auto-run by virtdev-recreate
+~/.config/virtdev/projects/<name>/
+  backup.list                       canonical backup manifest (survives nuke)
+  provision                         auto-run by virtdev-recreate
 ```
 
 ## License
