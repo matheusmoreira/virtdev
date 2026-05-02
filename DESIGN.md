@@ -223,6 +223,9 @@ base, which may produce filesystem corruption. `virtdev-start` detects this
 via a version counter (`system/version` vs `projects/<name>/version`)
 and refuses to boot a project VM whose version does not match the current
 base. Always destroy and recreate delta-mode project VMs after resealing.
+Detached projects (see `virtdev-detach`) are exempt — their standalone
+images have no backing file dependency and `virtdev-start` skips the
+version check for them.
 
 **Note on NVRAM:** each project VM owns a copy of `nvram` taken from
 `system/nvram` at `virtdev-create` time. A subsequent `virtdev-maintain`
@@ -392,7 +395,7 @@ the guard is one line and depends on the script's own state.
 **Commands that take the lock** (serialized against each other):
 
 - `virtdev-install`, `virtdev-seal`, `virtdev-maintain`
-- `virtdev-create`, `virtdev-start`, `virtdev-stop`, `virtdev-destroy`
+- `virtdev-create`, `virtdev-start`, `virtdev-stop`, `virtdev-destroy`, `virtdev-detach`
 - `virtdev-nuke`
 
 **Commands that do not take the lock** (read-only or ISO-level):
@@ -487,7 +490,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `ssh` | SSH key file existence and permission validation (`ssh_key_validate`) | 77, 78 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
-| `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`) | none (caller-supplied) |
+| `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`, `project_is_detached`) | none (caller-supplied) |
 
 Libraries are self-contained: each imports its own dependencies
 (e.g., `validate` imports `error` because it calls `error()` on
@@ -549,6 +552,7 @@ during a maintenance session.
 | `virtdev-restore`  | Restore a snapshot into a running project VM                |
 | `virtdev-recreate` | Backup, destroy, recreate, optionally provision, and restore in one command |
 | `virtdev-upgrade`  | Back up all projects, maintain the base, rebuild all projects on the new base |
+| `virtdev-detach`   | Convert a project's delta images into standalone images, removing base dependency |
 
 ---
 
@@ -683,7 +687,9 @@ there is no silent shadowing when both files exist.
   automatically pick up base system updates. The recommended path is destroy
   and recreate. Unsafe rebase (`qemu-img rebase -u`) is technically possible
   for VMs with minimal system-level writes, but is not officially supported and
-  has no tooling.
+  has no tooling. An alternative is `virtdev-detach`, which converts the
+  project to standalone images — this preserves the current system state but
+  requires the project to be updated independently going forward.
 
 - **Read-only root setup in base image.** The `systemd.volatile=state` kernel
   parameter is the intended mechanism. The base image configuration for this

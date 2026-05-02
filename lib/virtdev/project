@@ -17,7 +17,12 @@
 #   project_is_outdated <project>
 #       Returns 0 if the project's version does not match the
 #       sealed base version. Also returns 0 (outdated) when
-#       either version file is missing.
+#       either version file is missing. Returns 1 (not outdated)
+#       for detached projects.
+#
+#   project_is_detached <project>
+#       Returns 0 if the project's version file contains the
+#       literal string 'detached'.
 #
 # No reserved exit codes.
 #
@@ -45,6 +50,7 @@ project_is_running() {
 
 project_is_outdated() {
   local project="${1}"
+  project_is_detached "${project}" && return 1
   local -r base_file="${VIRTDEV_HOME}/system/version"
   local -r project_file="${VIRTDEV_HOME}/projects/${project}/version"
   if [[ ! -f "${base_file}" || ! -f "${project_file}" ]]; then
@@ -54,4 +60,10 @@ project_is_outdated() {
   base_ver="$(< "${base_file}")"
   project_ver="$(< "${project_file}")"
   [[ "${project_ver}" != "${base_ver}" ]]
+}
+
+project_is_detached() {
+  local project="${1}"
+  local -r version_file="${VIRTDEV_HOME}/projects/${project}/version"
+  [[ -f "${version_file}" ]] && [[ "$(< "${version_file}")" == "detached" ]]
 }

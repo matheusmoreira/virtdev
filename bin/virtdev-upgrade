@@ -191,6 +191,18 @@ if [[ ${#audit_failures[@]} -gt 0 ]]; then
   error 6 <<<"Aborting."
 fi
 
+# Auto-skip detached projects — they are independent of the base.
+declare -a included_after_detach=()
+for p in "${included[@]}"; do
+  if project_is_detached "${p}"; then
+    excluded+=("${p}")
+    excluded_reasons["${p}"]="detached"
+  else
+    included_after_detach+=("${p}")
+  fi
+done
+included=("${included_after_detach[@]}")
+
 # Check for already-outdated + stopped projects that can't be backed up.
 declare -a outdated_blocked=()
 declare -a included_after_skip=()

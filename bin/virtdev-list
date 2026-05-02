@@ -9,7 +9,8 @@
 #   PROJECT   Name of the project virtual machine
 #   PORT      Host-side SSH forwarding port
 #   STATUS    running | stopped
-#   VERSION   Base version the project was created against
+#   VERSION   Base version the project was created against,
+#             or 'detached' for standalone projects
 #
 
 set -euo pipefail

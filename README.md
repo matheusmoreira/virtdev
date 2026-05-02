@@ -150,6 +150,22 @@ virtdev upgrade
 Flags: `--only=a,b`, `--except=c,d`, `--skip-outdated`, `--yes`/`-y`,
 `--verbose`/`-v`.
 
+### Detaching a project
+
+A project can be detached from the sealed base, converting its delta images
+into standalone images. Detached projects boot without a version check, are
+skipped by `virtdev upgrade`, and must be updated independently:
+
+```bash
+virtdev stop myproject
+virtdev detach myproject
+virtdev start myproject
+```
+
+Use `--in-place` to modify images directly instead of convert-then-swap
+(less disk usage, no rollback on interruption). Recreating a detached
+project reattaches it to the current base.
+
 ## Commands
 
 All commands are available as `virtdev <command>` (dispatcher) or
@@ -173,6 +189,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-start <project> [port]` | Start VM as a systemd user service |
 | `virtdev-stop <project>` | ACPI shutdown with SIGTERM fallback |
 | `virtdev-destroy [-y] <project>` | Delete a project VM (confirmation required) |
+| `virtdev-detach [--in-place] [-y] <project>` | Convert delta images to standalone, removing base dependency |
 | `virtdev-recreate [flags] <project>` | Backup, destroy, rebuild, provision, restore |
 | `virtdev-upgrade [flags]` | Back up, maintain base, rebuild all projects |
 | `virtdev-nuke` | Delete all virtdev data (confirmation required) |

@@ -21,7 +21,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments
+import error validate lock arguments project
 
 port_in_use() {
   [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
@@ -74,6 +74,10 @@ done
 if [[ ! -f "${OVMF_CODE}" ]]; then
   error 5 <<<"Firmware not found: '${OVMF_CODE}'"
 fi
+
+# Detached projects have standalone images with no backing file
+# dependency. The version check does not apply to them.
+if ! project_is_detached "${project}"; then
 
 # Detect base system changes since this project was created.
 # After virtdev-maintain reseals the base, existing delta images
@@ -144,6 +148,8 @@ Transfer data and recreate it on top of the new base system:
     virtdev-destroy ${project} && virtdev-create ${project}
 MESSAGE
 fi
+
+fi # ! project_is_detached
 
 unit=virtdev-"${project}"
 

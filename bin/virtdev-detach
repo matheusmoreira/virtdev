@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+#
+# virtdev-detach [--in-place] [--yes] <project>
+#
+# Converts a project's qcow2 delta images into standalone images by
+# absorbing the sealed base system. This removes the backing file
+# dependency, making the project immune to maintenance cycles and
+# version mismatches. Trade-off: larger disk footprint, independent
+# updates required.
+#
+# Two conversion modes:
+#
+#   Default (convert-then-swap):
+#       Creates new standalone images alongside the originals, verifies
+#       them, then renames into place. Originals are untouched until the
+#       swap. Temporarily needs extra disk space (roughly one copy of
+#       the base per disk).
+#
+#   --in-place (rebase):
+#       Modifies images in place via qemu-img rebase. Less disk space
+#       and write volume. No rollback on interruption — if the rebase
+#       is interrupted, the image is in an undefined state.
+#
+# Both modes verify the resulting images with qemu-img check.
+#
+# The project must be stopped. A detached project:
+#
+#   - Boots without a version check (virtdev-start skips it)
+#   - Is skipped by virtdev-upgrade (independent of the base)
+#   - Shows 'detached' in virtdev-list's VERSION column
+#   - Returns to coupled state if recreated (virtdev-recreate)
+#
+# Lock model: acquires the virtdev lock before mutation. The conversion
+# reads sealed base images and rewrites project qcow2 files.
+#
+# Exit codes:
+#
+#   0   success
+#   3   project not found
+#   4   virtual machine is running
+#   5   already detached
+#   6   disk has no backing file
+#   8   user aborted at confirmation prompt
+#   10  convert/rebase failed for system disk
+#   11  convert/rebase failed for home disk
+#   12  verification failed
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME    Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate lock arguments project
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=(
+  [in-place]=bool
+  [yes]=bool
+)
+# shellcheck disable=SC2034
+declare -A spec_short=([y]=yes)
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 1 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+project="${1}"
+
+validate_project_name "${project}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+if project_is_running "${project}"; then
+  error 4 <<MESSAGE
+Virtual machine is running: ${project}
+Stop it first: virtdev-stop ${project}
+MESSAGE
+fi
+
+if project_is_detached "${project}"; then
+  error 5 <<<"Already detached: ${project}"
+fi
+
+system_disk="${project_directory}/system.qcow2"
+home_disk="${project_directory}/home.qcow2"
+version_file="${project_directory}/version"
+
+# Verify both disks have backing files.
+has_backing() {
+  qemu-img info --output=json "${1}" \
+    | grep -q '"backing-filename"'
+}
+
+if ! has_backing "${system_disk}"; then
+  error 6 <<<"System disk has no backing file: ${system_disk}"
+fi
+
+if ! has_backing "${home_disk}"; then
+  error 6 <<<"Home disk has no backing file: ${home_disk}"
+fi
+
+# Read current version for the summary display.
+current_version='-'
+if [[ -f "${version_file}" ]]; then
+  current_version="$(< "${version_file}")"
+fi
+
+# Print summary.
+{
+  printf '\nDetaching project: %s\n' "${project}"
+  printf '  System disk: %s\n' "${system_disk}"
+  printf '  Home disk:   %s\n' "${home_disk}"
+  printf '  Version:     %s\n' "${current_version}"
+  if (( flags[in-place] )); then
+    printf '  Mode:        in-place (no rollback on interruption)\n'
+  else
+    printf '  Mode:        convert (use --in-place to rebase in place)\n'
+  fi
+  printf '\n  No backup will be taken. Consider running virtdev-backup first.\n\n'
+} >&2
+
+if (( ! flags[yes] )); then
+  printf 'Proceed? [y/N] ' >&2
+  read -r confirmation
+  if [[ "${confirmation}" != [yY] ]]; then
+    error 8 <<<"Aborted."
+  fi
+fi
+
+lock_acquire
+
+if (( flags[in-place] )); then
+  # ── In-place mode (rebase) ──────────────────────────────────────
+
+  printf 'Rebasing system disk...\n' >&2
+  if ! qemu-img rebase -b "" -f qcow2 "${system_disk}"; then
+    error 10 <<MESSAGE
+Rebase failed for system disk: ${system_disk}
+The image may be in an undefined state. Restore from backup.
+MESSAGE
+  fi
+
+  printf 'Rebasing home disk...\n' >&2
+  if ! qemu-img rebase -b "" -f qcow2 "${home_disk}"; then
+    error 11 <<MESSAGE
+Rebase failed for home disk: ${home_disk}
+The system disk was already rebased. Both images may be in an
+undefined state. Restore from backup.
+MESSAGE
+  fi
+
+  printf 'Verifying...\n' >&2
+  verify_failed=0
+  if ! qemu-img check -q "${system_disk}"; then
+    printf 'Warning: system disk verification failed.\n' >&2
+    verify_failed=1
+  fi
+  if ! qemu-img check -q "${home_disk}"; then
+    printf 'Warning: home disk verification failed.\n' >&2
+    verify_failed=1
+  fi
+
+  printf 'detached\n' > "${version_file}"
+  chmod 644 "${version_file}"
+
+  if (( verify_failed )); then
+    printf '\nProject detached: %s (with verification warnings)\n' "${project}"
+    printf 'Check the images or restore from backup.\n' >&2
+    exit 12
+  fi
+
+else
+  # ── Default mode (convert-then-swap) ────────────────────────────
+
+  system_detach="${system_disk}.detach"
+  home_detach="${home_disk}.detach"
+  system_bak="${system_disk}.bak"
+  home_bak="${home_disk}.bak"
+
+  cleanup_temps() {
+    rm -f "${system_detach}" "${home_detach}"
+  }
+
+  printf 'Converting system disk...\n' >&2
+  if ! qemu-img convert -O qcow2 "${system_disk}" "${system_detach}"; then
+    cleanup_temps
+    error 10 <<MESSAGE
+Convert failed for system disk: ${system_disk}
+Project is unchanged. Check disk space and retry.
+MESSAGE
+  fi
+
+  printf 'Converting home disk...\n' >&2
+  if ! qemu-img convert -O qcow2 "${home_disk}" "${home_detach}"; then
+    cleanup_temps
+    error 11 <<MESSAGE
+Convert failed for home disk: ${home_disk}
+Project is unchanged. Check disk space and retry.
+MESSAGE
+  fi
+
+  printf 'Verifying...\n' >&2
+  if ! qemu-img check -q "${system_detach}" || ! qemu-img check -q "${home_detach}"; then
+    cleanup_temps
+    error 12 <<MESSAGE
+Verification failed for converted images.
+Project is unchanged. The converted images have been removed.
+MESSAGE
+  fi
+
+  printf 'Swapping...\n' >&2
+  mv "${system_disk}" "${system_bak}"
+  mv "${system_detach}" "${system_disk}"
+  mv "${home_disk}" "${home_bak}"
+  mv "${home_detach}" "${home_disk}"
+
+  printf 'detached\n' > "${version_file}"
+  chmod 644 "${version_file}"
+
+  rm -f "${system_bak}" "${home_bak}"
+fi
+
+printf 'Done.\n\n' >&2
+printf 'Project detached: %s\n' "${project}"
