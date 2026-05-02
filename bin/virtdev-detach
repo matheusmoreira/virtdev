@@ -55,7 +55,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project
+import error validate lock arguments project confirm
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -137,9 +137,7 @@ fi
 } >&2
 
 if (( ! flags[yes] )); then
-  printf 'Proceed? [y/N] ' >&2
-  read -r confirmation
-  if [[ "${confirmation}" != [yY] ]]; then
+  if ! confirm_proceed; then
     error 8 <<<"Aborted."
   fi
 fi

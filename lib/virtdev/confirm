@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# lib/virtdev/confirm
+#
+# Interactive confirmation prompts.
+#
+# Public functions:
+#
+#   confirm_word <expected> [prompt]
+#       Prompts the user to type a specific word. Returns 0 if
+#       the input matches exactly, 1 otherwise. Default prompt:
+#       "Type '<expected>' to confirm: "
+#
+#   confirm_proceed [prompt]
+#       Prompts the user with a y/N question. Returns 0 if the
+#       input is 'y' or 'Y', 1 otherwise. Default prompt:
+#       "Proceed? [y/N] "
+#
+# Both functions print the prompt to stderr and read from stdin.
+#
+# No reserved exit codes.
+#
+
+set -euo pipefail
+
+confirm_word() {
+  local -r expected="${1}"
+  # shellcheck disable=SC2016  # single quotes are literal output, not a missed expansion
+  local -r prompt="${2:-Type '${expected}' to confirm: }"
+  printf '%s' "${prompt}" >&2
+  local reply
+  read -r reply
+  [[ "${reply}" == "${expected}" ]]
+}
+
+confirm_proceed() {
+  local -r prompt="${1:-Proceed? [y/N] }"
+  printf '%s' "${prompt}" >&2
+  local reply
+  read -r reply
+  [[ "${reply}" == [yY] ]]
+}

@@ -55,7 +55,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest
+import error validate arguments snapshot manifest confirm
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -225,9 +225,7 @@ total_steps=$(( 4 + do_backup + do_stop + do_provision + do_restore ))
 } >&2
 
 if (( ! flags[yes] )); then
-  printf 'Type the project name to confirm: ' >&2
-  read -r confirmation
-  if [[ "${confirmation}" != "${project}" ]]; then
+  if ! confirm_word "${project}"; then
     error 7 <<<'Aborted.'
   fi
 fi

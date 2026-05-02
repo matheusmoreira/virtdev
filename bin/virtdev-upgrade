@@ -52,7 +52,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project
+import error validate arguments manifest project confirm
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -277,9 +277,7 @@ done
 } >&2
 
 if (( ! flags[yes] )); then
-  printf "Type 'upgrade' to confirm: " >&2
-  read -r confirmation
-  if [[ "${confirmation}" != "upgrade" ]]; then
+  if ! confirm_word "upgrade"; then
     error 8 <<<"Aborted."
   fi
 fi

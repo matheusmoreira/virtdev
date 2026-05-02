@@ -18,7 +18,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments snapshot
+import error validate lock arguments snapshot confirm
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -73,9 +73,7 @@ fi
 printf '\nThis operation is irreversible.\n'
 
 if (( ! flags[yes] )); then
-  printf 'Type the project name to confirm: '
-  read -r confirmation
-  if [[ "${confirmation}" != "${project}" ]]; then
+  if ! confirm_word "${project}"; then
     error 5 <<<"Aborted."
   fi
 fi

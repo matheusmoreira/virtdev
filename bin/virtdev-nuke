@@ -19,7 +19,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments snapshot
+import error lock arguments snapshot confirm
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -112,10 +112,7 @@ printf '\tBase system images\n'
 printf '\tSSH keys\n'
 printf '\tISOs\n'
 printf '\nThis operation is irreversible.\n'
-printf 'Type "nuke" to confirm: '
-read -r confirmation
-
-if [[ "${confirmation}" != "nuke" ]]; then
+if ! confirm_word "nuke"; then
   error 5 <<<"Aborted."
 fi
 

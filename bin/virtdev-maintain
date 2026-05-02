@@ -68,7 +68,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project
+import error lock arguments ssh project confirm
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -478,9 +478,7 @@ esac
 # confirmation before overwriting the sealed base system.
 printf 'Virtual machine exited cleanly.\n'
 if (( ! flags[yes] )); then
-  printf 'Reseal the base system? [y/N] '
-  read -r confirm
-  if [[ "${confirm}" != 'y' && "${confirm}" != 'Y' ]]; then
+  if ! confirm_proceed 'Reseal the base system? [y/N] '; then
     error 12 <<MESSAGE
 Reseal cancelled.
 The sealed base images are intact: '${system_directory}'
