@@ -26,7 +26,7 @@ import() {
   done
 }
 
-import error arguments
+import error arguments project
 
 # shellcheck disable=SC2034  # spec read via nameref
 declare -A spec=()
@@ -42,17 +42,7 @@ fi
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
-projects_directory="${VIRTDEV_HOME}/projects"
-
-if [[ ! -d "${projects_directory}" ]]; then
-  printf 'No projects found.\n'
-  exit 0
-fi
-
-mapfile -t projects < <(
-  find "${projects_directory}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
-    | sort
-)
+mapfile -t projects < <(project_list)
 
 if [[ ${#projects[@]} -eq 0 ]]; then
   printf 'No projects found.\n'
@@ -69,12 +59,11 @@ printf '%-50s %-5s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS' 'VERSION'
 printf '%-50s %-5s %-8s %s\n' '-------' '----' '------' '-------'
 
 for project in "${projects[@]}"; do
-  [[ "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
-  project_directory="${projects_directory}"/"${project}"
-  port_file="${project_directory}"/port
-  version_file="${project_directory}"/version
+  project_directory="${VIRTDEV_HOME}/projects/${project}"
+  port_file="${project_directory}/port"
+  version_file="${project_directory}/version"
 
-  if systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+  if project_is_running "${project}"; then
     status='running'
     if [[ -f "${port_file}" ]]; then
       port="$(< "${port_file}")"

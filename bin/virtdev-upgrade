@@ -58,7 +58,7 @@ import() {
   done
 }
 
-import error validate arguments manifest
+import error validate arguments manifest project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -87,23 +87,6 @@ fi
 if [[ -n "${flags[only]}" && -n "${flags[except]}" ]]; then
   error 4 <<<"--only and --except are mutually exclusive"
 fi
-
-# ── Helpers ──────────────────────────────────────────────────────────
-
-project_is_outdated() {
-  local project="${1}"
-  local project_version_file="${VIRTDEV_HOME}/projects/${project}/version"
-  if [[ ! -f "${project_version_file}" ]]; then
-    return 0
-  fi
-  local project_version
-  project_version="$(< "${project_version_file}")"
-  [[ "${project_version}" != "${base_version}" ]]
-}
-
-project_is_running() {
-  systemctl --user --quiet is-active "virtdev-${1}" 2>/dev/null
-}
 
 # ── Parse --only / --except into arrays ──────────────────────────────
 
@@ -144,23 +127,8 @@ if [[ ! -f "${system_version_file}" ]]; then
 fi
 base_version="$(< "${system_version_file}")"
 
-if [[ ! -d "${projects_directory}" ]]; then
-  error 3 <<<"No projects found."
-fi
-
-declare -a all_projects=()
-mapfile -t all_projects < <(
-  find "${projects_directory}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
-    | sort
-)
-
-# Filter to valid project names, excluding the reserved 'maintenance' name.
 declare -a valid_projects=()
-for p in "${all_projects[@]}"; do
-  [[ "${p}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
-  [[ "${p}" == "maintenance" ]] && continue
-  valid_projects+=("${p}")
-done
+mapfile -t valid_projects < <(project_list)
 
 if [[ ${#valid_projects[@]} -eq 0 ]]; then
   error 3 <<<"No projects found."

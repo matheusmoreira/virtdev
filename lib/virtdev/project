@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# lib/virtdev/project
+#
+# Project enumeration and state queries.
+#
+# Public functions:
+#
+#   project_list
+#       Prints sorted valid project names, one per line.
+#       Excludes the reserved 'maintenance' name and entries
+#       that don't match the project name regex. Prints nothing
+#       and returns 0 if no projects exist.
+#
+#   project_is_running <project>
+#       Returns 0 if the project's systemd unit is active.
+#
+#   project_is_outdated <project>
+#       Returns 0 if the project's version does not match the
+#       sealed base version. Also returns 0 (outdated) when
+#       either version file is missing.
+#
+# No reserved exit codes.
+#
+
+set -euo pipefail
+
+import validate
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+project_list() {
+  local -r projects_dir="${VIRTDEV_HOME}/projects"
+  [[ -d "${projects_dir}" ]] || return 0
+  local name
+  while IFS= read -r name; do
+    [[ "${name}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
+    [[ "${name}" == "maintenance" ]] && continue
+    printf '%s\n' "${name}"
+  done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort)
+}
+
+project_is_running() {
+  systemctl --user --quiet is-active "virtdev-${1}" 2>/dev/null
+}
+
+project_is_outdated() {
+  local project="${1}"
+  local -r base_file="${VIRTDEV_HOME}/system/version"
+  local -r project_file="${VIRTDEV_HOME}/projects/${project}/version"
+  if [[ ! -f "${base_file}" || ! -f "${project_file}" ]]; then
+    return 0
+  fi
+  local base_ver project_ver
+  base_ver="$(< "${base_file}")"
+  project_ver="$(< "${project_file}")"
+  [[ "${project_ver}" != "${base_ver}" ]]
+}
