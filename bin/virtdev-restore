@@ -149,8 +149,8 @@ fi
 
 snapshot="${backups_project_dir}/${resolved_date}/${resolved_time}"
 
-if [[ ! -f "${snapshot}/backup.list" ]]; then
-  error 10 <<<"Snapshot missing backup.list: ${snapshot}"
+if [[ ! -f "${snapshot}/manifest" ]]; then
+  error 10 <<<"Snapshot missing manifest: ${snapshot}"
 fi
 if [[ ! -d "${snapshot}/tree" ]]; then
   error 23 <<<"Snapshot missing tree/: ${snapshot}"
@@ -168,7 +168,7 @@ fi
 # Refuse cross-project restoration. The snapshot records the project
 # it was taken from; restoring it into a different project would
 # silently overwrite that project's files with the source project's
-# tree. backup.list paths are user-curated and may differ between
+# tree. manifest paths are user-curated and may differ between
 # projects; even when they overlap, the resulting filesystem is
 # half-merged and impossible to audit after the fact.
 snapshot_project="$(< "${snapshot}/project")"
@@ -243,7 +243,7 @@ trap 'rm -f "${rsync_log}"' EXIT
 # locale rsync would emit a translated label and the parse would
 # fail silently. Mirrors the equivalent guard in virtdev-backup.
 if ! LC_ALL=C rsync "${rsync_opts[@]}" \
-    --files-from=<(grep -Ev '^\s*(#|$)' "${snapshot}/backup.list") \
+    --files-from=<(grep -Ev '^\s*(#|$)' "${snapshot}/manifest") \
     -e "${ssh_command}" \
     "${snapshot}/tree/" \
     "dev@127.0.0.1:/home/dev/" \

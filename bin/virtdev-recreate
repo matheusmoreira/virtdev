@@ -126,18 +126,18 @@ MESSAGE
   if ! manifest_resolve "${project}" >/dev/null; then
     error 5 <<MESSAGE
 Backup manifest not found at either of:
-    ${project_directory}/backup.list
-    ${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list
+    ${project_directory}/manifest
+    ${XDG_CONFIG_HOME}/virtdev/projects/${project}/manifest
 Create one with paths to back up (one per line; '#' comments allowed).
 Or skip the backup with: virtdev-recreate --no-backup ${project}
 MESSAGE
   fi
 
-  backup_list_path="$(manifest_resolve "${project}")"
-  if ! manifest_has_entries "${backup_list_path}"; then
+  manifest_path="$(manifest_resolve "${project}")"
+  if ! manifest_has_entries "${manifest_path}"; then
     error 5 <<MESSAGE
 Backup manifest is empty (no non-blank, non-comment lines):
-    ${backup_list_path}
+    ${manifest_path}
 Add at least one path. Or skip the backup with:
     virtdev-recreate --no-backup ${project}
 MESSAGE

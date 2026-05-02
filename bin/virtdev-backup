@@ -13,14 +13,14 @@
 #
 #   project            the source project name; virtdev-restore uses
 #                      this to refuse cross-project restoration
-#   backup.list        copy of projects/<project>/backup.list at backup time
+#   manifest        copy of projects/<project>/manifest at backup time
 #   version            integer from ${VIRTDEV_HOME}/system/version (or empty)
 #   tree/              user-content subtree, rsync-preserved
 #
 # The manifest is user-curated and required. Lookup order:
 #
-#   1. ${VIRTDEV_HOME}/projects/<project>/backup.list
-#   2. ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<project>/backup.list
+#   1. ${VIRTDEV_HOME}/projects/<project>/manifest
+#   2. ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<project>/manifest
 #
 # First existing file wins. Put your stable manifest in the config
 # location (dotfile-friendly, survives virtdev-nuke) and use the
@@ -194,19 +194,19 @@ Install it with: pacman -S rsync
 MESSAGE
 fi
 
-if ! backup_list="$(manifest_resolve "${project}")"; then
+if ! manifest_path="$(manifest_resolve "${project}")"; then
   error 8 <<MESSAGE
 Backup manifest not found. Checked (in order):
-	${project_directory}/backup.list
-	${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list
+	${project_directory}/manifest
+	${XDG_CONFIG_HOME}/virtdev/projects/${project}/manifest
 Create either; one path per line, relative to /home/dev/.
 Blank lines and '#' comments are ignored.
 MESSAGE
 fi
 
-if ! manifest_has_entries "${backup_list}"; then
+if ! manifest_has_entries "${manifest_path}"; then
   error 9 <<MESSAGE
-Backup manifest has no paths: ${backup_list}
+Backup manifest has no paths: ${manifest_path}
 All lines are blank or comments. Add at least one path.
 MESSAGE
 fi
@@ -218,10 +218,10 @@ fi
 # omitted from the snapshot. Surface this as a hard error rather
 # than allow a silently-incomplete backup. Match leading-slash
 # entries even with surrounding whitespace.
-abs_lines="$(grep -nE '^\s*/' "${backup_list}" || true)"
+abs_lines="$(grep -nE '^\s*/' "${manifest_path}" || true)"
 if [[ -n "${abs_lines}" ]]; then
   error 15 <<MESSAGE
-Backup manifest contains absolute paths: ${backup_list}
+Backup manifest contains absolute paths: ${manifest_path}
 ${abs_lines}
 Manifest entries must be relative to the guest's /home/dev/.
 MESSAGE
@@ -242,17 +242,17 @@ bad_shape="$(awk '
   /^[[:space:]]/  { printf("%d: leading whitespace: %s\n", NR, $0); next }
   /[[:space:]]$/  { printf("%d: trailing whitespace: %s\n", NR, $0); next }
   /[[:cntrl:]]/   { printf("%d: control character: %s\n", NR, $0); next }
-' "${backup_list}")"
+' "${manifest_path}")"
 if [[ -n "${bad_shape}" ]]; then
   error 16 <<MESSAGE
-Backup manifest has malformed path entries: ${backup_list}
+Backup manifest has malformed path entries: ${manifest_path}
 ${bad_shape}
 Each path must start at column 0, end with a non-whitespace
 character, and contain no tabs or control characters.
 MESSAGE
 fi
 
-printf >&2 'manifest: %s\n' "${backup_list}"
+printf >&2 'manifest: %s\n' "${manifest_path}"
 
 day="$(date -u +%Y-%m-%d)"
 time="$(date -u +%H-%M-%S)"
@@ -282,7 +282,7 @@ cleanup_partial() {
 }
 trap cleanup_partial EXIT
 
-cp "${backup_list}" "${partial}/backup.list"
+cp "${manifest_path}" "${partial}/manifest"
 
 # Record the source project. virtdev-restore reads this and refuses
 # to proceed if its <project> argument disagrees, which catches the
@@ -337,7 +337,7 @@ printf 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
 # fail silently, files_transferred would default to 0, and a
 # successful backup would be wrongly rejected by error 11.
 if ! LC_ALL=C rsync "${rsync_opts[@]}" \
-    --files-from=<(grep -Ev '^\s*(#|$)' "${partial}/backup.list") \
+    --files-from=<(grep -Ev '^\s*(#|$)' "${partial}/manifest") \
     -e "${ssh_command}" \
     "dev@127.0.0.1:/home/dev/" \
     "${partial}/tree/" \

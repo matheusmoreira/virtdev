@@ -604,9 +604,9 @@ ${VIRTDEV_HOME}/
       port              SSH forwarding port (present while running)
       monitor.sock      QEMU monitor socket (present while running)
       console.sock      serial console socket (present while running)
-      backup.list       optional; user-curated manifest for virtdev-backup
+      manifest       optional; user-curated manifest for virtdev-backup
                         (falls back to
-                        ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<name>/backup.list
+                        ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<name>/manifest
                         if absent here - config path survives virtdev-nuke)
   backups/
     <project>/
@@ -614,7 +614,7 @@ ${VIRTDEV_HOME}/
         <HH-MM-SS>/
           project       source project name; virtdev-restore refuses
                         to apply a snapshot to a different project
-          backup.list   copy of projects/<project>/backup.list at backup time
+          manifest   copy of projects/<project>/manifest at backup time
           version       base version at backup time (may be empty)
           tree/         user content, rsync-preserved
         <HH-MM-SS>.partial/  transient; present during an in-flight backup
@@ -627,9 +627,9 @@ ${XDG_CACHE_HOME:-~/.cache}/virtdev/
 ${XDG_CONFIG_HOME:-~/.config}/virtdev/
   projects/
     <name>/
-      backup.list       user-curated manifest, dotfile-friendly fallback;
+      manifest       user-curated manifest, dotfile-friendly fallback;
                         used by virtdev-backup when a project-local
-                        backup.list is absent. Survives virtdev-nuke.
+                        manifest is absent. Survives virtdev-nuke.
       provision         optional bash script run by virtdev-recreate
                         between start/wait and restore via
                         `virtdev-ssh <name> bash -s < provision`.
@@ -639,7 +639,7 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
                         with `virtdev-recreate --provision <path>`.
 ```
 
-`virtdev-backup` consults `projects/<name>/backup.list` under
+`virtdev-backup` consults `projects/<name>/manifest` under
 `${VIRTDEV_HOME}` first, falling back to the same relative path
 under `${XDG_CONFIG_HOME}`. The first existing file wins.
 Project-local wins because it is the more specific location; a
@@ -699,11 +699,11 @@ there is no silent shadowing when both files exist.
   across this cycle by `virtdev-recreate`, which chains
   `backup + stop + destroy + create + start + wait + provision +
   restore` into a single command. The chain consults a per-project
-  `backup.list` (project-local first, XDG config fallback) for
+  `manifest` (project-local first, XDG config fallback) for
   what to back up, and an optional XDG provision script
   (`~/.config/virtdev/projects/<name>/provision`, overridable with
   `--provision <path>`) for what to re-install. Each chain step is
   fail-fast with a step-specific recovery hint; the snapshot from
   step 1 is preserved across all failures except concurrent
-  `virtdev-nuke`. Ephemeral projects without a backup.list opt
+  `virtdev-nuke`. Ephemeral projects without a manifest opt
   out via `virtdev-recreate --no-backup`.

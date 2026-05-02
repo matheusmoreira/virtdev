@@ -81,7 +81,7 @@ Or let `virtdev-recreate` run it automatically (see below).
 Preserve state that provisioning cannot reproduce (project memories,
 untracked files, dotfiles, shell history).
 
-Write a backup manifest at `~/.config/virtdev/projects/myproject/backup.list`:
+Write a backup manifest at `~/.config/virtdev/projects/myproject/manifest`:
 
 ```
 .claude/
@@ -101,7 +101,7 @@ virtdev restore myproject 2026-04-25/14-30-22  # restore a specific one
 ```
 
 Backups survive `virtdev-destroy` but are removed by `virtdev-nuke`.
-A project-local manifest at `${VIRTDEV_HOME}/projects/myproject/backup.list`
+A project-local manifest at `${VIRTDEV_HOME}/projects/myproject/manifest`
 takes precedence when present (for one-off experiments; discarded with the VM).
 
 ### Recreate
@@ -264,9 +264,9 @@ ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
     system.qcow2, home.qcow2       delta disks
     nvram, version                  UEFI state, base version
     port, monitor.sock, console.sock  runtime (while running)
-    backup.list                     optional project-local manifest
+    manifest                     optional project-local manifest
   backups/<project>/<date>/<time>/
-    project, backup.list, version   metadata
+    project, manifest, version   metadata
     tree/                           user content
 
 ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
@@ -274,7 +274,7 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
   work/, profile/                   mkarchiso artifacts
 
 ~/.config/virtdev/projects/<name>/
-  backup.list                       canonical backup manifest (survives nuke)
+  manifest                       canonical backup manifest (survives nuke)
   provision                         auto-run by virtdev-recreate
 ```
 

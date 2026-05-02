@@ -5,7 +5,7 @@
 #
 # Orchestrates the full base-system-update-and-project-rebuild lifecycle:
 #
-#   Phase 1. Audit    — verify every included project has a backup.list
+#   Phase 1. Audit    — verify every included project has a manifest
 #   Phase 2. Backup   — start, back up, and stop each project sequentially
 #   Phase 3. Maintain — boot the sealed base for maintenance, reseal on exit
 #   Phase 4. Rebuild  — recreate every included project on the new base
@@ -31,7 +31,7 @@
 #   3   no projects found
 #   4   --only and --except both specified
 #   5   project named in --only or --except does not exist
-#   6   audit failure (missing or empty backup.list)
+#   6   audit failure (missing or empty manifest)
 #   7   audit failure (outdated projects without --skip-outdated)
 #   8   user aborted at confirmation prompt
 #   20  backup phase failure
@@ -180,9 +180,9 @@ declare -a skipped_outdated=()
 
 for p in "${included[@]}"; do
   if ! manifest_resolve "${p}" >/dev/null; then
-    audit_failures+=("${p}: missing backup.list")
+    audit_failures+=("${p}: missing manifest")
   elif ! manifest_has_entries "$(manifest_resolve "${p}")"; then
-    audit_failures+=("${p}: empty backup.list")
+    audit_failures+=("${p}: empty manifest")
   fi
 done
 
@@ -192,7 +192,7 @@ if [[ ${#audit_failures[@]} -gt 0 ]]; then
     for failure in "${audit_failures[@]}"; do
       printf '    %s\n' "${failure}"
     done
-    printf '\nCreate a backup.list for each, or exclude them with --except.\n'
+    printf '\nCreate a manifest for each, or exclude them with --except.\n'
   } >&2
   error 6 <<<"Aborting."
 fi
