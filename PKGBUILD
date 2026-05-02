@@ -55,6 +55,7 @@ package() {
   install -Dm644 iso/efiboot/loader/loader.conf         "${_profiledir}/efiboot/loader/loader.conf"
   install -Dm644 iso/efiboot/loader/entries/virtdev.conf "${_profiledir}/efiboot/loader/entries/virtdev.conf"
 
+  install -Dm644 iso/airootfs/etc/pacman.d/mirrorlist                     "${_profiledir}/airootfs/etc/pacman.d/mirrorlist"
   install -Dm644 iso/airootfs/etc/ssh/sshd_config                        "${_profiledir}/airootfs/etc/ssh/sshd_config"
   install -Dm644 iso/airootfs/etc/systemd/network/20-wired.network       "${_profiledir}/airootfs/etc/systemd/network/20-wired.network"
   install -Dm644 iso/airootfs/etc/systemd/resolved.conf.d/dns.conf       "${_profiledir}/airootfs/etc/systemd/resolved.conf.d/dns.conf"
