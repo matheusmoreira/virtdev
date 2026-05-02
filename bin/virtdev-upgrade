@@ -283,6 +283,21 @@ fi
 total_phases=4
 declare -a stopped_projects=()
 
+abort_backup() {
+  {
+    printf '\n%s\n' "${1}"
+    if [[ ${#stopped_projects[@]} -gt 0 ]]; then
+      printf '\nVirtual machines stopped during this phase:\n'
+      for s in "${stopped_projects[@]}"; do
+        printf '    %s\n' "${s}"
+      done
+      printf '\nRestart them with: virtdev-start <project>\n'
+    fi
+    printf 'Base is unchanged. Backups taken so far are preserved.\n'
+  } >&2
+  error 20 <<<"Aborting."
+}
+
 printf '\n[Phase 1/%d] Backing up project virtual machines...\n' "${total_phases}" >&2
 
 for p in "${included[@]}"; do
@@ -295,34 +310,12 @@ for p in "${included[@]}"; do
   if (( ! was_running )); then
     printf '    Starting...\n' >&2
     if ! "${virtdev_bin_directory}/virtdev-start" "${p}"; then
-      {
-        printf '\nBackup failed: could not start %s.\n' "${p}"
-        if [[ ${#stopped_projects[@]} -gt 0 ]]; then
-          printf '\nVirtual machines stopped during this phase:\n'
-          for s in "${stopped_projects[@]}"; do
-            printf '    %s\n' "${s}"
-          done
-          printf '\nRestart them with: virtdev-start <project>\n'
-        fi
-        printf 'Base is unchanged. Backups taken so far are preserved.\n'
-      } >&2
-      error 20 <<<"Aborting."
+      abort_backup "Backup failed: could not start ${p}."
     fi
     if ! "${virtdev_bin_directory}/virtdev-wait" "${p}"; then
       "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
       stopped_projects+=("${p}")
-      {
-        printf '\nBackup failed: SSH did not come up for %s.\n' "${p}"
-        if [[ ${#stopped_projects[@]} -gt 0 ]]; then
-          printf '\nVirtual machines stopped during this phase:\n'
-          for s in "${stopped_projects[@]}"; do
-            printf '    %s\n' "${s}"
-          done
-          printf '\nRestart them with: virtdev-start <project>\n'
-        fi
-        printf 'Base is unchanged. Backups taken so far are preserved.\n'
-      } >&2
-      error 20 <<<"Aborting."
+      abort_backup "Backup failed: SSH did not come up for ${p}."
     fi
   fi
 
@@ -333,35 +326,13 @@ for p in "${included[@]}"; do
       "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
       stopped_projects+=("${p}")
     fi
-    {
-      printf '\nBackup failed for %s.\n' "${p}"
-      if [[ ${#stopped_projects[@]} -gt 0 ]]; then
-        printf '\nVirtual machines stopped during this phase:\n'
-        for s in "${stopped_projects[@]}"; do
-          printf '    %s\n' "${s}"
-        done
-        printf '\nRestart them with: virtdev-start <project>\n'
-      fi
-      printf 'Base is unchanged. Backups taken so far are preserved.\n'
-    } >&2
-    error 20 <<<"Aborting."
+    abort_backup "Backup failed for ${p}."
   fi
 
   printf '    Stopping...\n' >&2
   if ! "${virtdev_bin_directory}/virtdev-stop" "${p}"; then
     stopped_projects+=("${p}")
-    {
-      printf '\nFailed to stop %s after backup.\n' "${p}"
-      if [[ ${#stopped_projects[@]} -gt 0 ]]; then
-        printf '\nVirtual machines stopped during this phase:\n'
-        for s in "${stopped_projects[@]}"; do
-          printf '    %s\n' "${s}"
-        done
-        printf '\nRestart them with: virtdev-start <project>\n'
-      fi
-      printf 'Base is unchanged. Backups taken so far are preserved.\n'
-    } >&2
-    error 20 <<<"Aborting."
+    abort_backup "Failed to stop ${p} after backup."
   fi
   stopped_projects+=("${p}")
 done
