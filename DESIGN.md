@@ -710,3 +710,12 @@ there is no silent shadowing when both files exist.
   step 1 is preserved across all failures except concurrent
   `virtdev-nuke`. Ephemeral projects without a manifest opt
   out via `virtdev-recreate --no-backup`.
+
+- **Backup system scope.** `virtdev-backup` and `virtdev-restore` are
+  intentionally simple file-list rsync wrappers. Not planned:
+  compression, deduplication, incremental backups (rsync `--link-dest`),
+  encryption at rest, automated retention or rotation policy,
+  cross-project restore, system-disk backup, or glob/brace expansion
+  in manifests. Per `DESIGN.md`'s threat model the host is trusted, so
+  encryption adds complexity without matching a real adversary. The
+  manifest is literal (`--files-from`) to keep the contract auditable.
