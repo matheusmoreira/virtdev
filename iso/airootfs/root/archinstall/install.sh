@@ -195,6 +195,9 @@ DNS=9.9.9.9
 CONF
 printf 'virtdev: DNS configured\n'
 
+cp /etc/pacman.d/mirrorlist /mnt/etc/pacman.d/mirrorlist
+printf 'virtdev: mirrorlist configured\n'
+
 arch-chroot /mnt systemctl enable sshd serial-getty@ttyS0 \
                                   systemd-networkd systemd-resolved
 printf 'virtdev: services enabled\n'
