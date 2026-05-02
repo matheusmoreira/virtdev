@@ -16,10 +16,10 @@ hypervisor, not a namespace or permission system.
 
 ### Install
 
-From the AUR:
+From the AUR (`virtdev-git`):
 
 ```
-yay -S virtdev
+yay -S virtdev-git
 ```
 
 From source (no install step needed — scripts auto-detect the layout):
