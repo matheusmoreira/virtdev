@@ -72,7 +72,7 @@ import() {
   done
 }
 
-import error validate arguments ssh snapshot
+import error validate arguments ssh snapshot manifest
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -194,25 +194,17 @@ Install it with: pacman -S rsync
 MESSAGE
 fi
 
-backup_list_project="${project_directory}/backup.list"
-backup_list_config="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
-
-if [[ -f "${backup_list_project}" ]]; then
-  backup_list="${backup_list_project}"
-elif [[ -f "${backup_list_config}" ]]; then
-  backup_list="${backup_list_config}"
-else
+if ! backup_list="$(manifest_resolve "${project}")"; then
   error 8 <<MESSAGE
 Backup manifest not found. Checked (in order):
-	${backup_list_project}
-	${backup_list_config}
+	${project_directory}/backup.list
+	${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list
 Create either; one path per line, relative to /home/dev/.
 Blank lines and '#' comments are ignored.
 MESSAGE
 fi
 
-# Non-empty after comment/blank filter
-if ! grep -Eq '^\s*[^#[:space:]]' "${backup_list}"; then
+if ! manifest_has_entries "${backup_list}"; then
   error 9 <<MESSAGE
 Backup manifest has no paths: ${backup_list}
 All lines are blank or comments. Add at least one path.

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# lib/virtdev/manifest
+#
+# Backup manifest (backup.list) resolution and validation.
+#
+# Public functions:
+#
+#   manifest_resolve <project>
+#       Prints the path to the project's backup.list and returns 0.
+#       Resolution order: project-local first, XDG config fallback.
+#       Returns 1 if no backup.list is found at either location.
+#
+#   manifest_has_entries <path>
+#       Returns 0 if the file at <path> has at least one non-blank
+#       non-comment line. Returns 1 otherwise.
+#
+# No reserved exit codes. These functions return status codes only;
+# callers are responsible for error messages.
+#
+
+set -euo pipefail
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
+
+manifest_resolve() {
+  local project="${1}"
+  local project_local="${VIRTDEV_HOME}/projects/${project}/backup.list"
+  local xdg_fallback="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
+  if [[ -f "${project_local}" ]]; then
+    printf '%s\n' "${project_local}"
+    return 0
+  elif [[ -f "${xdg_fallback}" ]]; then
+    printf '%s\n' "${xdg_fallback}"
+    return 0
+  fi
+  return 1
+}
+
+manifest_has_entries() {
+  grep -Eq '^\s*[^#[:space:]]' "${1}"
+}

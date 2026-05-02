@@ -64,7 +64,7 @@ import() {
   done
 }
 
-import error validate arguments snapshot
+import error validate arguments snapshot manifest
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -113,11 +113,6 @@ if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
   unit_active=1
 fi
 
-# backup.list resolution mirrors virtdev-backup's lookup: project-local
-# first, XDG config second. Only consulted when backup is going to run.
-backup_list_project="${project_directory}/backup.list"
-backup_list_xdg="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
-
 if (( ! flags[no-backup] )); then
   if (( ! unit_active )); then
     error 4 <<MESSAGE
@@ -128,21 +123,18 @@ Or skip the backup with: virtdev-recreate --no-backup ${project}
 MESSAGE
   fi
 
-  if [[ -f "${backup_list_project}" ]]; then
-    backup_list_path="${backup_list_project}"
-  elif [[ -f "${backup_list_xdg}" ]]; then
-    backup_list_path="${backup_list_xdg}"
-  else
+  if ! manifest_resolve "${project}" >/dev/null; then
     error 5 <<MESSAGE
 Backup manifest not found at either of:
-    ${backup_list_project}
-    ${backup_list_xdg}
+    ${project_directory}/backup.list
+    ${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list
 Create one with paths to back up (one per line; '#' comments allowed).
 Or skip the backup with: virtdev-recreate --no-backup ${project}
 MESSAGE
   fi
 
-  if ! grep -Eq '^\s*[^#[:space:]]' "${backup_list_path}"; then
+  backup_list_path="$(manifest_resolve "${project}")"
+  if ! manifest_has_entries "${backup_list_path}"; then
     error 5 <<MESSAGE
 Backup manifest is empty (no non-blank, non-comment lines):
     ${backup_list_path}

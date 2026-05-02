@@ -58,7 +58,7 @@ import() {
   done
 }
 
-import error validate arguments
+import error validate arguments manifest
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -89,21 +89,6 @@ if [[ -n "${flags[only]}" && -n "${flags[except]}" ]]; then
 fi
 
 # ── Helpers ──────────────────────────────────────────────────────────
-
-backup_list_exists() {
-  local project="${1}"
-  local project_local="${VIRTDEV_HOME}/projects/${project}/backup.list"
-  local xdg_fallback="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
-  local path=""
-  if [[ -f "${project_local}" ]]; then
-    path="${project_local}"
-  elif [[ -f "${xdg_fallback}" ]]; then
-    path="${xdg_fallback}"
-  else
-    return 1
-  fi
-  grep -Eq '^\s*[^#[:space:]]' "${path}"
-}
 
 project_is_outdated() {
   local project="${1}"
@@ -226,8 +211,10 @@ declare -a audit_failures=()
 declare -a skipped_outdated=()
 
 for p in "${included[@]}"; do
-  if ! backup_list_exists "${p}"; then
-    audit_failures+=("${p}: missing or empty backup.list")
+  if ! manifest_resolve "${p}" >/dev/null; then
+    audit_failures+=("${p}: missing backup.list")
+  elif ! manifest_has_entries "$(manifest_resolve "${p}")"; then
+    audit_failures+=("${p}: empty backup.list")
   fi
 done
 
