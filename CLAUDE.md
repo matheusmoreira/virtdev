@@ -77,30 +77,26 @@ can discriminate them.
 #!/usr/bin/env bash
 set -euo pipefail
 
-virtdev_library_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev"
-declare -A virtdev_loaded_libraries=()
-import() {
-  local f
-  for f in "$@"; do
-    [[ -v virtdev_loaded_libraries[$f] ]] && continue
-    virtdev_loaded_libraries[$f]=1
-    # shellcheck disable=SC1090
-    source -p "${virtdev_library_directory}" "${f}"
-  done
-}
+# shellcheck disable=SC1090
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
 import error validate lock      # whatever this script needs
 # business logic follows
 ```
 
-The single `../lib/virtdev` path resolves correctly for both the dev tree
+`lib/virtdev/import` is the bootstrap module. Sourcing it provides:
+
+- `virtdev_library_directory` — resolved path to `lib/virtdev/`
+- `virtdev_bin_directory` — resolved path to `bin/`
+- `virtdev_loaded_libraries` — associative array tracking loaded libraries
+- `import()` — source libraries by name, idempotent
+
+The `../lib/virtdev` path resolves correctly for both the dev tree
 (`~/dev/virtdev/bin → ~/dev/virtdev/lib/virtdev`) and the pacman-installed
 package (`/usr/bin → /usr/lib/virtdev`) because `readlink -f` follows
-symlinks and normalises to the script's actual location.
-
-The three named symbols (`virtdev_library_directory`,
-`virtdev_loaded_libraries`, `import`) live in the consumer's shell scope, so
-sourced libraries inherit them automatically — composition is free.
+symlinks and normalises to the script's actual location. Sourced
+libraries inherit the import infrastructure automatically —
+composition is free.
 
 ### Argument parsing (`lib/virtdev/arguments`)
 
@@ -138,8 +134,8 @@ variadic 1+, `*` = variadic 0+. Example: `(project "ssh-args*")`.
 Companion arrays are discovered by naming convention:
 `<spec>_short`, `<spec>_placeholders`, `<spec>_positionals`.
 
-`virtdev-recreate` extends the standard bootstrap with
-`virtdev_bin_directory` so it can invoke sibling scripts by resolved
+`virtdev-recreate` and `virtdev-upgrade` use `virtdev_bin_directory`
+(provided by the import module) to invoke sibling scripts by resolved
 path, avoiding PATH ordering issues between the dev tree and the
 installed package.
 

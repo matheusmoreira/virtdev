@@ -462,14 +462,11 @@ extension point: the libraries are internal-only and have no stable API.
 
 The mechanism is bash 5.2's `source -p <colon-search-path> <name>`,
 which lets a script source a library by name without computing or
-hardcoding its path. Each script in `bin/` opens with a uniform
-3-symbol bootstrap: it derives the library directory from its own
-location via `readlink -f` on `BASH_SOURCE[0]`
-(`virtdev_library_directory`), defines an associative array for
-de-duplication (`virtdev_loaded_libraries`), and defines an
-`import` function that consults the array before sourcing. Once
-those three are in scope, the script issues `import` calls for the
-libraries it uses.
+hardcoding its path. Each script in `bin/` opens with a 2-line
+bootstrap that sources `lib/virtdev/import`, which provides
+`virtdev_library_directory`, `virtdev_bin_directory`,
+`virtdev_loaded_libraries`, and the `import()` function. The script
+then issues `import` calls for the libraries it uses.
 
 The same `<bin>/../lib/virtdev` relative path resolves correctly for
 both the dev tree (`~/dev/virtdev/bin → ~/dev/virtdev/lib/virtdev`)
@@ -482,6 +479,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 
 | Library | Purpose | Reserved exit codes |
 |---------|---------|---------------------|
+| `import` | bootstrap module sourced by every script; provides `virtdev_library_directory`, `virtdev_bin_directory`, `virtdev_loaded_libraries`, and `import()` | none |
 | `error` | terminal failure helper used by every script (`error <code>` with message via stdin/heredoc) | none (caller-supplied) |
 | `validate` | input validation (`validate_project_name`) | 2 |
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`) | 64 |

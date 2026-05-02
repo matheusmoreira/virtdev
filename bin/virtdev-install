@@ -28,17 +28,8 @@
 
 set -euo pipefail
 
-virtdev_library_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev"
-declare -A virtdev_loaded_libraries=()
-import() {
-  local f
-  for f in "$@"; do
-    [[ -v virtdev_loaded_libraries[$f] ]] && continue
-    virtdev_loaded_libraries[$f]=1
-    # shellcheck disable=SC1090
-    source -p "${virtdev_library_directory}" "${f}"
-  done
-}
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
 import error lock arguments
 

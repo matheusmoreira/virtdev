@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
 # virtdev-upgrade [--only=project,...] [--except=project,...]
 #                 [--skip-outdated] [--yes] [--verbose]
@@ -48,18 +49,8 @@
 
 set -euo pipefail
 
-virtdev_bin_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
-virtdev_library_directory="${virtdev_bin_directory}/../lib/virtdev"
-declare -A virtdev_loaded_libraries=()
-import() {
-  local f
-  for f in "$@"; do
-    [[ -v virtdev_loaded_libraries[$f] ]] && continue
-    virtdev_loaded_libraries[$f]=1
-    # shellcheck disable=SC1090
-    source -p "${virtdev_library_directory}" "${f}"
-  done
-}
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
 import error validate arguments manifest project
 
