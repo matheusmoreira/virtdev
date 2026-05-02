@@ -304,6 +304,12 @@ Project VMs run as transient systemd user services:
 systemd-run --user --unit=virtdev-<project> -- qemu-system-x86_64 ...
 ```
 
+Because VMs are `--user` units, they live under the user's systemd manager.
+Without lingering enabled (`loginctl enable-linger`), systemd tears down
+the user manager — and every unit it owns — when the last login session
+ends. An SSH disconnect, a closed terminal, or a network drop kills every
+running VM. `virtdev-start` warns when lingering is not enabled.
+
 QEMU flags of note:
 
 - `-enable-kvm -cpu host` — hardware-assisted virtualisation

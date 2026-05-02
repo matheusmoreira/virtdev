@@ -228,6 +228,13 @@ rm -f "${monitor_sock}" "${console_sock}"
 # the name-in-use collision below block retries.
 systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
+if [[ "$(loginctl show-user "${USER}" --property=Linger --value 2>/dev/null)" != "yes" ]]; then
+  printf >&2 'warning: lingering is not enabled for user %s\n' "${USER}"
+  printf >&2 'The virtual machine will be killed when your last login session ends.\n'
+  printf >&2 'Enable lingering to keep virtual machines alive across sessions:\n'
+  printf >&2 '    sudo loginctl enable-linger %s\n' "${USER}"
+fi
+
 printf "Starting project virtual machine %s on SSH port %d...\n" "${project}" "${port}"
 
 # --collect intentionally omitted: it sets CollectMode=inactive-or-failed,
