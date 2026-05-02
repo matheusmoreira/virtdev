@@ -5,17 +5,17 @@
 #
 # Orchestrates the full base-system-update-and-project-rebuild lifecycle:
 #
-#   Phase 1. Audit    — verify every included project has a manifest
-#   Phase 2. Backup   — start, back up, and stop each project sequentially
-#   Phase 3. Maintain — boot the sealed base for maintenance, reseal on exit
-#   Phase 4. Rebuild  — recreate every included project on the new base
-#   Phase 5. Summary  — report results per project with resume commands
+#   Audit    — verify every included project has a manifest (pre-flight)
+#   Phase 1. Backup   — start, back up, and stop each project sequentially
+#   Phase 2. Maintain — boot the sealed base for maintenance, reseal on exit
+#   Phase 3. Rebuild  — recreate every included project on the new base
+#   Phase 4. Summary  — report results per project with resume commands
 #
 # The reseal prompt inside virtdev-maintain is always interactive.
 # It is the commit point of the entire operation. Everything before it
 # is non-destructive or reversible. Everything after it is destructive.
 #
-# Phase 4 is best-effort: a failure in one project does not prevent
+# Phase 3 (Rebuild) is best-effort: a failure in one project does not prevent
 # the others from being rebuilt. Failures are collected and reported
 # in the summary with per-project resume commands.
 #
@@ -28,12 +28,15 @@
 # Exit codes:
 #
 #   0   all projects upgraded successfully
-#   3   no projects found
+#   3   sealed base system not found
 #   4   --only and --except both specified
 #   5   project named in --only or --except does not exist
 #   6   audit failure (missing or empty manifest)
 #   7   audit failure (outdated projects without --skip-outdated)
 #   8   user aborted at confirmation prompt
+#   9   base system version file missing
+#   10  no projects found
+#   11  no projects to upgrade after filtering
 #   20  backup phase failure
 #   30  maintain phase failure
 #   40  one or more project rebuilds failed
@@ -123,7 +126,7 @@ fi
 
 system_version_file="${system_directory}/version"
 if [[ ! -f "${system_version_file}" ]]; then
-  error 3 <<<"Base system version file missing: '${system_version_file}'"
+  error 9 <<<"Base system version file missing: '${system_version_file}'"
 fi
 base_version="$(< "${system_version_file}")"
 
@@ -131,7 +134,7 @@ declare -a valid_projects=()
 mapfile -t valid_projects < <(project_list)
 
 if [[ ${#valid_projects[@]} -eq 0 ]]; then
-  error 3 <<<"No projects found."
+  error 10 <<<"No projects found."
 fi
 
 # Apply --only or --except filter.
@@ -230,7 +233,7 @@ fi
 included=("${included_after_skip[@]}")
 
 if [[ ${#included[@]} -eq 0 ]]; then
-  error 3 <<<"No projects to upgrade after filtering."
+  error 11 <<<"No projects to upgrade after filtering."
 fi
 
 # Discover provision scripts for the plan display.

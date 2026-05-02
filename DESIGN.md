@@ -399,7 +399,7 @@ the guard is one line and depends on the script's own state.
 
 - `virtdev-list`, `virtdev-ssh`, `virtdev-wait`, `virtdev-console`
 - `virtdev-transfer`, `virtdev-key`, `virtdev-iso`
-- `virtdev-backup`, `virtdev-restore`, `virtdev-recreate`
+- `virtdev-backup`, `virtdev-restore`, `virtdev-recreate`, `virtdev-upgrade`
 
 `virtdev-start` is the one special case: it holds the lock until
 `systemctl --user is-active <unit>` returns true for the transient unit,
@@ -488,6 +488,8 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `lock` | exclusive `flock(2)` acquisition on `${VIRTDEV_HOME}/lock`, with maintain-aware diagnostics | 75 |
 | `ssh` | SSH key file existence and permission validation (`ssh_key_validate`) | 77, 78 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
+| `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
+| `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`) | none (caller-supplied) |
 
 Libraries are self-contained: each imports its own dependencies
 (e.g., `validate` imports `error` because it calls `error()` on
@@ -548,6 +550,7 @@ during a maintenance session.
 | `virtdev-backup`   | Snapshot user-curated guest-side paths to a host-side timestamped directory |
 | `virtdev-restore`  | Restore a snapshot into a running project VM                |
 | `virtdev-recreate` | Backup, destroy, recreate, optionally provision, and restore in one command |
+| `virtdev-upgrade`  | Back up all projects, maintain the base, rebuild all projects on the new base |
 
 ---
 

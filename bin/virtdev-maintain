@@ -209,7 +209,7 @@ fi
 # Replacing it while a project virtual machine is running would corrupt it.
 if systemctl --user list-units --state=active --no-legend 'virtdev-*.service' \
        2>/dev/null | grep -q .; then
-  error 8 <<MESSAGE
+  error 7 <<MESSAGE
 One or more project virtual machines are running.
 Stop all project virtual machines before running virtdev-maintain:
 
@@ -331,7 +331,7 @@ if [[ "${ssh_up}" -eq 0 ]]; then
     systemctl --user reset-failed "${unit}" 2>/dev/null || true
     rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
     rmdir "${maintenance_project}" 2>/dev/null || true
-    error 9 <<MESSAGE
+    error 16 <<MESSAGE
 Port ${maintenance_port} is bound by another process.
 Between virtdev-maintain's pre-flight port check and QEMU's bind()
 call, another process took the port. The sealed base images are
@@ -465,7 +465,7 @@ proper guest-level shutdown and QEMU will then exit 0.
 MESSAGE
     ;;
   *)
-    error 11 <<MESSAGE
+    error 18 <<MESSAGE
 Maintenance virtual machine exited abnormally.
 Unit exit status: ${qemu_exit}
 

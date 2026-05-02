@@ -140,6 +140,16 @@ Recreate them:
 virtdev recreate myproject
 ```
 
+Or use `virtdev upgrade` to do everything in one command — back up all
+projects, maintain the base, and rebuild them all on the new base:
+
+```bash
+virtdev upgrade
+```
+
+Flags: `--only=a,b`, `--except=c,d`, `--skip-outdated`, `--yes`/`-y`,
+`--verbose`/`-v`.
+
 ## Commands
 
 All commands are available as `virtdev <command>` (dispatcher) or
@@ -164,6 +174,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-stop <project>` | ACPI shutdown with SIGTERM fallback |
 | `virtdev-destroy [-y] <project>` | Delete a project VM (confirmation required) |
 | `virtdev-recreate [flags] <project>` | Backup, destroy, rebuild, provision, restore |
+| `virtdev-upgrade [flags]` | Back up, maintain base, rebuild all projects |
 | `virtdev-nuke` | Delete all virtdev data (confirmation required) |
 
 ### Access
