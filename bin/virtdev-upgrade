@@ -1,0 +1,515 @@
+#!/usr/bin/env bash
+#
+# virtdev-upgrade [--only=project,...] [--except=project,...]
+#                 [--skip-outdated] [--yes] [--verbose]
+#
+# Orchestrates the full base-system-update-and-project-rebuild lifecycle:
+#
+#   Phase 1. Audit    — verify every included project has a backup.list
+#   Phase 2. Backup   — start, back up, and stop each project sequentially
+#   Phase 3. Maintain — boot the sealed base for maintenance, reseal on exit
+#   Phase 4. Rebuild  — recreate every included project on the new base
+#   Phase 5. Summary  — report results per project with resume commands
+#
+# The reseal prompt inside virtdev-maintain is always interactive.
+# It is the commit point of the entire operation. Everything before it
+# is non-destructive or reversible. Everything after it is destructive.
+#
+# Phase 4 is best-effort: a failure in one project does not prevent
+# the others from being rebuilt. Failures are collected and reported
+# in the summary with per-project resume commands.
+#
+# Projects excluded via --only, --except, or --skip-outdated are left
+# on their current base version. They cannot be booted until individually
+# recreated.
+#
+# Lock model: no top-level lock. Each subprocess acquires locks as needed.
+#
+# Exit codes:
+#
+#   0   all projects upgraded successfully
+#   3   no projects found
+#   4   --only and --except both specified
+#   5   project named in --only or --except does not exist
+#   6   audit failure (missing or empty backup.list)
+#   7   audit failure (outdated projects without --skip-outdated)
+#   8   user aborted at confirmation prompt
+#   20  backup phase failure
+#   30  maintain phase failure
+#   40  one or more project rebuilds failed
+#
+# Configuration via environment variables:
+#
+#   VIRTDEV_HOME    Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#
+
+set -euo pipefail
+
+virtdev_bin_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+virtdev_library_directory="${virtdev_bin_directory}/../lib/virtdev"
+declare -A virtdev_loaded_libraries=()
+import() {
+  local f
+  for f in "$@"; do
+    [[ -v virtdev_loaded_libraries[$f] ]] && continue
+    virtdev_loaded_libraries[$f]=1
+    # shellcheck disable=SC1090
+    source -p "${virtdev_library_directory}" "${f}"
+  done
+}
+
+import error validate arguments
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=(
+  [only]=value
+  [except]=value
+  [skip-outdated]=bool
+  [yes]=bool
+  [verbose]=bool
+)
+# shellcheck disable=SC2034
+declare -A spec_short=([y]=yes [v]=verbose)
+# shellcheck disable=SC2034
+declare -A spec_placeholders=([only]=projects [except]=projects)
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 0 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+if [[ -n "${flags[only]}" && -n "${flags[except]}" ]]; then
+  error 4 <<<"--only and --except are mutually exclusive"
+fi
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+backup_list_exists() {
+  local project="${1}"
+  local project_local="${VIRTDEV_HOME}/projects/${project}/backup.list"
+  local xdg_fallback="${XDG_CONFIG_HOME}/virtdev/projects/${project}/backup.list"
+  local path=""
+  if [[ -f "${project_local}" ]]; then
+    path="${project_local}"
+  elif [[ -f "${xdg_fallback}" ]]; then
+    path="${xdg_fallback}"
+  else
+    return 1
+  fi
+  grep -Eq '^\s*[^#[:space:]]' "${path}"
+}
+
+project_is_outdated() {
+  local project="${1}"
+  local project_version_file="${VIRTDEV_HOME}/projects/${project}/version"
+  if [[ ! -f "${project_version_file}" ]]; then
+    return 0
+  fi
+  local project_version
+  project_version="$(< "${project_version_file}")"
+  [[ "${project_version}" != "${base_version}" ]]
+}
+
+project_is_running() {
+  systemctl --user --quiet is-active "virtdev-${1}" 2>/dev/null
+}
+
+# ── Parse --only / --except into arrays ──────────────────────────────
+
+declare -a only_list=()
+declare -a except_list=()
+declare -A except_set=()
+
+if [[ -n "${flags[only]}" ]]; then
+  IFS=',' read -ra only_list <<< "${flags[only]}"
+  for name in "${only_list[@]}"; do
+    validate_project_name "${name}"
+  done
+fi
+
+if [[ -n "${flags[except]}" ]]; then
+  IFS=',' read -ra except_list <<< "${flags[except]}"
+  for name in "${except_list[@]}"; do
+    validate_project_name "${name}"
+    except_set["${name}"]=1
+  done
+fi
+
+# ── Enumerate projects ───────────────────────────────────────────────
+
+projects_directory="${VIRTDEV_HOME}/projects"
+system_directory="${VIRTDEV_HOME}/system"
+
+if [[ ! -d "${system_directory}" ]]; then
+  error 3 <<MESSAGE
+Sealed base system not found: '${system_directory}'
+Create it with virtdev-iso, virtdev-install and virtdev-seal.
+MESSAGE
+fi
+
+system_version_file="${system_directory}/version"
+if [[ ! -f "${system_version_file}" ]]; then
+  error 3 <<<"Base system version file missing: '${system_version_file}'"
+fi
+base_version="$(< "${system_version_file}")"
+
+if [[ ! -d "${projects_directory}" ]]; then
+  error 3 <<<"No projects found."
+fi
+
+declare -a all_projects=()
+mapfile -t all_projects < <(
+  find "${projects_directory}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' \
+    | sort
+)
+
+# Filter to valid project names, excluding the reserved 'maintenance' name.
+declare -a valid_projects=()
+for p in "${all_projects[@]}"; do
+  [[ "${p}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
+  [[ "${p}" == "maintenance" ]] && continue
+  valid_projects+=("${p}")
+done
+
+if [[ ${#valid_projects[@]} -eq 0 ]]; then
+  error 3 <<<"No projects found."
+fi
+
+# Apply --only or --except filter.
+declare -a included=()
+declare -a excluded=()
+declare -A excluded_reasons=()
+
+if [[ ${#only_list[@]} -gt 0 ]]; then
+  declare -A only_set=()
+  for name in "${only_list[@]}"; do
+    if [[ ! -d "${projects_directory}/${name}" ]]; then
+      error 5 <<<"Project not found: ${name}"
+    fi
+    only_set["${name}"]=1
+  done
+  for p in "${valid_projects[@]}"; do
+    if [[ -v only_set["${p}"] ]]; then
+      included+=("${p}")
+    else
+      excluded+=("${p}")
+      excluded_reasons["${p}"]="--only"
+    fi
+  done
+elif [[ ${#except_list[@]} -gt 0 ]]; then
+  for name in "${except_list[@]}"; do
+    if [[ ! -d "${projects_directory}/${name}" ]]; then
+      error 5 <<<"Project not found: ${name}"
+    fi
+  done
+  for p in "${valid_projects[@]}"; do
+    if [[ -v except_set["${p}"] ]]; then
+      excluded+=("${p}")
+      excluded_reasons["${p}"]="--except"
+    else
+      included+=("${p}")
+    fi
+  done
+else
+  included=("${valid_projects[@]}")
+fi
+
+# ── Phase 1: Audit ──────────────────────────────────────────────────
+
+declare -a audit_failures=()
+declare -a skipped_outdated=()
+
+for p in "${included[@]}"; do
+  if ! backup_list_exists "${p}"; then
+    audit_failures+=("${p}: missing or empty backup.list")
+  fi
+done
+
+if [[ ${#audit_failures[@]} -gt 0 ]]; then
+  {
+    printf 'Audit failed. These projects cannot be safely upgraded:\n\n'
+    for failure in "${audit_failures[@]}"; do
+      printf '    %s\n' "${failure}"
+    done
+    printf '\nCreate a backup.list for each, or exclude them with --except.\n'
+  } >&2
+  error 6 <<<"Aborting."
+fi
+
+# Check for already-outdated + stopped projects that can't be backed up.
+declare -a outdated_blocked=()
+declare -a included_after_skip=()
+
+for p in "${included[@]}"; do
+  if project_is_outdated "${p}" && ! project_is_running "${p}"; then
+    if (( flags[skip-outdated] )); then
+      skipped_outdated+=("${p}")
+      excluded+=("${p}")
+      excluded_reasons["${p}"]="already outdated, --skip-outdated"
+    else
+      outdated_blocked+=("${p}")
+    fi
+  else
+    included_after_skip+=("${p}")
+  fi
+done
+
+if [[ ${#outdated_blocked[@]} -gt 0 ]]; then
+  {
+    printf 'These projects are already outdated and stopped.\n'
+    printf 'They cannot be started for backup (virtdev-start refuses version mismatches).\n\n'
+    for p in "${outdated_blocked[@]}"; do
+      printf '    %s\n' "${p}"
+    done
+    printf '\nExclude them with --except or pass --skip-outdated.\n'
+  } >&2
+  error 7 <<<"Aborting."
+fi
+
+included=("${included_after_skip[@]}")
+
+if [[ ${#included[@]} -eq 0 ]]; then
+  error 3 <<<"No projects to upgrade after filtering."
+fi
+
+# Discover provision scripts for the plan display.
+declare -A provision_paths=()
+for p in "${included[@]}"; do
+  provision_hook="${XDG_CONFIG_HOME}/virtdev/projects/${p}/provision"
+  if [[ -f "${provision_hook}" && -r "${provision_hook}" ]]; then
+    provision_paths["${p}"]="${provision_hook}"
+  fi
+done
+
+# Print the plan.
+{
+  printf '\n'
+  printf 'Projects to upgrade: %d\n' "${#included[@]}"
+  for p in "${included[@]}"; do
+    printf '    %s\n' "${p}"
+  done
+
+  if [[ ${#excluded[@]} -gt 0 ]]; then
+    printf '\nNot upgraded: %d\n' "${#excluded[@]}"
+    for p in "${excluded[@]}"; do
+      printf '    %-30s (%s)\n' "${p}" "${excluded_reasons[${p}]}"
+    done
+  fi
+
+  if [[ ${#provision_paths[@]} -gt 0 ]]; then
+    printf '\nProvision scripts found:\n'
+    for p in "${included[@]}"; do
+      if [[ -v provision_paths["${p}"] ]]; then
+        printf '    %-30s %s\n' "${p}" "${provision_paths[${p}]}"
+      fi
+    done
+  fi
+
+  printf '\n'
+  printf 'This will back up, maintain the base system, and rebuild all listed projects.\n'
+} >&2
+
+if (( ! flags[yes] )); then
+  printf "Type 'upgrade' to confirm: " >&2
+  read -r confirmation
+  if [[ "${confirmation}" != "upgrade" ]]; then
+    error 8 <<<"Aborted."
+  fi
+fi
+
+# ── Phase 2: Backup ─────────────────────────────────────────────────
+
+total_phases=4
+declare -a stopped_projects=()
+
+printf '\n[Phase 1/%d] Backing up project virtual machines...\n' "${total_phases}" >&2
+
+for p in "${included[@]}"; do
+  printf '\n  %s:\n' "${p}" >&2
+  was_running=0
+  if project_is_running "${p}"; then
+    was_running=1
+  fi
+
+  if (( ! was_running )); then
+    printf '    Starting...\n' >&2
+    if ! "${virtdev_bin_directory}/virtdev-start" "${p}"; then
+      {
+        printf '\nBackup failed: could not start %s.\n' "${p}"
+        if [[ ${#stopped_projects[@]} -gt 0 ]]; then
+          printf '\nVirtual machines stopped during this phase:\n'
+          for s in "${stopped_projects[@]}"; do
+            printf '    %s\n' "${s}"
+          done
+          printf '\nRestart them with: virtdev-start <project>\n'
+        fi
+        printf 'Base is unchanged. Backups taken so far are preserved.\n'
+      } >&2
+      error 20 <<<"Aborting."
+    fi
+    if ! "${virtdev_bin_directory}/virtdev-wait" "${p}"; then
+      "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
+      stopped_projects+=("${p}")
+      {
+        printf '\nBackup failed: SSH did not come up for %s.\n' "${p}"
+        if [[ ${#stopped_projects[@]} -gt 0 ]]; then
+          printf '\nVirtual machines stopped during this phase:\n'
+          for s in "${stopped_projects[@]}"; do
+            printf '    %s\n' "${s}"
+          done
+          printf '\nRestart them with: virtdev-start <project>\n'
+        fi
+        printf 'Base is unchanged. Backups taken so far are preserved.\n'
+      } >&2
+      error 20 <<<"Aborting."
+    fi
+  fi
+
+  backup_opts=()
+  (( flags[verbose] )) && backup_opts+=(--verbose)
+  if ! "${virtdev_bin_directory}/virtdev-backup" "${backup_opts[@]}" "${p}"; then
+    if (( ! was_running )); then
+      "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
+      stopped_projects+=("${p}")
+    fi
+    {
+      printf '\nBackup failed for %s.\n' "${p}"
+      if [[ ${#stopped_projects[@]} -gt 0 ]]; then
+        printf '\nVirtual machines stopped during this phase:\n'
+        for s in "${stopped_projects[@]}"; do
+          printf '    %s\n' "${s}"
+        done
+        printf '\nRestart them with: virtdev-start <project>\n'
+      fi
+      printf 'Base is unchanged. Backups taken so far are preserved.\n'
+    } >&2
+    error 20 <<<"Aborting."
+  fi
+
+  printf '    Stopping...\n' >&2
+  if ! "${virtdev_bin_directory}/virtdev-stop" "${p}"; then
+    stopped_projects+=("${p}")
+    {
+      printf '\nFailed to stop %s after backup.\n' "${p}"
+      if [[ ${#stopped_projects[@]} -gt 0 ]]; then
+        printf '\nVirtual machines stopped during this phase:\n'
+        for s in "${stopped_projects[@]}"; do
+          printf '    %s\n' "${s}"
+        done
+        printf '\nRestart them with: virtdev-start <project>\n'
+      fi
+      printf 'Base is unchanged. Backups taken so far are preserved.\n'
+    } >&2
+    error 20 <<<"Aborting."
+  fi
+  stopped_projects+=("${p}")
+done
+
+# ── Phase 3: Maintain ───────────────────────────────────────────────
+
+printf '\n[Phase 2/%d] Maintaining base system...\n' "${total_phases}" >&2
+printf 'This is the interactive phase. SSH into the maintenance virtual machine,\n' >&2
+printf 'perform updates, and power off when done.\n\n' >&2
+
+if ! "${virtdev_bin_directory}/virtdev-maintain"; then
+  {
+    printf '\nMaintain did not complete successfully.\n'
+    printf 'Base is unchanged. All project virtual machines are stopped.\n'
+    printf 'Backups are preserved. Restart virtual machines with:\n'
+    printf '\n'
+    for p in "${included[@]}"; do
+      printf '    virtdev-start %s\n' "${p}"
+    done
+    printf '\n'
+  } >&2
+  error 30 <<<"Aborting."
+fi
+
+# ── Phase 4: Rebuild ────────────────────────────────────────────────
+
+printf '\n[Phase 3/%d] Rebuilding project virtual machines...\n' "${total_phases}" >&2
+
+declare -a succeeded=()
+declare -a failed=()
+declare -A fail_reasons=()
+declare -A fail_codes=()
+
+for p in "${included[@]}"; do
+  printf '\n  Recreating %s...\n' "${p}" >&2
+  recreate_opts=(--no-backup --yes)
+  (( flags[verbose] )) && recreate_opts+=(--verbose)
+
+  if "${virtdev_bin_directory}/virtdev-recreate" "${recreate_opts[@]}" "${p}"; then
+    succeeded+=("${p}")
+  else
+    exit_code=$?
+    failed+=("${p}")
+    fail_codes["${p}"]="${exit_code}"
+    case "${exit_code}" in
+      22) fail_reasons["${p}"]="destroy"    ;;
+      23) fail_reasons["${p}"]="create"     ;;
+      24) fail_reasons["${p}"]="start"      ;;
+      25) fail_reasons["${p}"]="wait"       ;;
+      26) fail_reasons["${p}"]="provision"  ;;
+      27) fail_reasons["${p}"]="restore"    ;;
+      *)  fail_reasons["${p}"]="unknown"    ;;
+    esac
+  fi
+done
+
+# ── Phase 5: Summary ────────────────────────────────────────────────
+
+new_version="$(< "${system_version_file}")"
+
+printf '\n[Phase 4/%d] Summary\n\n' "${total_phases}" >&2
+
+if [[ ${#failed[@]} -eq 0 ]]; then
+  printf 'Upgrade complete.\n'
+elif [[ ${#succeeded[@]} -gt 0 ]]; then
+  printf 'Upgrade incomplete.\n'
+else
+  printf 'Upgrade failed.\n'
+fi
+
+if [[ ${#succeeded[@]} -gt 0 ]]; then
+  printf '\nUpgraded: %d\n' "${#succeeded[@]}"
+  for p in "${succeeded[@]}"; do
+    printf '    %s\n' "${p}"
+  done
+fi
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  printf '\nFailed: %d\n' "${#failed[@]}"
+  for p in "${failed[@]}"; do
+    printf '    %s\n' "${p}"
+  done
+  printf '\n'
+  for p in "${failed[@]}"; do
+    printf '%s:\n' "${p}"
+    printf '    Failed at: %s\n' "${fail_reasons[${p}]}"
+    printf '    Exit code: %s\n' "${fail_codes[${p}]}"
+    printf '    Resume with:\n'
+    printf '        virtdev-recreate --no-backup %s\n' "${p}"
+    printf '\n'
+  done
+fi
+
+if [[ ${#excluded[@]} -gt 0 ]]; then
+  printf 'Not upgraded: %d\n' "${#excluded[@]}"
+  for p in "${excluded[@]}"; do
+    printf '    %-30s (%s)\n' "${p}" "${excluded_reasons[${p}]}"
+  done
+  printf '\nThese projects remain on their current base version.\n'
+fi
+
+printf '\nBase version: %s → %s\n' "${base_version}" "${new_version}"
+
+if [[ ${#failed[@]} -gt 0 ]]; then
+  exit 40
+fi

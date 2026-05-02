@@ -9,6 +9,7 @@
 #   PROJECT   Name of the project virtual machine
 #   PORT      Host-side SSH forwarding port
 #   STATUS    running | stopped
+#   VERSION   Base version the project was created against
 #
 
 set -euo pipefail
@@ -58,13 +59,20 @@ if [[ ${#projects[@]} -eq 0 ]]; then
   exit 0
 fi
 
-printf '%-50s %-5s %s\n' 'PROJECT' 'PORT' 'STATUS'
-printf '%-50s %-5s %s\n' '-------' '----' '------'
+system_version_file="${VIRTDEV_HOME}/system/version"
+base_version='-'
+if [[ -f "${system_version_file}" ]]; then
+  base_version="$(< "${system_version_file}")"
+fi
+
+printf '%-50s %-5s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS' 'VERSION'
+printf '%-50s %-5s %-8s %s\n' '-------' '----' '------' '-------'
 
 for project in "${projects[@]}"; do
   [[ "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
   project_directory="${projects_directory}"/"${project}"
   port_file="${project_directory}"/port
+  version_file="${project_directory}"/version
 
   if systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
     status='running'
@@ -78,5 +86,14 @@ for project in "${projects[@]}"; do
     port='-'
   fi
 
-  printf '%-50s %-5s %s\n' "${project}" "${port}" "${status}"
+  version='-'
+  if [[ -f "${version_file}" ]]; then
+    version="$(< "${version_file}")"
+  fi
+
+  printf '%-50s %-5s %-8s %s\n' "${project}" "${port}" "${status}" "${version}"
 done
+
+if [[ "${base_version}" != '-' ]]; then
+  printf '\nBase version: %s\n' "${base_version}"
+fi

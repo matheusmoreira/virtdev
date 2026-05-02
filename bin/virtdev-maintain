@@ -90,9 +90,10 @@ import error lock arguments ssh
 readonly maintenance_port=2222
 readonly unit=virtdev-maintenance
 
-# shellcheck disable=SC2034  # spec read via nameref
-declare -A spec=()
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=([yes]=bool)
 # shellcheck disable=SC2034
+declare -A spec_short=([y]=yes)
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"
@@ -485,15 +486,17 @@ esac
 # foreground shell inside the guest. Require explicit user
 # confirmation before overwriting the sealed base system.
 printf 'Virtual machine exited cleanly.\n'
-printf 'Reseal the base system? [y/N] '
-read -r confirm
-if [[ "${confirm}" != 'y' && "${confirm}" != 'Y' ]]; then
-  error 12 <<MESSAGE
+if (( ! flags[yes] )); then
+  printf 'Reseal the base system? [y/N] '
+  read -r confirm
+  if [[ "${confirm}" != 'y' && "${confirm}" != 'Y' ]]; then
+    error 12 <<MESSAGE
 Reseal cancelled.
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
 Remove manually to retry: rm -rf '${maintenance_directory}'
 MESSAGE
+  fi
 fi
 
 printf 'Checking maintenance image integrity...\n'
@@ -589,6 +592,32 @@ if ! rm -rf "${trash_directory}"; then
 fi
 
 printf 'Base system resealed: %s\n' "${system_directory}"
-printf '\n'
-printf 'Project virtual machines in delta mode do not inherit these changes.\n'
-printf 'Recreate them with virtdev-destroy + virtdev-create to pick up updates.\n'
+
+new_version="$(< "${system_directory}/version")"
+projects_directory="${VIRTDEV_HOME}/projects"
+outdated_count=0
+if [[ -d "${projects_directory}" ]]; then
+  for project_dir in "${projects_directory}"/*/; do
+    [[ -d "${project_dir}" ]] || continue
+    [[ "$(basename "${project_dir}")" == "maintenance" ]] && continue
+    project_version_file="${project_dir}version"
+    if [[ -f "${project_version_file}" ]]; then
+      project_version="$(< "${project_version_file}")"
+      if [[ "${project_version}" != "${new_version}" ]]; then
+        (( ++outdated_count ))
+      fi
+    else
+      (( ++outdated_count ))
+    fi
+  done
+fi
+
+if (( outdated_count > 0 )); then
+  printf '\n'
+  printf '%d project(s) are now outdated. Upgrade them with:\n' "${outdated_count}"
+  printf '\n'
+  printf '    virtdev-upgrade\n'
+else
+  printf '\n'
+  printf 'No project virtual machines to upgrade.\n'
+fi
