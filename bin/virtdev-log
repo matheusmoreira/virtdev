@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# virtdev-logs [--follow] <project>
+#
+# Shows journal output for a project virtual machine's systemd unit.
+# Shorthand for journalctl --user -u virtdev-<project>.
+#
+# Flags:
+#
+#   --follow    Stream new log entries as they appear (journalctl -f).
+#
+# The project does not need to be running — historical logs from
+# previous sessions are shown if they have not been rotated.
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate arguments terminal
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=([follow]=bool)
+# shellcheck disable=SC2034
+declare -A spec_short=([f]=follow)
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 1 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+project="${1}"
+
+validate_project_name "${project}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+unit="virtdev-${project}"
+
+journalctl_opts=(--user -u "${unit}" --no-hostname)
+
+if (( flags[follow] )); then
+  if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+    printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: ${project} is not running; --follow will wait for new entries" reset)"
+  fi
+  journalctl_opts+=(--follow)
+fi
+
+exec journalctl "${journalctl_opts[@]}"
