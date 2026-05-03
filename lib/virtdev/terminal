@@ -82,36 +82,81 @@ terminal_init() {
   terminal=()
 
   if (( enable )); then
-    terminal=(
-      [fg.black]="$(tput setaf 0 2>/dev/null || true)"
-      [fg.red]="$(tput setaf 1 2>/dev/null || true)"
-      [fg.green]="$(tput setaf 2 2>/dev/null || true)"
-      [fg.yellow]="$(tput setaf 3 2>/dev/null || true)"
-      [fg.blue]="$(tput setaf 4 2>/dev/null || true)"
-      [fg.magenta]="$(tput setaf 5 2>/dev/null || true)"
-      [fg.cyan]="$(tput setaf 6 2>/dev/null || true)"
-      [fg.white]="$(tput setaf 7 2>/dev/null || true)"
-
-      [bg.black]="$(tput setab 0 2>/dev/null || true)"
-      [bg.red]="$(tput setab 1 2>/dev/null || true)"
-      [bg.green]="$(tput setab 2 2>/dev/null || true)"
-      [bg.yellow]="$(tput setab 3 2>/dev/null || true)"
-      [bg.blue]="$(tput setab 4 2>/dev/null || true)"
-      [bg.magenta]="$(tput setab 5 2>/dev/null || true)"
-      [bg.cyan]="$(tput setab 6 2>/dev/null || true)"
-      [bg.white]="$(tput setab 7 2>/dev/null || true)"
-
-      [bold]="$(tput bold 2>/dev/null || true)"
-      [dim]="$(tput dim 2>/dev/null || true)"
-      [italic]="$(tput sitm 2>/dev/null || true)"
-      [underline]="$(tput smul 2>/dev/null || true)"
-      [reverse]="$(tput rev 2>/dev/null || true)"
-      [standout]="$(tput smso 2>/dev/null || true)"
-      [invisible]="$(tput invis 2>/dev/null || true)"
-      [blink]="$(tput blink 2>/dev/null || true)"
-
-      [reset]="$(tput sgr0 2>/dev/null || true)"
+    local -a _keys=(
+      fg.black fg.red fg.green fg.yellow
+      fg.blue fg.magenta fg.cyan fg.white
+      bg.black bg.red bg.green bg.yellow
+      bg.blue bg.magenta bg.cyan bg.white
+      bold dim italic underline
+      reverse standout invisible blink
+      reset
     )
+    # Single tput -S call for all capabilities. bel (0x07) is
+    # interleaved as a record separator — it cannot appear in
+    # SGR sequences, so splitting on it recovers each value.
+    local _raw
+    _raw=$(tput -S <<'TPUT_CAPS' 2>/dev/null || true
+setaf 0
+bel
+setaf 1
+bel
+setaf 2
+bel
+setaf 3
+bel
+setaf 4
+bel
+setaf 5
+bel
+setaf 6
+bel
+setaf 7
+bel
+setab 0
+bel
+setab 1
+bel
+setab 2
+bel
+setab 3
+bel
+setab 4
+bel
+setab 5
+bel
+setab 6
+bel
+setab 7
+bel
+bold
+bel
+dim
+bel
+sitm
+bel
+smul
+bel
+rev
+bel
+smso
+bel
+invis
+bel
+blink
+bel
+sgr0
+bel
+TPUT_CAPS
+)
+    local -a _values=()
+    local _v
+    while IFS= read -rd $'\a' _v; do
+      _values+=("${_v}")
+    done <<< "${_raw}"
+    local _i
+    for (( _i = 0; _i < ${#_keys[@]}; _i++ )); do
+      terminal["${_keys[_i]}"]="${_values[_i]:-}"
+    done
   fi
 }
 
