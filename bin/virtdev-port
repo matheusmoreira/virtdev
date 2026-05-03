@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+#
+# virtdev-port <project>
+#
+# Prints the SSH port of a running project virtual machine.
+# Exits non-zero if the project is not running.
+#
+# Machine-readable: stdout contains only the port number.
+# Useful in scripts and shell substitutions:
+#
+#     ssh -p "$(virtdev port lone)" dev@127.0.0.1
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate arguments
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 1 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+project="${1}"
+
+validate_project_name "${project}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+port_file="${project_directory}/port"
+if [[ ! -f "${port_file}" ]]; then
+  error 4 <<MESSAGE
+Project has no port assigned: ${project}
+Start the virtual machine first: virtdev-start ${project}
+MESSAGE
+fi
+
+if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+  error 5 <<MESSAGE
+Virtual machine is not running: ${project}
+Start it with: virtdev-start ${project}
+MESSAGE
+fi
+
+printf '%s\n' "$(< "${port_file}")"
