@@ -202,7 +202,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-console <project>` | Serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is available |
 | `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
-| `virtdev-list` | List projects with port and status |
+| `virtdev-list` | List projects with port, status, and version (colored) |
 
 ### Backup
 
@@ -234,6 +234,10 @@ Environment variables (defaults shown):
 
 `VIRTDEV_HOME` and `VIRTDEV_CACHE` follow XDG defaults
 (`${XDG_DATA_HOME}` and `${XDG_CACHE_HOME}` respectively).
+
+All commands support `--color=yes|no|auto` (default: auto). Auto enables
+color when stderr is a terminal, `NO_COLOR` is unset, and `TERM` is not
+`dumb`. Colors come from terminfo via `tput`, not hardcoded ANSI escapes.
 
 ## Architecture
 

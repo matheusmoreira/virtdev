@@ -485,14 +485,14 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `import` | bootstrap module sourced by every script; provides `virtdev_library_directory`, `virtdev_bin_directory`, `virtdev_loaded_libraries`, and `import()` | none |
 | `error` | terminal failure helper used by every script (`error <code>` with message via stdin/heredoc) | none (caller-supplied) |
 | `validate` | input validation (`validate_project_name`) | 2 |
-| `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`) | 64 |
+| `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`); universal `--help` and `--color` handling | 64 |
 | `lock` | exclusive `flock(2)` acquisition on `${VIRTDEV_HOME}/lock`, with maintain-aware diagnostics | 75 |
 | `ssh` | SSH key file existence and permission validation (`ssh_key_validate`) | 77, 78 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`, `project_is_detached`) | none (caller-supplied) |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
-| `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array) | none |
+| `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array); lazy-inits on first `terminal_write` call using the color mode from `arguments_parse` | none |
 
 Libraries are self-contained: each imports its own dependencies
 (e.g., `validate` imports `error` because it calls `error()` on

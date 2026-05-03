@@ -40,7 +40,9 @@ how it's structured. Don't duplicate their content here — point to them.
   generate usage lines from the spec. `arguments_parse` intercepts
   `--help` and `-h` automatically (anywhere in argv before the `--`
   terminator) and prints the usage line; consumers don't need a
-  manual help intercept.
+  manual help intercept. `--color=yes|no|auto` is also universal —
+  the parsed value is stored in `_virtdev_color_mode` for the
+  terminal library.
 
 ### The `virtdev` dispatcher
 
@@ -117,10 +119,11 @@ arguments_parse spec flags positional "$@"
 
 Spec types: `bool` (presence/absence), `value` (takes one arg —
 defaults to `""` if absent), `required` (like value, but errors if
-not given). `--help`/`-h` is reserved by the library; declaring
-either in a spec does not shadow the universal handling. The
-"required" check is syntactic — `--flag=` counts as given; consumers
-needing non-empty validation must do it after parsing.
+not given). `--help`/`-h` and `--color=yes|no|auto` are reserved
+universal flags handled before the spec is checked; declaring them
+in a spec does not shadow the universal handling. The "required"
+check is syntactic — `--flag=` counts as given; consumers needing
+non-empty validation must do it after parsing.
 
 Parsing is **GNU-style**: flags and positionals may be interleaved.
 `virtdev-destroy myproject --yes` works. Use `--` to force all
@@ -155,6 +158,9 @@ variable scope, process, and shell options:
    exits the process is a bug.
 4. **`local` for everything inside functions.** If a global must escape,
    namespace it with `VIRTDEV_*` so the consumer can see the contract.
+   Top-level `declare -A` in a library creates a variable local to
+   `import()` (since libraries are sourced from within that function).
+   Use `declare -gA` for associative arrays that must be global.
 5. **`readonly` for true constants only.** Library-level values that
    don't depend on mutable env vars get `readonly` (or `declare -r`)
    so they can't be accidentally rebound by a consumer. Values
@@ -272,8 +278,9 @@ Install layout:
 - **Version counter.** `virtdev-seal` writes the initial counter as `1`,
   `virtdev-maintain` increments on reseal. `virtdev-create` copies the
   current value into the project; `virtdev-start` refuses to boot if the
-  project's counter doesn't match the base's. Files must be a single
-  non-negative integer; everything else is a hard error.
+  project's counter doesn't match the base's. Valid contents: a single
+  non-negative integer, or the literal `detached` (written by
+  `virtdev-detach`). Detached projects skip the version check entirely.
 - **systemd `--user` units.** Project VMs run as transient
   `virtdev-<project>.service` units via `systemd-run --user`.
   `--collect` is intentionally omitted so failed units persist for
