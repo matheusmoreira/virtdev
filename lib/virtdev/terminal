@@ -94,60 +94,17 @@ terminal_init() {
     # Single tput -S call for all capabilities. bel (0x07) is
     # interleaved as a record separator — it cannot appear in
     # SGR sequences, so splitting on it recovers each value.
+    local -a _caps=(
+      "setaf 0" "setaf 1" "setaf 2" "setaf 3"
+      "setaf 4" "setaf 5" "setaf 6" "setaf 7"
+      "setab 0" "setab 1" "setab 2" "setab 3"
+      "setab 4" "setab 5" "setab 6" "setab 7"
+      bold dim sitm smul
+      rev smso invis blink
+      sgr0
+    )
     local _raw
-    _raw=$(tput -S <<'TPUT_CAPS' 2>/dev/null || true
-setaf 0
-bel
-setaf 1
-bel
-setaf 2
-bel
-setaf 3
-bel
-setaf 4
-bel
-setaf 5
-bel
-setaf 6
-bel
-setaf 7
-bel
-setab 0
-bel
-setab 1
-bel
-setab 2
-bel
-setab 3
-bel
-setab 4
-bel
-setab 5
-bel
-setab 6
-bel
-setab 7
-bel
-bold
-bel
-dim
-bel
-sitm
-bel
-smul
-bel
-rev
-bel
-smso
-bel
-invis
-bel
-blink
-bel
-sgr0
-bel
-TPUT_CAPS
-)
+    _raw=$(printf '%s\nbel\n' "${_caps[@]}" | tput -S 2>/dev/null || true)
     local -a _values=()
     local _v
     while IFS= read -rd $'\a' _v; do
