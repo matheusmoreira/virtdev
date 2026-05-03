@@ -50,12 +50,15 @@ fi
 printf '%-50s %-5s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS' 'VERSION'
 printf '%-50s %-5s %-8s %s\n' '-------' '----' '------' '-------'
 
+declare -A running_state=()
+project_load_running_state running_state "${projects[@]}"
+
 for project in "${projects[@]}"; do
   project_directory="${VIRTDEV_HOME}/projects/${project}"
   port_file="${project_directory}/port"
   version_file="${project_directory}/version"
 
-  if project_is_running "${project}"; then
+  if [[ "${running_state[${project}]}" == "1" ]]; then
     status='running'
     status_color='fg=green'
     if [[ -f "${port_file}" ]]; then

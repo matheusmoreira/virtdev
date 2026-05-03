@@ -14,6 +14,12 @@
 #   project_is_running <project>
 #       Returns 0 if the project's systemd unit is active.
 #
+#   project_load_running_state <result-array> <project>...
+#       Batch-queries systemctl for the running state of the
+#       given projects in a single call. Populates the caller's
+#       associative array (passed by nameref): keys are project
+#       names, values are 1 (running) or 0 (stopped).
+#
 #   project_is_outdated <project>
 #       Returns 0 if the project's version does not match the
 #       sealed base version. Also returns 0 (outdated) when
@@ -46,6 +52,28 @@ project_list() {
 
 project_is_running() {
   systemctl --user --quiet is-active "virtdev-${1}" 2>/dev/null
+}
+
+project_load_running_state() {
+  local -n _project_result=$1
+  shift
+  (( $# )) || return 0
+  local -a names=("$@")
+  local -a units=()
+  local project
+  for project in "${names[@]}"; do
+    units+=("virtdev-${project}")
+  done
+  local -a statuses=()
+  mapfile -t statuses < <(systemctl --user is-active "${units[@]}" 2>/dev/null || true)
+  local i
+  for (( i = 0; i < ${#names[@]}; i++ )); do
+    if [[ "${statuses[i]:-}" == "active" ]]; then
+      _project_result["${names[i]}"]=1
+    else
+      _project_result["${names[i]}"]=0
+    fi
+  done
 }
 
 project_is_outdated() {
