@@ -21,7 +21,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project
+import error validate lock arguments project terminal
 
 port_in_use() {
   [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
@@ -226,7 +226,7 @@ rm -f "${monitor_sock}" "${console_sock}"
 systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
 if [[ "$(loginctl show-user "${USER}" --property=Linger --value 2>/dev/null)" != "yes" ]]; then
-  printf >&2 'warning: lingering is not enabled for user %s\n' "${USER}"
+  printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: lingering is not enabled for user ${USER}" reset)"
   printf >&2 'The virtual machine will be killed when your last login session ends.\n'
   printf >&2 'Enable lingering to keep virtual machines alive across sessions:\n'
   printf >&2 '    sudo loginctl enable-linger %s\n' "${USER}"
@@ -351,6 +351,6 @@ done
 
 vm_started=1
 
-printf 'VM started.\n'
+printf '%s\n' "$(terminal_write fg=green 'Virtual machine started.' reset)"
 printf 'SSH will be available after boot at: 127.0.0.1:%d\n' "${port}"
 printf 'Shut down cleanly with: virtdev-stop %s\n' "${project}"

@@ -68,7 +68,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm
+import error lock arguments ssh project confirm terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -122,14 +122,14 @@ trash_directory="${VIRTDEV_HOME}/system.old.trash"
 # from maintenance/ by hand before retrying, but maintenance/ is
 # left untouched here so that option stays open.
 if [[ -d "${old_system_directory}" ]]; then
-  printf 'Detected interrupted reseal from a prior virtdev-maintain.\n'
+  printf '%s\n' "$(terminal_write fg=yellow 'Detected interrupted reseal from a prior virtdev-maintain.' reset)"
   if [[ -d "${system_directory}" ]]; then
     printf 'Clobbering partial new base: %s\n' "${system_directory}"
     rm -rf "${system_directory}"
   fi
   printf 'Restoring previous sealed base from: %s\n' "${old_system_directory}"
   mv "${old_system_directory}" "${system_directory}"
-  printf 'Recovery complete. Proceed with virtdev-maintain as normal.\n\n'
+  printf '%s\n\n' "$(terminal_write fg=green 'Recovery complete. Proceed with virtdev-maintain as normal.' reset)"
 fi
 
 # Clean up leftover trash from a prior successful reseal whose
@@ -476,7 +476,7 @@ esac
 # sequence rather than being, say, manually 'exit 0' from a
 # foreground shell inside the guest. Require explicit user
 # confirmation before overwriting the sealed base system.
-printf 'Virtual machine exited cleanly.\n'
+printf '%s\n' "$(terminal_write fg=green 'Virtual machine exited cleanly.' reset)"
 if (( ! flags[yes] )); then
   if ! confirm_proceed 'Reseal the base system? [y/N] '; then
     error 12 <<MESSAGE
@@ -557,7 +557,7 @@ fi
 # brief mid-step-1/2/3/4 window but is not wrapped by any
 # shell-accessible tool today.
 trap '' INT TERM HUP QUIT
-printf "Resealing base system images to: '%s'\n" "${system_directory}"
+printf '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
 mv "${system_directory}" "${old_system_directory}"
 mv "${maintenance_directory}" "${system_directory}"
 
@@ -580,7 +580,7 @@ if ! rm -rf "${trash_directory}"; then
              "${trash_directory}"
 fi
 
-printf 'Base system resealed: %s\n' "${system_directory}"
+printf '%s\n' "$(terminal_write fg=green "Base system resealed: ${system_directory}" reset)"
 
 outdated_count=0
 while IFS= read -r p; do
@@ -589,7 +589,7 @@ done < <(project_list)
 
 if (( outdated_count > 0 )); then
   printf '\n'
-  printf '%d project(s) are now outdated. Upgrade them with:\n' "${outdated_count}"
+  printf '%s\n' "$(terminal_write fg=yellow "${outdated_count} project(s) are now outdated. Upgrade them with:" reset)"
   printf '\n'
   printf '    virtdev-upgrade\n'
 else

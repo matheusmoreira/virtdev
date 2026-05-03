@@ -492,6 +492,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`, `project_is_detached`) | none (caller-supplied) |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
+| `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array) | none |
 
 Libraries are self-contained: each imports its own dependencies
 (e.g., `validate` imports `error` because it calls `error()` on

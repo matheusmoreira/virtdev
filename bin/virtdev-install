@@ -31,7 +31,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments
+import error lock arguments terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_ISO:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev/virtdev.iso"}"
@@ -146,5 +146,5 @@ qemu-system-x86_64 \
 install_succeeded=1
 
 printf '\n'
-printf 'Installer finished.\n'
+printf '%s\n' "$(terminal_write fg=green 'Installer finished.' reset)"
 printf 'Run virtdev-seal to seal the base system images.\n'

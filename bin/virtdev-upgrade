@@ -52,7 +52,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project confirm
+import error validate arguments manifest project confirm terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -302,7 +302,7 @@ abort_backup() {
   error 20 <<<"Aborting."
 }
 
-printf '\n[Phase 1/%d] Backing up project virtual machines...\n' "${total_phases}" >&2
+printf '\n%s\n' "$(terminal_write bold "[Phase 1/${total_phases}] Backing up project virtual machines..." reset)" >&2
 
 for p in "${included[@]}"; do
   printf '\n  %s:\n' "${p}" >&2
@@ -343,7 +343,7 @@ done
 
 # ── Phase 3: Maintain ───────────────────────────────────────────────
 
-printf '\n[Phase 2/%d] Maintaining base system...\n' "${total_phases}" >&2
+printf '\n%s\n' "$(terminal_write bold "[Phase 2/${total_phases}] Maintaining base system..." reset)" >&2
 printf 'This is the interactive phase. SSH into the maintenance virtual machine,\n' >&2
 printf 'perform updates, and power off when done.\n\n' >&2
 
@@ -363,7 +363,7 @@ fi
 
 # ── Phase 4: Rebuild ────────────────────────────────────────────────
 
-printf '\n[Phase 3/%d] Rebuilding project virtual machines...\n' "${total_phases}" >&2
+printf '\n%s\n' "$(terminal_write bold "[Phase 3/${total_phases}] Rebuilding project virtual machines..." reset)" >&2
 
 declare -a succeeded=()
 declare -a failed=()
@@ -397,25 +397,25 @@ done
 
 new_version="$(< "${system_version_file}")"
 
-printf '\n[Phase 4/%d] Summary\n\n' "${total_phases}" >&2
+printf '\n%s\n\n' "$(terminal_write bold "[Phase 4/${total_phases}] Summary" reset)" >&2
 
 if [[ ${#failed[@]} -eq 0 ]]; then
-  printf 'Upgrade complete.\n'
+  printf '%s\n' "$(terminal_write fg=green bold 'Upgrade complete.' reset)"
 elif [[ ${#succeeded[@]} -gt 0 ]]; then
-  printf 'Upgrade incomplete.\n'
+  printf '%s\n' "$(terminal_write fg=yellow bold 'Upgrade incomplete.' reset)"
 else
-  printf 'Upgrade failed.\n'
+  printf '%s\n' "$(terminal_write fg=red bold 'Upgrade failed.' reset)"
 fi
 
 if [[ ${#succeeded[@]} -gt 0 ]]; then
-  printf '\nUpgraded: %d\n' "${#succeeded[@]}"
+  printf '\n%s\n' "$(terminal_write fg=green "Upgraded: ${#succeeded[@]}" reset)"
   for p in "${succeeded[@]}"; do
     printf '    %s\n' "${p}"
   done
 fi
 
 if [[ ${#failed[@]} -gt 0 ]]; then
-  printf '\nFailed: %d\n' "${#failed[@]}"
+  printf '\n%s\n' "$(terminal_write fg=red "Failed: ${#failed[@]}" reset)"
   for p in "${failed[@]}"; do
     printf '    %s\n' "${p}"
   done
@@ -431,7 +431,7 @@ if [[ ${#failed[@]} -gt 0 ]]; then
 fi
 
 if [[ ${#excluded[@]} -gt 0 ]]; then
-  printf 'Not upgraded: %d\n' "${#excluded[@]}"
+  printf '%s\n' "$(terminal_write fg=yellow "Not upgraded: ${#excluded[@]}" reset)"
   for p in "${excluded[@]}"; do
     printf '    %-30s (%s)\n' "${p}" "${excluded_reasons[${p}]}"
   done

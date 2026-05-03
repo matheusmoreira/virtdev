@@ -63,7 +63,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh snapshot manifest
+import error validate arguments ssh snapshot manifest terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -400,5 +400,5 @@ fi
 mv "${partial}" "${final}"
 backup_succeeded=1
 
-printf >&2 'Backed up %d files.\n' "${files_transferred}"
+printf >&2 '%s\n' "$(terminal_write fg=green "Backed up ${files_transferred} files." reset)"
 printf '%s\n' "${final}"

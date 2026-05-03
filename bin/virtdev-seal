@@ -19,7 +19,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments
+import error lock arguments terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -98,5 +98,5 @@ Inspect the leftover files and remove the directory manually:
 MESSAGE
 fi
 
-printf "Base system sealed: '%s'\n" "${system_directory}"
+printf '%s\n' "$(terminal_write fg=green "Base system sealed: '${system_directory}'" reset)"
 printf 'Run virtdev-create <name> to derive a virtual machine.\n'

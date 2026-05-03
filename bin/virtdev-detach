@@ -55,7 +55,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project confirm
+import error validate lock arguments project confirm terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -167,11 +167,11 @@ MESSAGE
   printf 'Verifying...\n' >&2
   verify_failed=0
   if ! qemu-img check -q "${system_disk}"; then
-    printf 'Warning: system disk verification failed.\n' >&2
+    printf '%s\n' "$(terminal_write fg=yellow 'Warning: system disk verification failed.' reset)" >&2
     verify_failed=1
   fi
   if ! qemu-img check -q "${home_disk}"; then
-    printf 'Warning: home disk verification failed.\n' >&2
+    printf '%s\n' "$(terminal_write fg=yellow 'Warning: home disk verification failed.' reset)" >&2
     verify_failed=1
   fi
 
@@ -179,7 +179,7 @@ MESSAGE
   chmod 644 "${version_file}"
 
   if (( verify_failed )); then
-    printf '\nProject detached: %s (with verification warnings)\n' "${project}"
+    printf '\n%s\n' "$(terminal_write fg=yellow "Project detached: ${project} (with verification warnings)" reset)"
     printf 'Check the images or restore from backup.\n' >&2
     exit 12
   fi
@@ -236,4 +236,4 @@ MESSAGE
 fi
 
 printf 'Done.\n\n' >&2
-printf 'Project detached: %s\n' "${project}"
+printf '%s\n' "$(terminal_write fg=green "Project detached: ${project}" reset)"

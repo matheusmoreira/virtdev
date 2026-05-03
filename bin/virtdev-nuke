@@ -19,7 +19,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments snapshot confirm
+import error lock arguments snapshot confirm terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -119,4 +119,4 @@ fi
 [[ -d "${VIRTDEV_HOME}"  ]] && rm -rf "${VIRTDEV_HOME}"
 [[ -d "${VIRTDEV_CACHE}" ]] && rm -rf "${VIRTDEV_CACHE}"
 
-printf 'All virtdev data deleted.\n'
+printf '%s\n' "$(terminal_write fg=green 'All virtdev data deleted.' reset)"

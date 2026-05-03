@@ -18,9 +18,9 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments project
+import error arguments project terminal
 
-# shellcheck disable=SC2034  # spec read via nameref
+# shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=()
 # shellcheck disable=SC2034
 declare -A flags=()
@@ -57,6 +57,7 @@ for project in "${projects[@]}"; do
 
   if project_is_running "${project}"; then
     status='running'
+    status_color='fg=green'
     if [[ -f "${port_file}" ]]; then
       port="$(< "${port_file}")"
     else
@@ -64,15 +65,35 @@ for project in "${projects[@]}"; do
     fi
   else
     status='stopped'
+    status_color='fg=red'
     port='-'
   fi
 
   version='-'
+  version_color=''
   if [[ -f "${version_file}" ]]; then
     version="$(< "${version_file}")"
+    if [[ "${version}" == "detached" ]]; then
+      version_color='fg=yellow'
+    elif [[ "${base_version}" != '-' && "${version}" != "${base_version}" ]]; then
+      version_color='fg=red'
+    fi
   fi
 
-  printf '%-50s %-5s %-8s %s\n' "${project}" "${port}" "${status}" "${version}"
+  # printf counts escape bytes as width, so colored fields
+  # use manual padding: print the colored text, then pad to
+  # the column width with spaces.
+  colored_status="$(terminal_write "${status_color}" "${status}" reset)"
+  if [[ -n "${version_color}" ]]; then
+    colored_version="$(terminal_write "${version_color}" "${version}" reset)"
+  else
+    colored_version="${version}"
+  fi
+
+  printf '%-50s %-5s %s%-*s %s\n' \
+    "${project}" "${port}" \
+    "${colored_status}" $(( 8 - ${#status} )) "" \
+    "${colored_version}"
 done
 
 if [[ "${base_version}" != '-' ]]; then

@@ -20,6 +20,11 @@
 # never fires in that path. After the -- terminator everything is
 # positional, including a literal --help.
 #
+# --color=yes|no|auto is also universal. The parsed value is stored
+# in _virtdev_color_mode (read by terminal_init). Absent means auto.
+# --color without a value is treated as --color=yes, matching the
+# convention of ls --color and similar GNU tools.
+#
 # Spec format (assoc array, key = flag name without leading --):
 #   bool      Flag takes no value; presence sets to 1, absence to 0.
 #   value     Flag takes one value; absence leaves "".
@@ -68,6 +73,10 @@ set -euo pipefail
 import error
 
 readonly arguments_usage_exit_code=64
+
+# Populated by the universal --color handler in arguments_parse.
+# Read by terminal_init when called with no arguments.
+declare -g _virtdev_color_mode=""
 
 arguments_parse() {
   local -n _arguments_spec="${1}"
@@ -137,6 +146,21 @@ arguments_parse() {
         # explicit terminator.
         arguments_usage "${_arguments_spec_name}"
         exit 0
+        ;;
+      --color=*)
+        _virtdev_color_mode="${arg#*=}"
+        shift
+        continue
+        ;;
+      --color)
+        if (( $# >= 2 )) && [[ "${2}" == yes || "${2}" == no || "${2}" == auto ]]; then
+          _virtdev_color_mode="${2}"
+          shift 2
+        else
+          _virtdev_color_mode="yes"
+          shift
+        fi
+        continue
         ;;
       --)
         shift

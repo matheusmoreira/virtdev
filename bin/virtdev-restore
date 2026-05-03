@@ -39,7 +39,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh snapshot
+import error validate arguments ssh snapshot terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -296,5 +296,4 @@ The snapshot may be empty, or every path in its manifest is absent.
 MESSAGE
 fi
 
-printf 'Restored %d files from %s/%s into %s.\n' \
-    "${files_transferred}" "${resolved_date}" "${resolved_time}" "${project}"
+printf '%s\n' "$(terminal_write fg=green "Restored ${files_transferred} files from ${resolved_date}/${resolved_time} into ${project}." reset)"

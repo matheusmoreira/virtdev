@@ -18,7 +18,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments snapshot confirm
+import error validate lock arguments snapshot confirm terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -79,4 +79,4 @@ if (( ! flags[yes] )); then
 fi
 
 rm -rf "${project_directory}"
-printf "Project destroyed: %s\n" "${project}"
+printf '%s\n' "$(terminal_write fg=green "Project destroyed: ${project}" reset)"

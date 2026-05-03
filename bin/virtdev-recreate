@@ -55,7 +55,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest confirm
+import error validate arguments snapshot manifest confirm terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -284,7 +284,8 @@ latest_snapshot() {
 step=0
 
 if (( do_backup )); then
-  printf '\n[%d/%d] backup\n' "$(( ++step ))" "${total_steps}" >&2
+  (( ++step ))
+  printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] backup" reset)" >&2
   if ! backup; then
     error 20 <<MESSAGE
 backup failed (virtdev-backup exited non-zero).
@@ -296,7 +297,8 @@ MESSAGE
 fi
 
 if (( do_stop )); then
-  printf '\n[%d/%d] stop\n' "$(( ++step ))" "${total_steps}" >&2
+  (( ++step ))
+  printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] stop" reset)" >&2
   if ! stop; then
     snap="$(latest_snapshot)"
     snap_hint=""
@@ -314,7 +316,8 @@ MESSAGE
   fi
 fi
 
-printf '\n[%d/%d] destroy\n' "$(( ++step ))" "${total_steps}" >&2
+(( ++step ))
+printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] destroy" reset)" >&2
 if ! destroy; then
   snap="$(latest_snapshot)"
   snap_hint=""
@@ -327,7 +330,8 @@ The project still exists. Inspect, fix, and rerun with --no-backup:
 MESSAGE
 fi
 
-printf '\n[%d/%d] create\n' "$(( ++step ))" "${total_steps}" >&2
+(( ++step ))
+printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] create" reset)" >&2
 if ! create; then
   snap="$(latest_snapshot)"
   snap_hint=""
@@ -341,7 +345,8 @@ Investigate, then rerun with --no-backup:
 MESSAGE
 fi
 
-printf '\n[%d/%d] start\n' "$(( ++step ))" "${total_steps}" >&2
+(( ++step ))
+printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] start" reset)" >&2
 if ! start; then
   snap="$(latest_snapshot)"
   snap_hint=""
@@ -357,7 +362,8 @@ Resume manually:
 MESSAGE
 fi
 
-printf '\n[%d/%d] wait\n' "$(( ++step ))" "${total_steps}" >&2
+(( ++step ))
+printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] wait" reset)" >&2
 if ! wait_ssh; then
   snap="$(latest_snapshot)"
   snap_hint=""
@@ -374,7 +380,8 @@ MESSAGE
 fi
 
 if (( do_provision )); then
-  printf '\n[%d/%d] provision %s\n' "$(( ++step ))" "${total_steps}" "${provision_path}" >&2
+  (( ++step ))
+  printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] provision ${provision_path}" reset)" >&2
   if ! provision; then
     snap="$(latest_snapshot)"
     snap_hint=""
@@ -392,7 +399,8 @@ MESSAGE
 fi
 
 if (( do_restore )); then
-  printf '\n[%d/%d] restore\n' "$(( ++step ))" "${total_steps}" >&2
+  (( ++step ))
+  printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] restore" reset)" >&2
   if ! restore; then
     snap="$(latest_snapshot)"
     snap_hint=""
@@ -410,7 +418,7 @@ fi
 
 printf '\n'
 if (( do_restore )); then
-  printf 'Project recreated: %s\n' "${project}"
+  printf '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset)"
 else
-  printf 'Project recreated: %s (restore skipped)\n' "${project}"
+  printf '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset " (restore skipped)")"
 fi

@@ -24,7 +24,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments
+import error validate lock arguments terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -130,6 +130,6 @@ fi
 create_succeeded=1
 
 printf '\n'
-printf "Project virtual machine created: '%s'\n" "${project}"
+printf '%s\n' "$(terminal_write fg=green "Project virtual machine created: '${project}'" reset)"
 printf "Directory: '%s'\n" "${project_directory}"
 printf "Start it with: virtdev-start %s\n" "${project}"

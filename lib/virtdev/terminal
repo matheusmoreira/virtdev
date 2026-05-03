@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# lib/virtdev/terminal
+#
+# Terminal-aware output: colors, attributes, tty detection.
+# Escape sequences come from terminfo via tput — never hardcoded.
+#
+# Public functions:
+#
+#   terminal_init [color_mode]
+#       Populates the terminal associative array with escape
+#       sequences from terminfo. Called automatically on the
+#       first terminal_write call if not called explicitly.
+#       color_mode values:
+#
+#           auto    (default) enable if stderr is a tty,
+#                   NO_COLOR is unset, and TERM is not dumb
+#           yes     always enable (overrides NO_COLOR)
+#           no      never enable
+#
+#       With no argument, reads the color mode set by
+#       arguments_parse's universal --color flag, or auto.
+#
+#   terminal_write <arg>...
+#       Streams a mix of attributes and text to stdout.
+#       Attribute keywords are translated to escape sequences;
+#       everything else is passed through as text.
+#
+#       Keywords:
+#           fg=<color>   set foreground (red, green, yellow, ...)
+#           bg=<color>   set background
+#           bold dim italic underline reverse standout
+#           invisible blink reset
+#
+#       Example:
+#           terminal_write fg=green 'running' reset
+#           terminal_write bold '[Phase 1]' reset ' Backing up...'
+#
+# Public variables:
+#
+#   terminal    associative array of escape sequences
+#
+#       Foreground:  fg.black fg.red fg.green fg.yellow
+#                    fg.blue fg.magenta fg.cyan fg.white
+#       Background:  bg.black bg.red bg.green bg.yellow
+#                    bg.blue bg.magenta bg.cyan bg.white
+#       Attributes:  bold dim italic underline reverse
+#                    standout invisible blink
+#       Reset:       reset
+#
+#       All values are empty strings when colors are disabled,
+#       so consumers can reference them unconditionally.
+#
+# No reserved exit codes.
+#
+
+set -euo pipefail
+
+# -g: must be global because libraries are sourced from import(),
+# and declare inside a function defaults to local scope.
+declare -gA terminal=()
+declare -g _terminal_initialized=0
+
+terminal_init() {
+  _terminal_initialized=1
+  local color_mode="${1:-${_virtdev_color_mode:-auto}}"
+  local enable=0
+
+  case "${color_mode}" in
+    yes)
+      enable=1
+      ;;
+    no)
+      enable=0
+      ;;
+    auto|'')
+      if [[ -t 2 ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
+        enable=1
+      fi
+      ;;
+  esac
+
+  terminal=()
+
+  if (( enable )); then
+    terminal=(
+      [fg.black]="$(tput setaf 0 2>/dev/null || true)"
+      [fg.red]="$(tput setaf 1 2>/dev/null || true)"
+      [fg.green]="$(tput setaf 2 2>/dev/null || true)"
+      [fg.yellow]="$(tput setaf 3 2>/dev/null || true)"
+      [fg.blue]="$(tput setaf 4 2>/dev/null || true)"
+      [fg.magenta]="$(tput setaf 5 2>/dev/null || true)"
+      [fg.cyan]="$(tput setaf 6 2>/dev/null || true)"
+      [fg.white]="$(tput setaf 7 2>/dev/null || true)"
+
+      [bg.black]="$(tput setab 0 2>/dev/null || true)"
+      [bg.red]="$(tput setab 1 2>/dev/null || true)"
+      [bg.green]="$(tput setab 2 2>/dev/null || true)"
+      [bg.yellow]="$(tput setab 3 2>/dev/null || true)"
+      [bg.blue]="$(tput setab 4 2>/dev/null || true)"
+      [bg.magenta]="$(tput setab 5 2>/dev/null || true)"
+      [bg.cyan]="$(tput setab 6 2>/dev/null || true)"
+      [bg.white]="$(tput setab 7 2>/dev/null || true)"
+
+      [bold]="$(tput bold 2>/dev/null || true)"
+      [dim]="$(tput dim 2>/dev/null || true)"
+      [italic]="$(tput sitm 2>/dev/null || true)"
+      [underline]="$(tput smul 2>/dev/null || true)"
+      [reverse]="$(tput rev 2>/dev/null || true)"
+      [standout]="$(tput smso 2>/dev/null || true)"
+      [invisible]="$(tput invis 2>/dev/null || true)"
+      [blink]="$(tput blink 2>/dev/null || true)"
+
+      [reset]="$(tput sgr0 2>/dev/null || true)"
+    )
+  fi
+}
+
+terminal_write() {
+  (( _terminal_initialized )) || terminal_init
+  local output=''
+  local arg
+  for arg in "$@"; do
+    case "${arg}" in
+      fg=*)
+        output+="${terminal[fg.${arg#*=}]:-}" ;;
+      bg=*)
+        output+="${terminal[bg.${arg#*=}]:-}" ;;
+      bold|dim|italic|underline|reverse|standout|invisible|blink|reset)
+        output+="${terminal[${arg}]:-}" ;;
+      *)
+        output+="${arg}" ;;
+    esac
+  done
+  printf '%s' "${output}"
+}
+
