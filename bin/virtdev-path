@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+#
+# virtdev-path <project> [resource]
+#
+# Prints the absolute path to a project resource.
+# Machine-readable: stdout contains only the path.
+#
+# Resources (default: data):
+#
+#   data        project directory (disks, nvram, port, version)
+#   backups     backup snapshots directory
+#   manifest    resolved manifest file path
+#   system-image project's system disk image
+#   home-image   project's home disk image
+#
+# Special project names:
+#
+#   base        the sealed base system directory
+#   maintenance the maintenance staging directory
+#
+# Exit codes:
+#
+#   0   success
+#   3   project not found
+#   4   resource not found (manifest does not exist, etc.)
+#   5   unknown resource name
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate arguments manifest
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project "resource?")
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+project="${1}"
+resource="${2:-data}"
+
+case "${project}" in
+  base)
+    case "${resource}" in
+      data)
+        path="${VIRTDEV_HOME}/system"
+        ;;
+      system-image)
+        path="${VIRTDEV_HOME}/system/system.qcow2"
+        ;;
+      home-image)
+        path="${VIRTDEV_HOME}/system/home.qcow2"
+        ;;
+      *)
+        error 5 <<<"Unknown resource for base: '${resource}' (valid: data, system-image, home-image)"
+        ;;
+    esac
+    if [[ ! -e "${path}" ]]; then
+      error 4 <<<"Path does not exist: '${path}'"
+    fi
+    printf '%s\n' "${path}"
+    exit 0
+    ;;
+  maintenance)
+    case "${resource}" in
+      data)
+        path="${VIRTDEV_HOME}/maintenance"
+        ;;
+      system-image)
+        path="${VIRTDEV_HOME}/maintenance/system.qcow2"
+        ;;
+      home-image)
+        path="${VIRTDEV_HOME}/maintenance/home.qcow2"
+        ;;
+      *)
+        error 5 <<<"Unknown resource for maintenance: '${resource}' (valid: data, system-image, home-image)"
+        ;;
+    esac
+    if [[ ! -e "${path}" ]]; then
+      error 4 <<<"Path does not exist: '${path}'"
+    fi
+    printf '%s\n' "${path}"
+    exit 0
+    ;;
+esac
+
+validate_project_name "${project}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+case "${resource}" in
+  data)
+    printf '%s\n' "${project_directory}"
+    ;;
+  backups)
+    printf '%s\n' "${VIRTDEV_HOME}/backups/${project}"
+    ;;
+  manifest)
+    if ! path="$(manifest_resolve "${project}")"; then
+      error 4 <<MESSAGE
+Manifest not found. Checked:
+    ${project_directory}/manifest
+    ${XDG_CONFIG_HOME:-${HOME}/.config}/virtdev/projects/${project}/manifest
+MESSAGE
+    fi
+    printf '%s\n' "${path}"
+    ;;
+  system-image)
+    printf '%s\n' "${project_directory}/system.qcow2"
+    ;;
+  home-image)
+    printf '%s\n' "${project_directory}/home.qcow2"
+    ;;
+  *)
+    error 5 <<<"Unknown resource: '${resource}' (valid: data, backups, manifest, system-image, home-image)"
+    ;;
+esac
