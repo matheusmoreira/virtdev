@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# virtdev-monitor <project>
+#
+# Attaches to the QEMU monitor of a running project virtual machine.
+# The monitor accepts QEMU Human Monitor commands:
+#
+#     info block          disk image state
+#     info snapshots      internal qcow2 snapshots
+#     info status         VM running/paused
+#     system_powerdown    ACPI power button
+#     quit                kill QEMU immediately
+#
+# Detach with Ctrl-].
+#
+# Requires socat.
+#
+#     pacman -S socat
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate arguments
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 1 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+project="${1}"
+
+validate_project_name "${project}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+  error 4 <<MESSAGE
+Virtual machine is not running: ${project}
+Start it with: virtdev-start ${project}
+MESSAGE
+fi
+
+monitor_sock="${project_directory}/monitor.sock"
+if [[ ! -S "${monitor_sock}" ]]; then
+  error 5 <<MESSAGE
+Monitor socket not found: ${monitor_sock}
+The virtual machine may have started without a monitor.
+MESSAGE
+fi
+
+if ! command -v socat &>/dev/null; then
+  error 6 <<<'socat not found, install with: pacman -S socat'
+fi
+
+printf >&2 'Attaching to QEMU monitor of %s.\nDetach with Ctrl-].\n\n' "${project}"
+exec socat - UNIX-CONNECT:"${monitor_sock}"
