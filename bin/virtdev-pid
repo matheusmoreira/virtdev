@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# virtdev-pid <project>
+#
+# Prints the QEMU process ID of a running project virtual machine.
+# Machine-readable: stdout contains only the PID.
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate arguments
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 1 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+project="${1}"
+
+validate_project_name "${project}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+unit="virtdev-${project}"
+
+if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+  error 4 <<MESSAGE
+Virtual machine is not running: ${project}
+Start it with: virtdev-start ${project}
+MESSAGE
+fi
+
+pid="$(systemctl --user show "${unit}" --property=ExecMainPID --value 2>/dev/null)"
+
+if [[ -z "${pid}" || "${pid}" == "0" ]]; then
+  error 5 <<<"Could not determine PID for: ${unit}"
+fi
+
+printf '%s\n' "${pid}"
