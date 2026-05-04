@@ -1,0 +1,14 @@
+[Unit]
+Description=Set hostname from virtdev project name
+DefaultDependencies=no
+After=systemd-modules-load.service
+Before=systemd-hostnamed.service
+ConditionPathExists=/sys/firmware/qemu_fw_cfg/by_name/opt/virtdev/project/raw
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'cat /sys/firmware/qemu_fw_cfg/by_name/opt/virtdev/project/raw > /proc/sys/kernel/hostname'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

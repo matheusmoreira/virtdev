@@ -199,8 +199,29 @@ cp /etc/pacman.d/mirrorlist /mnt/etc/pacman.d/mirrorlist
 printf 'virtdev: mirrorlist configured\n'
 
 arch-chroot /mnt systemctl enable sshd serial-getty@ttyS0 \
-                                  systemd-networkd systemd-resolved
+                                  systemd-networkd systemd-resolved \
+                                  virtdev-hostname
 printf 'virtdev: services enabled\n'
+
+# Autologin on serial console. The serial console is only reachable
+# via a host-local Unix socket (virtdev-console), so anyone who can
+# connect already has full host access. Autologin enables emergency
+# access when SSH is broken (sshd crash, network misconfiguration,
+# key mismatch) without weakening the security model.
+install -d /mnt/etc/systemd/system/serial-getty@ttyS0.service.d
+cat > /mnt/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf <<CONF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin dev --noclear %I 115200 linux
+CONF
+printf 'virtdev: serial console autologin configured\n'
+
+# Set hostname from QEMU fw_cfg at boot. The project name is injected
+# by virtdev-start via -fw_cfg name=opt/virtdev/project,string=<name>.
+# The guest reads it from sysfs and sets the transient hostname,
+# giving each project VM a distinct identity in the prompt (dev@lone).
+cp /root/archinstall/virtdev-hostname.service /mnt/etc/systemd/system/
+printf 'virtdev: hostname service installed\n'
 
 # Lock password-based login on all accounts
 arch-chroot /mnt passwd -l root
