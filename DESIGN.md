@@ -111,7 +111,7 @@ file, not a checksum, generation counter, or any other integrity seal of its
 content. At open time QEMU resolves the path, reads whatever file is there,
 and serves the composed view. If the file behind the path has been replaced
 between the delta's creation and its next open (the exact thing
-`virtdev-maintain` does), QEMU will not detect it. The version counter
+`virtdev-maintain` does), QEMU will not detect it. The generation counter
 described under "Base System Maintenance" is virtdev's own integrity seal
 layered on top of qcow2 to close this gap.
 
@@ -207,7 +207,7 @@ detached and attached to another.
    on the next `virtdev-maintain` run, while an interrupt after the
    rename leaves the new base committed and only the trash directory to
    clean up. A SIGKILL or hardware failure in the brief window between
-   the two `mv`s and the version-file write is the only path that can
+   the two `mv`s and the generation-file write is the only path that can
    leave a partial layout, and the auto-recovery handles that case too
    by reverting to `system.old/`.
 
@@ -220,12 +220,12 @@ After resealing:
 created against the old base content. qcow2 does not validate backing file
 content identity — QEMU would silently compose the delta against the new
 base, which may produce filesystem corruption. `virtdev-start` detects this
-via a version counter (`system/version` vs `projects/<name>/version`)
-and refuses to boot a project VM whose version does not match the current
+via a generation counter (`system/generation` vs `projects/<name>/generation`)
+and refuses to boot a project VM whose generation does not match the current
 base. Always destroy and recreate delta-mode project VMs after resealing.
 Detached projects (see `virtdev-detach`) are exempt — their standalone
 images have no backing file dependency and `virtdev-start` skips the
-version check for them.
+generation check for them.
 
 **Note on NVRAM:** each project VM owns a copy of `nvram` taken from
 `system/nvram` at `virtdev-create` time. A subsequent `virtdev-maintain`
@@ -297,6 +297,13 @@ to loopback (`-netdev user,hostfwd=tcp:127.0.0.1:<port>-:22`), so the
 man-in-the-middle attacks that `StrictHostKeyChecking` defends
 against do not apply.
 
+**Serial console autologin:** the serial console (`console.sock`)
+auto-logs in as `dev` via a systemd drop-in on `serial-getty@ttyS0`.
+This provides emergency access when SSH is unavailable (e.g., broken
+networking or sshd misconfiguration inside the guest). The socket is
+host-local and requires `socat` to attach, so autologin does not
+weaken the security boundary.
+
 ---
 
 ## VM Runtime
@@ -319,6 +326,7 @@ QEMU flags of note:
 - `-machine q35` — modern PCIe machine type
 - `-drive if=pflash ...` — OVMF firmware; OVMF_CODE read-only, per-project NVRAM copy writable
 - `-netdev user,hostfwd=tcp:127.0.0.1:<port>-:22` — SSH port forwarding, loopback only
+- `-fw_cfg name=opt/virtdev/project,string=<name>` — injects the project name into the guest via QEMU firmware configuration; used for hostname setting
 - `-device virtio-rng-pci` — entropy for the guest
 - `-display none` — headless
 - `-chardev socket ... -monitor` — QEMU monitor via Unix socket
@@ -593,7 +601,7 @@ ${VIRTDEV_HOME}/
     system.qcow2
     home.qcow2
     nvram
-    version             monotonic counter, incremented by each reseal
+    generation          monotonic counter, incremented by each reseal
   installation/         transient; present between virtdev-install and virtdev-seal
     system.qcow2
     home.qcow2
@@ -607,7 +615,7 @@ ${VIRTDEV_HOME}/
       system.qcow2      delta over system/system.qcow2 (or absent in ro mode)
       home.qcow2        delta over system/home.qcow2
       nvram             per-project UEFI variable store
-      version           copy of system/version at create time
+      generation        copy of system/generation at create time
       port              SSH forwarding port (present while running)
       monitor.sock      QEMU monitor socket (present while running)
       console.sock      serial console socket (present while running)
@@ -622,7 +630,7 @@ ${VIRTDEV_HOME}/
           project       source project name; virtdev-restore refuses
                         to apply a snapshot to a different project
           manifest   copy of projects/<project>/manifest at backup time
-          version       base version at backup time (may be empty)
+          generation    base generation at backup time (may be empty)
           tree/         user content, rsync-preserved
         <HH-MM-SS>.partial/  transient; present during an in-flight backup
 
@@ -672,7 +680,7 @@ there is no silent shadowing when both files exist.
   the worst case a kernel panic at mount. The pacman database is a common
   trigger — if the project VM ever ran `pacman`, its database in the delta
   will disagree with the package files served from the updated base.
-  **Mitigated:** a version counter written by `virtdev-seal` and incremented
+  **Mitigated:** a generation counter written by `virtdev-seal` and incremented
   by `virtdev-maintain` is recorded at `virtdev-create` time and checked at
   `virtdev-start` time. A mismatch causes a hard refusal with an actionable
   error message. The refusal is the right default even though it is
@@ -683,7 +691,7 @@ there is no silent shadowing when both files exist.
   backing file contains at that offset. The risk is specifically the
   *intersection* of unmodified-by-project sectors that *did* change in the
   base — and there is no cheap way to compute that intersection at start
-  time, so the version mismatch is treated as conclusive.
+  time, so the generation mismatch is treated as conclusive.
 
 - **System disk rebase after base update.** Project VMs in delta mode do not
   automatically pick up base system updates. The recommended path is destroy
@@ -692,6 +700,14 @@ there is no silent shadowing when both files exist.
   has no tooling. An alternative is `virtdev-detach`, which converts the
   project to standalone images — this preserves the current system state but
   requires the project to be updated independently going forward.
+
+  `virtdev-detach` operates in two modes: in-place rebase (fast, uses
+  `qemu-img rebase -b ""`) and convert-then-swap (default, produces a
+  clean standalone image via `qemu-img convert`). The convert-then-swap
+  mode has signal-trap protection and auto-recovery matching
+  `virtdev-maintain`'s pattern: signals are blocked during the critical
+  rename sequence, and `.bak` files left by an interrupted swap are
+  detected and rolled back on the next invocation.
 
 - **Read-only root setup in base image.** The `systemd.volatile=state` kernel
   parameter is the intended mechanism. The base image configuration for this

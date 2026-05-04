@@ -2,6 +2,7 @@
 #
 # virtdev-backup [--verbose] <project>
 # virtdev-backup --list <project>
+# virtdev-backup --latest <project>
 #
 # Snapshots user-curated guest-side paths from a running project
 # virtual machine into a timestamped host-side directory.
@@ -42,6 +43,9 @@
 #   --verbose    Show rsync per-file progress.
 #   --list       Print snapshots for the project. Does not create
 #                a snapshot; does not require the VM to be running.
+#   --latest     Print the latest snapshot identifier (YYYY-MM-DD/HH-MM-SS)
+#                to stdout. Machine-readable. Prints nothing if no
+#                snapshots exist.
 #
 # The project's virtual machine must be running (SSH over the
 # host-forwarded port). Concurrent same-project backups at the same
@@ -72,7 +76,7 @@ import error validate arguments ssh snapshot manifest terminal
 umask 077
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([verbose]=bool [list]=bool)
+declare -A spec=([verbose]=bool [list]=bool [latest]=bool)
 # shellcheck disable=SC2034
 declare -A spec_short=([v]=verbose [l]=list)
 # shellcheck disable=SC2034
@@ -98,6 +102,12 @@ project_directory="${VIRTDEV_HOME}/projects/${project}"
 
 if [[ ! -d "${project_directory}" ]]; then
   error 3 <<<"Project not found: ${project}"
+fi
+
+# Latest mode: print the most recent snapshot ID and exit.
+if (( flags[latest] )); then
+  snapshot_latest "${project}"
+  exit 0
 fi
 
 # List mode stops here; it lists past snapshots regardless of VM state.

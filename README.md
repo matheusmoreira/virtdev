@@ -133,7 +133,7 @@ virtdev maintain                  # copies base to staging, boots writable VM
 sudo poweroff                     # triggers reseal prompt
 ```
 
-After resealing, existing project VMs refuse to boot (version mismatch).
+After resealing, existing project VMs refuse to boot (generation mismatch).
 Recreate them:
 
 ```bash
@@ -153,7 +153,7 @@ Flags: `--only=a,b`, `--except=c,d`, `--skip-outdated`, `--yes`/`-y`,
 ### Detaching a project
 
 A project can be detached from the sealed base, converting its delta images
-into standalone images. Detached projects boot without a version check, are
+into standalone images. Detached projects boot without a generation check, are
 skipped by `virtdev upgrade`, and must be updated independently:
 
 ```bash
@@ -198,11 +198,25 @@ All commands are available as `virtdev <command>` (dispatcher) or
 
 | Command | Description |
 |---------|-------------|
-| `virtdev-ssh <project> [args...]` | SSH into a running VM |
+| `virtdev-ssh <project> [args...]` | SSH into a running virtual machine |
 | `virtdev-console <project>` | Serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is available |
 | `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
-| `virtdev-list` | List projects with port, status, and version (colored) |
+| `virtdev-list` | List projects with port, status, and generation (colored) |
+
+### Inspection
+
+| Command | Description |
+|---------|-------------|
+| `virtdev-status <project>` | Print `running` or `stopped` |
+| `virtdev-port <project>` | Print SSH port of a running virtual machine |
+| `virtdev-pid <project>` | Print QEMU process ID |
+| `virtdev-path <project> [resource]` | Print path to project resource |
+| `virtdev-disk <project>` | Show disk usage info |
+| `virtdev-log [-f] <project>` | Show journal logs (shorthand for journalctl) |
+| `virtdev-monitor <project>` | Attach to QEMU monitor |
+| `virtdev-generation [project]` | Print base or project generation |
+| `virtdev-stale` | List projects with stale base generation |
 
 ### Backup
 
@@ -239,6 +253,9 @@ All commands support `--color=yes|no|auto` (default: auto). Auto enables
 color when stderr is a terminal, `NO_COLOR` is unset, and `TERM` is not
 `dumb`. Colors come from terminfo via `tput`, not hardcoded ANSI escapes.
 
+Output convention: user-facing messages go to stderr, machine-readable
+output (ports, paths, PIDs, status words) goes to stdout.
+
 ## Architecture
 
 See `DESIGN.md` for the full architecture, threat model, locking model,
@@ -251,13 +268,13 @@ system/                    sealed base (mode 444)
   system.qcow2             OS, bootloader, packages
   home.qcow2               /home/dev template
   nvram                    UEFI variable store
-  version                  monotonic counter, bumped on reseal
+  generation               monotonic counter, bumped on reseal
 
 projects/<name>/           per-project (writable deltas)
   system.qcow2  --backs--> system/system.qcow2
   home.qcow2    --backs--> system/home.qcow2
   nvram                    copy of system/nvram
-  version                  must match system/version to boot
+  generation               must match system/generation to boot
 ```
 
 Project VMs are thin deltas. Only divergent writes consume disk space.
@@ -278,6 +295,9 @@ systemctl --user status virtdev-myproject
 journalctl --user -u virtdev-myproject
 ```
 
+Each virtual machine's hostname is set to the project name at boot
+(via QEMU `fw_cfg`), so the guest prompt shows `dev@myproject`.
+
 ### Concurrency
 
 Mutating commands take an exclusive `flock(2)` on `${VIRTDEV_HOME}/lock`
@@ -294,11 +314,11 @@ ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
   maintenance/                      transient staging for virtdev-maintain
   projects/<name>/
     system.qcow2, home.qcow2       delta disks
-    nvram, version                  UEFI state, base version
+    nvram, generation               UEFI state, base generation
     port, monitor.sock, console.sock  runtime (while running)
     manifest                     optional project-local manifest
   backups/<project>/<date>/<time>/
-    project, manifest, version   metadata
+    project, manifest, generation   metadata
     tree/                           user content
 
 ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)

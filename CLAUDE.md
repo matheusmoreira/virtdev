@@ -43,6 +43,9 @@ how it's structured. Don't duplicate their content here — point to them.
   manual help intercept. `--color=yes|no|auto` is also universal —
   the parsed value is stored in `_virtdev_color_mode` for the
   terminal library.
+- Sends all user-facing messages (progress, banners, warnings, success)
+  to stderr. Only machine-readable output (paths, port numbers, PIDs,
+  table data) goes to stdout.
 
 ### The `virtdev` dispatcher
 
@@ -51,7 +54,10 @@ dispatches to `virtdev-start myproject`; `virtdev help start` dispatches
 to `virtdev-start --help`. Resolution order: adjacent sibling scripts
 first, then `PATH`. The dispatcher does not use the arguments library
 (it has its own option handling since it pre-dates the library and its
-parsing needs are different).
+parsing needs are different). Beyond the lifecycle commands (`start`,
+`stop`, `create`, `destroy`, etc.), the dispatcher also routes to
+query/utility commands: `log`, `port`, `path`, `pid`, `status`, `disk`,
+`monitor`, `generation`, and `stale`.
 
 ### Library-owned exit codes
 
@@ -214,7 +220,7 @@ at the call site.
 
 ## Bug patterns to watch for
 
-These five recurring failure modes were extracted from the 2026-04-25
+These six recurring failure modes were extracted from the 2026-04-25
 review and a series of hardening passes. Walk this list before declaring
 a feature complete:
 
@@ -239,6 +245,13 @@ a feature complete:
    longer does X (or never did), users plan against the docs and get
    surprised. After any behavior change, grep `README.md`, `DESIGN.md`,
    and the script header comments for the old behavior.
+6. **Unprotected critical sections.** Multi-step mutations (rename-aside,
+   move-in, write-marker, remove-old) need signal traps around the
+   critical section and auto-recovery on re-entry. `virtdev-maintain`
+   and `virtdev-detach` both implement this pattern: `trap '' INT TERM
+   HUP QUIT` before the swap, restore after, and `.bak`-detection
+   recovery at the top of the script. Any new script doing multi-file
+   atomic swaps should follow the same template.
 
 The meta-habit is "finish the 'and then what?' question" — when adding
 or modifying a behavior, walk forward through what depends on it and
@@ -275,12 +288,14 @@ Install layout:
   Locking" section for the full reasoning). The realistic concurrency
   hazard is `virtdev-stop` mid-transfer, which manifests as a noisy rsync
   failure handled by the PIPESTATUS distinction in both scripts.
-- **Version counter.** `virtdev-seal` writes the initial counter as `1`,
-  `virtdev-maintain` increments on reseal. `virtdev-create` copies the
-  current value into the project; `virtdev-start` refuses to boot if the
+- **Generation counter.** `virtdev-seal` writes the initial counter as `1`
+  to `system/generation`; `virtdev-maintain` increments on reseal.
+  `virtdev-create` copies the current value into the project's
+  `projects/<name>/generation`; `virtdev-start` refuses to boot if the
   project's counter doesn't match the base's. Valid contents: a single
   non-negative integer, or the literal `detached` (written by
-  `virtdev-detach`). Detached projects skip the version check entirely.
+  `virtdev-detach`). Detached projects skip the generation check entirely.
+  The `virtdev-list` GENERATION column and `virtdev-stale` use these files.
 - **systemd `--user` units.** Project VMs run as transient
   `virtdev-<project>.service` units via `systemd-run --user`.
   `--collect` is intentionally omitted so failed units persist for
@@ -288,6 +303,15 @@ Install layout:
   `virtdev-start` calls `reset-failed` pre-launch; `virtdev-stop` calls
   it post-stop *unless* the target is `maintenance` (which would race
   `virtdev-maintain`'s own reset-failed coordination).
+- **fw_cfg hostname injection.** `virtdev-start` passes
+  `-fw_cfg name=opt/virtdev/project,string=<name>` to QEMU. The guest
+  reads this at boot (via a systemd unit) and sets the machine's hostname
+  from it. This is how each virtual machine knows its own project name
+  without per-project disk customization.
+- **Serial console autologin.** The guest's serial console (`ttyS0`)
+  auto-logs in as the `dev` user. This is emergency access for when SSH
+  is unavailable (e.g., network misconfiguration). Reachable from the
+  host via `socat - UNIX-CONNECT:${VIRTDEV_HOME}/projects/<project>/console.sock`.
 - **Lock visibility.** `${VIRTDEV_HOME}/lock` is a normal file with the
   current holder's PID written into it. `cat` it during a contention
   error to see who holds it. The library reads `/proc/<pid>/cmdline`
