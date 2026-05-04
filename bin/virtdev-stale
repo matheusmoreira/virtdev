@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+#
+# virtdev-stale
+#
+# Prints names of projects whose generation does not match the
+# sealed base, one per line. Detached projects are excluded.
+# Prints nothing if all projects are current.
+#
+# Machine-readable: suitable for xargs or shell loops:
+#
+#     virtdev-stale | xargs -I{} virtdev-recreate --no-backup {}
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error arguments project
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 0 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+while IFS= read -r p; do
+  project_is_outdated "${p}" && printf '%s\n' "${p}"
+done < <(project_list)
