@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+#
+# virtdev-snapshot <project>
+#
+# Prints the latest snapshot identifier for a project.
+# Machine-readable: stdout contains "YYYY-MM-DD/HH-MM-SS"
+# or nothing (exit 0) if no snapshots exist.
+#
+# The full path to the snapshot directory can be composed:
+#
+#     "$(virtdev path lone backups)/$(virtdev snapshot lone)"
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate arguments snapshot
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 1 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+project="${1}"
+
+validate_project_name "${project}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+snapshot_latest "${project}"
