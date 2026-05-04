@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# virtdev-disk <project>
+#
+# Shows disk usage information for a project virtual machine.
+# Reports actual file sizes and qcow2 virtual sizes for both
+# the system and home disk images.
+#
+# The project does not need to be running.
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate arguments project terminal
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=(project)
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 1 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+project="${1}"
+
+validate_project_name "${project}"
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+
+if [[ ! -d "${project_directory}" ]]; then
+  error 3 <<<"Project not found: ${project}"
+fi
+
+system_disk="${project_directory}/system.qcow2"
+home_disk="${project_directory}/home.qcow2"
+
+disk_info() {
+  local -r path="${1}"
+  local -r label="${2}"
+  if [[ ! -f "${path}" ]]; then
+    printf >&2 '%s: not found\n' "${label}"
+    return
+  fi
+  local actual virtual backing
+  actual="$(du -sh "${path}" 2>/dev/null | cut -f1)"
+  virtual="$(qemu-img info --output=json "${path}" 2>/dev/null \
+    | grep -o '"virtual-size": [0-9]*' \
+    | grep -o '[0-9]*')"
+  if [[ -n "${virtual}" ]]; then
+    virtual="$(numfmt --to=iec-i --suffix=B "${virtual}")"
+  else
+    virtual="?"
+  fi
+  backing=""
+  if qemu-img info --output=json "${path}" 2>/dev/null | grep -q '"backing-filename"'; then
+    backing="$(qemu-img info --output=json "${path}" 2>/dev/null \
+      | grep -o '"backing-filename": "[^"]*"' \
+      | sed 's/.*": "//;s/"$//')"
+    backing=" (backing: $(basename "${backing}"))"
+  fi
+  printf '  %-8s %6s / %-10s %s%s\n' "${label}" "${actual}" "${virtual}" "$(basename "${path}")" "${backing}"
+}
+
+printf >&2 '%s\n' "$(terminal_write bold "${project}" reset)"
+
+if project_is_detached "${project}"; then
+  printf >&2 '  mode: detached (standalone)\n'
+else
+  printf >&2 '  mode: delta\n'
+fi
+
+printf >&2 '\n'
+disk_info "${system_disk}" "system"
+disk_info "${home_disk}" "home"
+
+total="$(du -sh "${project_directory}" 2>/dev/null | cut -f1)"
+printf >&2 '\n  total: %s\n' "${total}"
