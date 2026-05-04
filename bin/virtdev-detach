@@ -144,10 +144,25 @@ fi
 
 lock_acquire
 
+system_bak="${system_disk}.bak"
+home_bak="${home_disk}.bak"
+
+# Auto-recover from an interrupted convert-then-swap. The .bak files
+# are the originals, renamed aside during the swap. Their presence
+# means the swap was interrupted before cleanup. Restore them so the
+# project is back in its pre-detach state and the user can retry.
+if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'Detected interrupted detach swap. Recovering...' reset)"
+  [[ -f "${system_bak}" ]] && mv -f "${system_bak}" "${system_disk}"
+  [[ -f "${home_bak}" ]]   && mv -f "${home_bak}" "${home_disk}"
+  rm -f "${system_disk}.detach" "${home_disk}.detach"
+  printf >&2 '%s\n\n' "$(terminal_write fg=green 'Recovery complete. Project restored to pre-detach state.' reset)"
+fi
+
 if (( flags[in-place] )); then
   # ── In-place mode (rebase) ──────────────────────────────────────
 
-  printf 'Rebasing system disk...\n' >&2
+  printf >&2 'Rebasing system disk...\n'
   if ! qemu-img rebase -b "" -f qcow2 "${system_disk}"; then
     error 10 <<MESSAGE
 Rebase failed for system disk: ${system_disk}
@@ -155,7 +170,7 @@ The image may be in an undefined state. Restore from backup.
 MESSAGE
   fi
 
-  printf 'Rebasing home disk...\n' >&2
+  printf >&2 'Rebasing home disk...\n'
   if ! qemu-img rebase -b "" -f qcow2 "${home_disk}"; then
     error 11 <<MESSAGE
 Rebase failed for home disk: ${home_disk}
@@ -164,14 +179,14 @@ undefined state. Restore from backup.
 MESSAGE
   fi
 
-  printf 'Verifying...\n' >&2
+  printf >&2 'Verifying...\n'
   verify_failed=0
   if ! qemu-img check -q "${system_disk}"; then
-    printf '%s\n' "$(terminal_write fg=yellow 'Warning: system disk verification failed.' reset)" >&2
+    printf >&2 '%s\n' "$(terminal_write fg=yellow 'Warning: system disk verification failed.' reset)"
     verify_failed=1
   fi
   if ! qemu-img check -q "${home_disk}"; then
-    printf '%s\n' "$(terminal_write fg=yellow 'Warning: home disk verification failed.' reset)" >&2
+    printf >&2 '%s\n' "$(terminal_write fg=yellow 'Warning: home disk verification failed.' reset)"
     verify_failed=1
   fi
 
@@ -180,7 +195,7 @@ MESSAGE
 
   if (( verify_failed )); then
     printf >&2 '\n%s\n' "$(terminal_write fg=yellow "Project detached: ${project} (with verification warnings)" reset)"
-    printf 'Check the images or restore from backup.\n' >&2
+    printf >&2 'Check the images or restore from backup.\n'
     exit 12
   fi
 
@@ -189,14 +204,12 @@ else
 
   system_detach="${system_disk}.detach"
   home_detach="${home_disk}.detach"
-  system_bak="${system_disk}.bak"
-  home_bak="${home_disk}.bak"
 
   cleanup_temps() {
     rm -f "${system_detach}" "${home_detach}"
   }
 
-  printf 'Converting system disk...\n' >&2
+  printf >&2 'Converting system disk...\n'
   if ! qemu-img convert -O qcow2 "${system_disk}" "${system_detach}"; then
     cleanup_temps
     error 10 <<MESSAGE
@@ -205,7 +218,7 @@ Project is unchanged. Check disk space and retry.
 MESSAGE
   fi
 
-  printf 'Converting home disk...\n' >&2
+  printf >&2 'Converting home disk...\n'
   if ! qemu-img convert -O qcow2 "${home_disk}" "${home_detach}"; then
     cleanup_temps
     error 11 <<MESSAGE
@@ -214,7 +227,7 @@ Project is unchanged. Check disk space and retry.
 MESSAGE
   fi
 
-  printf 'Verifying...\n' >&2
+  printf >&2 'Verifying...\n'
   if ! qemu-img check -q "${system_detach}" || ! qemu-img check -q "${home_detach}"; then
     cleanup_temps
     error 12 <<MESSAGE
@@ -223,16 +236,21 @@ Project is unchanged. The converted images have been removed.
 MESSAGE
   fi
 
-  printf 'Swapping...\n' >&2
+  # Swap: rename originals aside, move converted images into place,
+  # write the generation marker, then remove the originals. Signals
+  # are trapped for the critical section — a SIGKILL or power loss
+  # would leave .bak files which the auto-recovery above handles on
+  # the next invocation.
+  trap '' INT TERM HUP QUIT
+  printf >&2 'Swapping...\n'
   mv "${system_disk}" "${system_bak}"
   mv "${system_detach}" "${system_disk}"
   mv "${home_disk}" "${home_bak}"
   mv "${home_detach}" "${home_disk}"
-
   printf 'detached\n' > "${generation_file}"
   chmod 644 "${generation_file}"
-
   rm -f "${system_bak}" "${home_bak}"
+  trap - INT TERM HUP QUIT
 fi
 
 printf 'Done.\n\n' >&2
