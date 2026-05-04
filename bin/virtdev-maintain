@@ -111,7 +111,7 @@ trash_directory="${VIRTDEV_HOME}/system.old.trash"
 # partial states:
 #
 #   - system.old/ exists, system/ does not         (between mv's)
-#   - system.old/ exists, system/ has no version   (post-mv, pre-write)
+#   - system.old/ exists, system/ has no generation (post-mv, pre-write)
 #   - system.old/ and system/ both fully populated (pre-rm-of-old)
 #
 # In all three, the prior sealed base is intact at system.old/
@@ -496,20 +496,20 @@ if ! qemu-img check -q "${home_disk}"; then
   error 14 <<<"Home disk integrity check failed: '${home_disk}'"
 fi
 
-# Read and validate the old version counter BEFORE the rename
+# Read and validate the old generation counter BEFORE the rename
 # sequence below. After the mv, the sealed base has moved to
-# system.old and recovery from a corrupted version would be manual
+# system.old and recovery from a corrupted generation would be manual
 # surgery; failing here leaves the sealed base untouched in place.
 # Accept any non-negative integer, including 0, to stay consistent
 # with the validation elsewhere — virtdev-seal writes the initial
 # counter as '1' but the schema itself does not require that.
-old_version=1
-if [[ -f "${system_directory}/version" ]]; then
-  old_version="$(< "${system_directory}/version")"
-  if ! [[ "${old_version}" =~ ^[0-9]+$ ]]; then
+old_generation=1
+if [[ -f "${system_directory}/generation" ]]; then
+  old_generation="$(< "${system_directory}/generation")"
+  if ! [[ "${old_generation}" =~ ^[0-9]+$ ]]; then
     error 15 <<MESSAGE
-Corrupted base version file: '${system_directory}/version'
-Contents: '${old_version}'
+Corrupted base generation file: '${system_directory}/generation'
+Contents: '${old_generation}'
 Repair manually: the file must contain a single non-negative integer.
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
@@ -521,14 +521,14 @@ fi
 #
 #     1. Rename old system directory aside
 #     2. Rename maintenance/ directory to system/
-#     3. Write new version counter
+#     3. Write new generation counter
 #     4. chmod 444 to seal
 #     5. Atomically rename system.old/ to system.old.trash/ (commit)
 #     6. Outside the trap: rm -rf the trash (best-effort cleanup)
 #
 # Steps 1–5 are the non-atomic critical section. Between the
 # operations the layout is transiently inconsistent: no system/
-# (between the two mv's); system/ without a version file (post-mv,
+# (between the two mv's); system/ without a generation file (post-mv,
 # pre-write); system/ not yet read-only (post-write, pre-chmod); or
 # a leftover system.old/ alongside a fully-sealed system/ (pre-step-5).
 # Catchable signals — Ctrl-C, SIGTERM from systemctl --user stop,
@@ -561,9 +561,9 @@ printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${sy
 mv "${system_directory}" "${old_system_directory}"
 mv "${maintenance_directory}" "${system_directory}"
 
-printf >&2 'Incrementing version counter (%d → %d)...\n' \
-       "${old_version}" "$(( old_version + 1 ))"
-printf '%d\n' "$(( old_version + 1 ))" > "${system_directory}/version"
+printf >&2 'Incrementing generation counter (%d → %d)...\n' \
+       "${old_generation}" "$(( old_generation + 1 ))"
+printf '%d\n' "$(( old_generation + 1 ))" > "${system_directory}/generation"
 
 printf >&2 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*

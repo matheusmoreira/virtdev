@@ -7,7 +7,7 @@
 #
 # Resources (default: data):
 #
-#   data        project directory (disks, nvram, port, version)
+#   data        project directory (disks, nvram, port, generation)
 #   backups     backup snapshots directory
 #   manifest    resolved manifest file path
 #   system-image project's system disk image

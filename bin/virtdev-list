@@ -9,8 +9,8 @@
 #   PROJECT   Name of the project virtual machine
 #   PORT      Host-side SSH forwarding port
 #   STATUS    running | stopped
-#   VERSION   Base version the project was created against,
-#             or 'detached' for standalone projects
+#   GENERATION  Base generation the project was created against,
+#               or 'detached' for standalone projects
 #
 
 set -euo pipefail
@@ -41,14 +41,14 @@ if [[ ${#projects[@]} -eq 0 ]]; then
   exit 0
 fi
 
-system_version_file="${VIRTDEV_HOME}/system/version"
-base_version='-'
-if [[ -f "${system_version_file}" ]]; then
-  base_version="$(< "${system_version_file}")"
+system_generation_file="${VIRTDEV_HOME}/system/generation"
+base_generation='-'
+if [[ -f "${system_generation_file}" ]]; then
+  base_generation="$(< "${system_generation_file}")"
 fi
 
-printf '%-50s %-5s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS' 'VERSION'
-printf '%-50s %-5s %-8s %s\n' '-------' '----' '------' '-------'
+printf '%-50s %-5s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS' 'GENERATION'
+printf '%-50s %-5s %-8s %s\n' '-------' '----' '------' '----------'
 
 declare -A running_state=()
 project_load_running_state running_state "${projects[@]}"
@@ -56,7 +56,7 @@ project_load_running_state running_state "${projects[@]}"
 for project in "${projects[@]}"; do
   project_directory="${VIRTDEV_HOME}/projects/${project}"
   port_file="${project_directory}/port"
-  version_file="${project_directory}/version"
+  generation_file="${project_directory}/generation"
 
   if [[ "${running_state[${project}]}" == "1" ]]; then
     status='running'
@@ -72,14 +72,14 @@ for project in "${projects[@]}"; do
     port='-'
   fi
 
-  version='-'
-  version_color=''
-  if [[ -f "${version_file}" ]]; then
-    version="$(< "${version_file}")"
-    if [[ "${version}" == "detached" ]]; then
-      version_color='fg=yellow'
-    elif [[ "${base_version}" != '-' && "${version}" != "${base_version}" ]]; then
-      version_color='fg=red'
+  generation='-'
+  generation_color=''
+  if [[ -f "${generation_file}" ]]; then
+    generation="$(< "${generation_file}")"
+    if [[ "${generation}" == "detached" ]]; then
+      generation_color='fg=yellow'
+    elif [[ "${base_generation}" != '-' && "${generation}" != "${base_generation}" ]]; then
+      generation_color='fg=red'
     fi
   fi
 
@@ -87,18 +87,18 @@ for project in "${projects[@]}"; do
   # use manual padding: print the colored text, then pad to
   # the column width with spaces.
   colored_status="$(terminal_write "${status_color}" "${status}" reset)"
-  if [[ -n "${version_color}" ]]; then
-    colored_version="$(terminal_write "${version_color}" "${version}" reset)"
+  if [[ -n "${generation_color}" ]]; then
+    colored_generation="$(terminal_write "${generation_color}" "${generation}" reset)"
   else
-    colored_version="${version}"
+    colored_generation="${generation}"
   fi
 
   printf '%-50s %-5s %s%-*s %s\n' \
     "${project}" "${port}" \
     "${colored_status}" $(( 8 - ${#status} )) "" \
-    "${colored_version}"
+    "${colored_generation}"
 done
 
-if [[ "${base_version}" != '-' ]]; then
-  printf >&2 '\nBase version: %s\n' "${base_version}"
+if [[ "${base_generation}" != '-' ]]; then
+  printf >&2 '\nBase generation: %s\n' "${base_generation}"
 fi

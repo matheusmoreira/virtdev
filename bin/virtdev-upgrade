@@ -21,7 +21,7 @@
 # in the summary with per-project resume commands.
 #
 # Projects excluded via --only, --except, or --skip-outdated are left
-# on their current base version. They cannot be booted until individually
+# on their current base generation. They cannot be booted until individually
 # recreated.
 #
 # Lock model: no top-level lock. Each subprocess acquires locks as needed.
@@ -35,7 +35,7 @@
 #   6   audit failure (missing or empty manifest)
 #   7   audit failure (outdated projects without --skip-outdated)
 #   8   user aborted at confirmation prompt
-#   9   base system version file missing
+#   9   base system generation file missing
 #   10  no projects found
 #   11  no projects to upgrade after filtering
 #   20  backup phase failure
@@ -115,11 +115,11 @@ Create it with virtdev-iso, virtdev-install and virtdev-seal.
 MESSAGE
 fi
 
-system_version_file="${system_directory}/version"
-if [[ ! -f "${system_version_file}" ]]; then
-  error 9 <<<"Base system version file missing: '${system_version_file}'"
+system_generation_file="${system_directory}/generation"
+if [[ ! -f "${system_generation_file}" ]]; then
+  error 9 <<<"Base system generation file missing: '${system_generation_file}'"
 fi
-base_version="$(< "${system_version_file}")"
+base_generation="$(< "${system_generation_file}")"
 
 declare -a valid_projects=()
 mapfile -t valid_projects < <(project_list)
@@ -224,7 +224,7 @@ done
 if [[ ${#outdated_blocked[@]} -gt 0 ]]; then
   {
     printf 'These projects are already outdated and stopped.\n'
-    printf 'They cannot be started for backup (virtdev-start refuses version mismatches).\n\n'
+    printf 'They cannot be started for backup (virtdev-start refuses generation mismatches).\n\n'
     for p in "${outdated_blocked[@]}"; do
       printf '    %s\n' "${p}"
     done
@@ -395,7 +395,7 @@ done
 
 # ── Phase 5: Summary ────────────────────────────────────────────────
 
-new_version="$(< "${system_version_file}")"
+new_generation="$(< "${system_generation_file}")"
 
 printf '\n%s\n\n' "$(terminal_write bold "[Phase 4/${total_phases}] Summary" reset)" >&2
 
@@ -435,10 +435,10 @@ if [[ ${#excluded[@]} -gt 0 ]]; then
   for p in "${excluded[@]}"; do
     printf >&2 '    %-30s (%s)\n' "${p}" "${excluded_reasons[${p}]}"
   done
-  printf >&2 '\nThese projects remain on their current base version.\n'
+  printf >&2 '\nThese projects remain on their current base generation.\n'
 fi
 
-printf >&2 '\nBase version: %s → %s\n' "${base_version}" "${new_version}"
+printf >&2 '\nBase generation: %s → %s\n' "${base_generation}" "${new_generation}"
 
 if [[ ${#failed[@]} -gt 0 ]]; then
   exit 40

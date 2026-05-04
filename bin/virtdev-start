@@ -76,31 +76,31 @@ if [[ ! -f "${OVMF_CODE}" ]]; then
 fi
 
 # Detached projects have standalone images with no backing file
-# dependency. The version check does not apply to them.
+# dependency. The generation check does not apply to them.
 if ! project_is_detached "${project}"; then
 
 # Detect base system changes since this project was created.
 # After virtdev-maintain reseals the base, existing delta images
 # are silently composed against the new base content by QEMU,
 # which may produce filesystem corruption.
-# Both version files must exist — otherwise there is no way to
+# Both generation files must exist — otherwise there is no way to
 # guarantee the delta is safe against the current base.
 system_directory="${VIRTDEV_HOME}"/system
-system_version_file="${system_directory}/version"
-project_version_file="${project_directory}/version"
+system_generation_file="${system_directory}/generation"
+project_generation_file="${project_directory}/generation"
 
-if [[ ! -f "${system_version_file}" ]]; then
+if [[ ! -f "${system_generation_file}" ]]; then
   error 9 <<MESSAGE
-Base system version file missing: '${system_version_file}'
-The sealed base may be corrupted or from before versioning was added.
+Base system generation file missing: '${system_generation_file}'
+The sealed base may be corrupted or from before generation tracking was added.
 Reinstall the base system: virtdev-install + virtdev-seal
 MESSAGE
 fi
 
-if [[ ! -f "${project_version_file}" ]]; then
+if [[ ! -f "${project_generation_file}" ]]; then
   error 10 <<MESSAGE
-Project version file missing: '${project_version_file}'
-This project was created against a base that did not track versions,
+Project generation file missing: '${project_generation_file}'
+This project was created against a base that did not track generations,
 or the file was removed. There is no way to verify the delta image
 is safe against the current base content.
 Transfer data and recreate this project on top of the current base:
@@ -109,38 +109,38 @@ Transfer data and recreate this project on top of the current base:
 MESSAGE
 fi
 
-system_version="$(< "${system_version_file}")"
-project_version="$(< "${project_version_file}")"
+system_generation="$(< "${system_generation_file}")"
+project_generation="$(< "${project_generation_file}")"
 
-# Both version files must be a single non-negative integer. Anything
+# Both generation files must be a single non-negative integer. Anything
 # else — empty, whitespace, non-numeric, negative — is either
 # corruption or external tampering, and must not silently pass the
 # equality check below where bash happens to compare strings. Future
 # readers that touch this as arithmetic (e.g. to widen the check)
 # would otherwise coerce bad input to 0 and match a zero on the
 # other side.
-if ! [[ "${system_version}" =~ ^[0-9]+$ ]]; then
+if ! [[ "${system_generation}" =~ ^[0-9]+$ ]]; then
   error 13 <<MESSAGE
-Corrupted base version file: '${system_version_file}'
-Contents: '${system_version}'
+Corrupted base generation file: '${system_generation_file}'
+Contents: '${system_generation}'
 Repair manually: the file must contain a single non-negative integer.
 MESSAGE
 fi
 
-if ! [[ "${project_version}" =~ ^[0-9]+$ ]]; then
+if ! [[ "${project_generation}" =~ ^[0-9]+$ ]]; then
   error 14 <<MESSAGE
-Corrupted project version file: '${project_version_file}'
-Contents: '${project_version}'
+Corrupted project generation file: '${project_generation_file}'
+Contents: '${project_generation}'
 Repair manually: the file must contain a single non-negative integer.
 MESSAGE
 fi
 
-if [[ "${system_version}" != "${project_version}" ]]; then
+if [[ "${system_generation}" != "${project_generation}" ]]; then
   error 11 <<MESSAGE
 Base system has changed since this project was created.
 
-	System version:  ${system_version}
-	Project version: ${project_version}
+	System generation:  ${system_generation}
+	Project generation: ${project_generation}
 
 Starting this project may cause filesystem corruption.
 Transfer data and recreate it on top of the new base system:

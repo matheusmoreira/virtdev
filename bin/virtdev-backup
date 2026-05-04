@@ -14,7 +14,7 @@
 #   project            the source project name; virtdev-restore uses
 #                      this to refuse cross-project restoration
 #   manifest        copy of projects/<project>/manifest at backup time
-#   version            integer from ${VIRTDEV_HOME}/system/version (or empty)
+#   generation         integer from ${VIRTDEV_HOME}/system/generation (or empty)
 #   tree/              user-content subtree, rsync-preserved
 #
 # The manifest is user-curated and required. Lookup order:
@@ -110,8 +110,8 @@ if (( flags[list] )); then
     exit 0
   fi
 
-  printf '%-12s  %-10s %-10s %-8s %s\n' 'DATE' 'TIME' 'AGE' 'SIZE' 'VERSION'
-  printf '%-12s  %-10s %-10s %-8s %s\n' '----' '----' '---' '----' '-------'
+  printf '%-12s  %-10s %-10s %-8s %s\n' 'DATE' 'TIME' 'AGE' 'SIZE' 'GENERATION'
+  printf '%-12s  %-10s %-10s %-8s %s\n' '----' '----' '---' '----' '----------'
 
   now=$(date -u +%s)
 
@@ -133,18 +133,18 @@ if (( flags[list] )); then
     for t in "${time_dirs[@]}"; do
       snapshot="${backups_project_dir}/${d}/${t}"
       size="$(du -sh "${snapshot}" 2>/dev/null | cut -f1)"
-      # Display the snapshot's recorded base version. Empty/absent
+      # Display the snapshot's recorded base generation. Empty/absent
       # = legitimate 'unknown at backup time' shows as '-'. Any
       # non-empty value that does not match the integer convention
       # is shown as '<corrupt>' rather than the raw string, so
       # broken metadata is visible without polluting the column.
       # --list is read-only and tolerant; the writer below catches
       # the corrupt-input case at backup time and refuses then.
-      version='-'
-      if [[ -s "${snapshot}/version" ]]; then
-        version="$(< "${snapshot}/version")"
-        if ! [[ "${version}" =~ ^[0-9]+$ ]]; then
-          version='<corrupt>'
+      generation='-'
+      if [[ -s "${snapshot}/generation" ]]; then
+        generation="$(< "${snapshot}/generation")"
+        if ! [[ "${generation}" =~ ^[0-9]+$ ]]; then
+          generation='<corrupt>'
         fi
       fi
       time_colons="${t//-/:}"
@@ -152,7 +152,7 @@ if (( flags[list] )); then
       age_seconds=$(( now - snap_epoch ))
       (( age_seconds < 0 )) && age_seconds=0
       age="$(humanize_age "${age_seconds}")"
-      printf '%-12s  %-10s %-10s %-8s %s\n' "${d}" "${t}" "${age}" "${size}" "${version}"
+      printf '%-12s  %-10s %-10s %-8s %s\n' "${d}" "${t}" "${age}" "${size}" "${generation}"
     done
   done
   exit 0
@@ -283,26 +283,26 @@ cp "${manifest_path}" "${partial}/manifest"
 # silently overwrite the target project's home with the source's.
 printf '%s\n' "${project}" > "${partial}/project"
 
-# Read and validate the base version. Refusing to write an unreadable
+# Read and validate the base generation. Refusing to write an unreadable
 # value into the snapshot keeps the validate-everywhere convention
 # (see commit 4b82a64) consistent across the new producer site.
-# Empty / missing base version is a legitimate "pre-versioning seal"
-# state and is preserved as an empty file in the snapshot, matching
+# Empty / missing base generation is a legitimate "pre-generation-tracking
+# seal" state and is preserved as an empty file in the snapshot, matching
 # how virtdev-restore tolerates and displays it.
-version_file="${VIRTDEV_HOME}/system/version"
-if [[ -f "${version_file}" ]]; then
-  base_version="$(< "${version_file}")"
-  if ! [[ "${base_version}" =~ ^[0-9]+$ ]]; then
+generation_file="${VIRTDEV_HOME}/system/generation"
+if [[ -f "${generation_file}" ]]; then
+  base_generation="$(< "${generation_file}")"
+  if ! [[ "${base_generation}" =~ ^[0-9]+$ ]]; then
     error 12 <<MESSAGE
-Corrupted base version file: '${version_file}'
-Contents: '${base_version}'
+Corrupted base generation file: '${generation_file}'
+Contents: '${base_generation}'
 Repair manually: the file must contain a single non-negative integer.
 Refusing to seal a corrupt audit trail into the snapshot.
 MESSAGE
   fi
-  printf '%s\n' "${base_version}" > "${partial}/version"
+  printf '%s\n' "${base_generation}" > "${partial}/generation"
 else
-  : > "${partial}/version"
+  : > "${partial}/generation"
 fi
 
 mkdir -m 0700 "${partial}/tree"

@@ -21,13 +21,13 @@
 #       names, values are 1 (running) or 0 (stopped).
 #
 #   project_is_outdated <project>
-#       Returns 0 if the project's version does not match the
-#       sealed base version. Also returns 0 (outdated) when
-#       either version file is missing. Returns 1 (not outdated)
+#       Returns 0 if the project's generation does not match the
+#       sealed base generation. Also returns 0 (outdated) when
+#       either generation file is missing. Returns 1 (not outdated)
 #       for detached projects.
 #
 #   project_is_detached <project>
-#       Returns 0 if the project's version file contains the
+#       Returns 0 if the project's generation file contains the
 #       literal string 'detached'.
 #
 # No reserved exit codes.
@@ -79,19 +79,19 @@ project_load_running_state() {
 project_is_outdated() {
   local project="${1}"
   project_is_detached "${project}" && return 1
-  local -r base_file="${VIRTDEV_HOME}/system/version"
-  local -r project_file="${VIRTDEV_HOME}/projects/${project}/version"
+  local -r base_file="${VIRTDEV_HOME}/system/generation"
+  local -r project_file="${VIRTDEV_HOME}/projects/${project}/generation"
   if [[ ! -f "${base_file}" || ! -f "${project_file}" ]]; then
     return 0
   fi
-  local base_ver project_ver
-  base_ver="$(< "${base_file}")"
-  project_ver="$(< "${project_file}")"
-  [[ "${project_ver}" != "${base_ver}" ]]
+  local base_gen project_gen
+  base_gen="$(< "${base_file}")"
+  project_gen="$(< "${project_file}")"
+  [[ "${project_gen}" != "${base_gen}" ]]
 }
 
 project_is_detached() {
   local project="${1}"
-  local -r version_file="${VIRTDEV_HOME}/projects/${project}/version"
-  [[ -f "${version_file}" ]] && [[ "$(< "${version_file}")" == "detached" ]]
+  local -r generation_file="${VIRTDEV_HOME}/projects/${project}/generation"
+  [[ -f "${generation_file}" ]] && [[ "$(< "${generation_file}")" == "detached" ]]
 }

@@ -5,7 +5,7 @@
 # Converts a project's qcow2 delta images into standalone images by
 # absorbing the sealed base system. This removes the backing file
 # dependency, making the project immune to maintenance cycles and
-# version mismatches. Trade-off: larger disk footprint, independent
+# generation mismatches. Trade-off: larger disk footprint, independent
 # updates required.
 #
 # Two conversion modes:
@@ -25,9 +25,9 @@
 #
 # The project must be stopped. A detached project:
 #
-#   - Boots without a version check (virtdev-start skips it)
+#   - Boots without a generation check (virtdev-start skips it)
 #   - Is skipped by virtdev-upgrade (independent of the base)
-#   - Shows 'detached' in virtdev-list's VERSION column
+#   - Shows 'detached' in virtdev-list's GENERATION column
 #   - Returns to coupled state if recreated (virtdev-recreate)
 #
 # Lock model: acquires the virtdev lock before mutation. The conversion
@@ -100,7 +100,7 @@ fi
 
 system_disk="${project_directory}/system.qcow2"
 home_disk="${project_directory}/home.qcow2"
-version_file="${project_directory}/version"
+generation_file="${project_directory}/generation"
 
 # Verify both disks have backing files.
 has_backing() {
@@ -116,10 +116,10 @@ if ! has_backing "${home_disk}"; then
   error 6 <<<"Home disk has no backing file: ${home_disk}"
 fi
 
-# Read current version for the summary display.
-current_version='-'
-if [[ -f "${version_file}" ]]; then
-  current_version="$(< "${version_file}")"
+# Read current generation for the summary display.
+current_generation='-'
+if [[ -f "${generation_file}" ]]; then
+  current_generation="$(< "${generation_file}")"
 fi
 
 # Print summary.
@@ -127,7 +127,7 @@ fi
   printf '\nDetaching project: %s\n' "${project}"
   printf '  System disk: %s\n' "${system_disk}"
   printf '  Home disk:   %s\n' "${home_disk}"
-  printf '  Version:     %s\n' "${current_version}"
+  printf '  Generation:  %s\n' "${current_generation}"
   if (( flags[in-place] )); then
     printf '  Mode:        in-place (no rollback on interruption)\n'
   else
@@ -175,8 +175,8 @@ MESSAGE
     verify_failed=1
   fi
 
-  printf 'detached\n' > "${version_file}"
-  chmod 644 "${version_file}"
+  printf 'detached\n' > "${generation_file}"
+  chmod 644 "${generation_file}"
 
   if (( verify_failed )); then
     printf >&2 '\n%s\n' "$(terminal_write fg=yellow "Project detached: ${project} (with verification warnings)" reset)"
@@ -229,8 +229,8 @@ MESSAGE
   mv "${home_disk}" "${home_bak}"
   mv "${home_detach}" "${home_disk}"
 
-  printf 'detached\n' > "${version_file}"
-  chmod 644 "${version_file}"
+  printf 'detached\n' > "${generation_file}"
+  chmod 644 "${generation_file}"
 
   rm -f "${system_bak}" "${home_bak}"
 fi

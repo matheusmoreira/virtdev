@@ -172,51 +172,51 @@ Snapshots are project-scoped; cross-project restoration is refused.
 MESSAGE
 fi
 
-# Read and validate the project's current base version. A project
+# Read and validate the project's current base generation. A project
 # whose VM is running was created against some sealed base, and the
-# version file is the audit trail for which one. The file must be a
+# generation file is the audit trail for which one. The file must be a
 # single non-negative integer per the convention in virtdev-start,
 # virtdev-create, and virtdev-maintain (see commit 4b82a64).
-project_version_file="${project_directory}/version"
-if [[ ! -f "${project_version_file}" ]]; then
+project_generation_file="${project_directory}/generation"
+if [[ ! -f "${project_generation_file}" ]]; then
   error 13 <<MESSAGE
-Project version file missing: '${project_version_file}'
+Project generation file missing: '${project_generation_file}'
 The project's audit trail is incomplete; refusing to proceed.
 MESSAGE
 fi
-project_version="$(< "${project_version_file}")"
-if ! [[ "${project_version}" =~ ^[0-9]+$ ]]; then
+project_generation="$(< "${project_generation_file}")"
+if ! [[ "${project_generation}" =~ ^[0-9]+$ ]]; then
   error 20 <<MESSAGE
-Corrupted project version file: '${project_version_file}'
-Contents: '${project_version}'
+Corrupted project generation file: '${project_generation_file}'
+Contents: '${project_generation}'
 Repair manually: the file must contain a single non-negative integer.
 MESSAGE
 fi
 
-# Read the snapshot's recorded base version. Empty/absent is a
-# legitimate 'unknown at backup time' (the base predated versioning
-# or was missing); display as '-'. Anything non-empty must validate,
-# otherwise the snapshot's audit trail is unreliable.
-snapshot_version='-'
-if [[ -s "${snapshot}/version" ]]; then
-  snapshot_version="$(< "${snapshot}/version")"
-  if ! [[ "${snapshot_version}" =~ ^[0-9]+$ ]]; then
+# Read the snapshot's recorded base generation. Empty/absent is a
+# legitimate 'unknown at backup time' (the base predated generation
+# tracking or was missing); display as '-'. Anything non-empty must
+# validate, otherwise the snapshot's audit trail is unreliable.
+snapshot_generation='-'
+if [[ -s "${snapshot}/generation" ]]; then
+  snapshot_generation="$(< "${snapshot}/generation")"
+  if ! [[ "${snapshot_generation}" =~ ^[0-9]+$ ]]; then
     error 14 <<MESSAGE
-Corrupted snapshot version file: '${snapshot}/version'
-Contents: '${snapshot_version}'
-The snapshot's base-version audit trail is unreadable.
+Corrupted snapshot generation file: '${snapshot}/generation'
+Contents: '${snapshot_generation}'
+The snapshot's base-generation audit trail is unreadable.
 MESSAGE
   fi
 fi
 
-# Display the version transition. Mismatch is the EXPECTED case in
+# Display the generation transition. Mismatch is the EXPECTED case in
 # the destroy-recreate-restore workflow (snapshot taken under one
 # base, restored under the next), so it is informational, not fatal.
-# Same-version restoration is the rollback case.
+# Same-generation restoration is the rollback case.
 printf >&2 'Restoring %s from %s/%s\n' \
     "${project}" "${resolved_date}" "${resolved_time}"
-printf >&2 '  snapshot version: %s\n' "${snapshot_version}"
-printf >&2 '  current version:  %s\n' "${project_version}"
+printf >&2 '  snapshot generation: %s\n' "${snapshot_generation}"
+printf >&2 '  current generation:  %s\n' "${project_generation}"
 
 printf -v ssh_command \
     'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
