@@ -115,7 +115,12 @@ snapshot_count() {
 
 snapshot_any() {
   local -r project="${1}"
-  (( $(snapshot_count "${project}") > 0 ))
+  local -r dir="${VIRTDEV_HOME}/backups/${project}"
+  [[ -d "${dir}" ]] || return 1
+  [[ -n "$(find "${dir}" -mindepth 2 -maxdepth 2 -type d \
+       -regextype posix-extended \
+       -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
+       -print -quit 2>/dev/null)" ]]
 }
 
 snapshot_latest() {
