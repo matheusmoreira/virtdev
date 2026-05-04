@@ -125,22 +125,22 @@ if [[ "${work_directory}" != "${build_directory}/work" \
   error 11 <<<"build path construction mismatch (internal bug)"
 fi
 
-printf 'Clearing build tree...\n'
+printf >&2 'Clearing build tree...\n'
 [[ -e "${work_directory}"    ]] && sudo chown -R "${USER}:${USER}" "${work_directory}"
 [[ -e "${profile_directory}" ]] && sudo chown -R "${USER}:${USER}" "${profile_directory}"
 rm -rf "${work_directory:?}" "${profile_directory:?}"
 mkdir -p "${work_directory}" "${profile_directory}"
 
-printf "Copying profile: '%s'\n" "${profile}"
+printf >&2 "Copying profile: '%s'\n" "${profile}"
 cp -r "${profile}/." "${profile_directory}/"
 rm -rf "${profile_directory}/grub" \
        "${profile_directory}/syslinux" \
        "${profile_directory}/efiboot/loader/entries/"*.conf
 
-printf 'Overlaying ISO configuration files...\n'
+printf >&2 'Overlaying ISO configuration files...\n'
 cp -r "${iso_profile}/." "${profile_directory}/"
 
-printf 'Injecting SSH public key and timezone...\n'
+printf >&2 'Injecting SSH public key and timezone...\n'
 config_json="${profile_directory}/airootfs/root/archinstall/config.json"
 jq --arg key      "${public_key}"      \
    --arg timezone "${VIRTDEV_TIMEZONE}" \
@@ -148,7 +148,7 @@ jq --arg key      "${public_key}"      \
    "${config_json}" > "${config_json}.tmp"
 mv "${config_json}.tmp" "${config_json}"
 
-printf 'Creating Arch Linux installation media...\n'
+printf >&2 'Creating Arch Linux installation media...\n'
 sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_directory}"
 
 
@@ -165,4 +165,4 @@ fi
 iso="${output_directory}/virtdev.iso"
 mv "${built_isos[0]}" "${iso}"
 
-printf "Created Arch Linux installation media: '%s'\n" "${iso}"
+printf >&2 "Created Arch Linux installation media: '%s'\n" "${iso}"

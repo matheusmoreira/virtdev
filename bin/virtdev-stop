@@ -72,12 +72,12 @@ if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
 fi
 
 if ! command -v socat &>/dev/null; then
-  printf '%s\n' "$(terminal_write fg=yellow 'socat not found, falling back to SIGTERM...' reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'socat not found, falling back to SIGTERM...' reset)"
   systemctl --user stop "${unit}"
   rm -f "${project_directory}"/port \
        "${project_directory}"/monitor.sock \
        "${project_directory}"/console.sock
-  printf '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset)"
   exit 0
 fi
 
@@ -86,7 +86,7 @@ fi
 # socket. The ACPI success path falls through with no body — the
 # unified wait loop below handles all three.
 if [[ -S "${monitor_sock}" ]]; then
-  printf "Sending ACPI powerdown to: %s\n" "${project}"
+  printf >&2 "Sending ACPI powerdown to: %s\n" "${project}"
   # Unidirectional socat: close after stdin EOF instead of waiting for the
   # server to close the socket. QEMU only closes the monitor when the VM
   # process itself exits, so bidirectional 'socat -' would block here
@@ -95,11 +95,11 @@ if [[ -S "${monitor_sock}" ]]; then
   # ActiveState poll below enforce VIRTDEV_STOP_TIMEOUT as the actual
   # upper bound on the stop.
   if ! echo 'system_powerdown' | socat -u - UNIX-CONNECT:"${monitor_sock}" &>/dev/null; then
-    printf '%s\n' "$(terminal_write fg=yellow 'Monitor send failed, falling back to SIGTERM...' reset)"
+    printf >&2 '%s\n' "$(terminal_write fg=yellow 'Monitor send failed, falling back to SIGTERM...' reset)"
     systemctl --user stop "${unit}"
   fi
 else
-  printf '%s\n' "$(terminal_write fg=yellow 'Monitor socket not found, falling back to SIGTERM...' reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'Monitor socket not found, falling back to SIGTERM...' reset)"
   systemctl --user stop "${unit}"
 fi
 
@@ -127,7 +127,7 @@ while :; do
   esac
   if (( SECONDS >= deadline )); then
     if (( ! escalated )); then
-      printf '%s\n' "$(terminal_write fg=yellow "Guest did not halt within ${VIRTDEV_STOP_TIMEOUT}s, falling back to SIGTERM..." reset)"
+      printf >&2 '%s\n' "$(terminal_write fg=yellow "Guest did not halt within ${VIRTDEV_STOP_TIMEOUT}s, falling back to SIGTERM..." reset)"
       systemctl --user stop "${unit}"
       escalated=1
       deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
@@ -183,4 +183,4 @@ fi
 rm -f "${project_directory}"/port \
      "${project_directory}"/monitor.sock \
      "${project_directory}"/console.sock
-printf '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
+printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"

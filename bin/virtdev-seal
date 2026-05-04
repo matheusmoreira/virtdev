@@ -61,7 +61,7 @@ for f in "${system_disk}" "${home_disk}" "${nvram}"; do
   fi
 done
 
-printf 'Checking image integrity...\n'
+printf >&2 'Checking image integrity...\n'
 if ! qemu-img check -q "${system_disk}"; then
   error 6 <<<"System disk image integrity check failed: '${system_disk}'"
 fi
@@ -71,18 +71,18 @@ fi
 
 mkdir -p "${system_directory}"
 
-printf "Sealing base system images to '%s'...\n" "${system_directory}"
+printf >&2 "Sealing base system images to '%s'...\n" "${system_directory}"
 mv "${system_disk}" "${system_directory}"/
 mv "${home_disk}"   "${system_directory}"/
 mv "${nvram}"       "${system_directory}"/
 
-printf 'Writing version counter...\n'
+printf >&2 'Writing version counter...\n'
 printf '1\n' > "${system_directory}/version"
 
-printf 'Marking base system images read-only...\n'
+printf >&2 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
 
-printf 'Removing installation directory...\n'
+printf >&2 'Removing installation directory...\n'
 if ! rmdir "${installation_directory}" 2>/dev/null; then
   # rmdir refused: something is in the directory beyond the three
   # files we just moved out. Surface what is left so the user can
@@ -98,5 +98,5 @@ Inspect the leftover files and remove the directory manually:
 MESSAGE
 fi
 
-printf '%s\n' "$(terminal_write fg=green "Base system sealed: '${system_directory}'" reset)"
-printf 'Run virtdev-create <name> to derive a virtual machine.\n'
+printf >&2 '%s\n' "$(terminal_write fg=green "Base system sealed: '${system_directory}'" reset)"
+printf >&2 'Run virtdev-create <name> to derive a virtual machine.\n'

@@ -107,22 +107,22 @@ cleanup_partial_installation() {
 trap cleanup_partial_installation EXIT
 
 system_disk="${installation_directory}"/system.qcow2
-printf "Creating %s system disk image: '%s'\n" \
+printf >&2 "Creating %s system disk image: '%s'\n" \
        "${VIRTDEV_SYSTEM_DISK_SIZE}" "${system_disk}"
 qemu-img create -f qcow2 "${system_disk}" "${VIRTDEV_SYSTEM_DISK_SIZE}"
 
 home_disk="${installation_directory}"/home.qcow2
-printf "Creating %s home disk: '%s'\n" \
+printf >&2 "Creating %s home disk: '%s'\n" \
        "${VIRTDEV_HOME_DISK_SIZE}" "${home_disk}"
 qemu-img create -f qcow2 "${home_disk}" "${VIRTDEV_HOME_DISK_SIZE}"
 
 nvram="${installation_directory}"/nvram
-printf 'Copying default NVRAM...\n'
+printf >&2 'Copying default NVRAM...\n'
 cp "${OVMF_VARS}" "${nvram}"
 
-printf 'Booting installer with serial output attached.\n'
-printf 'On success, the virtual machine will power off automatically.\n'
-printf 'On failure, the shell will be accessible via the serial console.\n\n'
+printf >&2 'Booting installer with serial output attached.\n'
+printf >&2 'On success, the virtual machine will power off automatically.\n'
+printf >&2 'On failure, the shell will be accessible via the serial console.\n\n'
 
 qemu-system-x86_64 \
     -enable-kvm \
@@ -145,6 +145,6 @@ qemu-system-x86_64 \
 
 install_succeeded=1
 
-printf '\n'
-printf '%s\n' "$(terminal_write fg=green 'Installer finished.' reset)"
-printf 'Run virtdev-seal to seal the base system images.\n'
+printf >&2 '\n'
+printf >&2 '%s\n' "$(terminal_write fg=green 'Installer finished.' reset)"
+printf >&2 'Run virtdev-seal to seal the base system images.\n'

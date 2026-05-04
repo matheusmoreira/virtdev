@@ -400,45 +400,45 @@ new_version="$(< "${system_version_file}")"
 printf '\n%s\n\n' "$(terminal_write bold "[Phase 4/${total_phases}] Summary" reset)" >&2
 
 if [[ ${#failed[@]} -eq 0 ]]; then
-  printf '%s\n' "$(terminal_write fg=green bold 'Upgrade complete.' reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=green bold 'Upgrade complete.' reset)"
 elif [[ ${#succeeded[@]} -gt 0 ]]; then
-  printf '%s\n' "$(terminal_write fg=yellow bold 'Upgrade incomplete.' reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=yellow bold 'Upgrade incomplete.' reset)"
 else
-  printf '%s\n' "$(terminal_write fg=red bold 'Upgrade failed.' reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=red bold 'Upgrade failed.' reset)"
 fi
 
 if [[ ${#succeeded[@]} -gt 0 ]]; then
-  printf '\n%s\n' "$(terminal_write fg=green "Upgraded: ${#succeeded[@]}" reset)"
+  printf >&2 '\n%s\n' "$(terminal_write fg=green "Upgraded: ${#succeeded[@]}" reset)"
   for p in "${succeeded[@]}"; do
-    printf '    %s\n' "${p}"
+    printf >&2 '    %s\n' "${p}"
   done
 fi
 
 if [[ ${#failed[@]} -gt 0 ]]; then
-  printf '\n%s\n' "$(terminal_write fg=red "Failed: ${#failed[@]}" reset)"
+  printf >&2 '\n%s\n' "$(terminal_write fg=red "Failed: ${#failed[@]}" reset)"
   for p in "${failed[@]}"; do
-    printf '    %s\n' "${p}"
+    printf >&2 '    %s\n' "${p}"
   done
-  printf '\n'
+  printf >&2 '\n'
   for p in "${failed[@]}"; do
-    printf '%s:\n' "${p}"
-    printf '    Failed at: %s\n' "${fail_reasons[${p}]}"
-    printf '    Exit code: %s\n' "${fail_codes[${p}]}"
-    printf '    Resume with:\n'
-    printf '        virtdev-recreate --no-backup %s\n' "${p}"
-    printf '\n'
+    printf >&2 '%s:\n' "${p}"
+    printf >&2 '    Failed at: %s\n' "${fail_reasons[${p}]}"
+    printf >&2 '    Exit code: %s\n' "${fail_codes[${p}]}"
+    printf >&2 '    Resume with:\n'
+    printf >&2 '        virtdev-recreate --no-backup %s\n' "${p}"
+    printf >&2 '\n'
   done
 fi
 
 if [[ ${#excluded[@]} -gt 0 ]]; then
-  printf '%s\n' "$(terminal_write fg=yellow "Not upgraded: ${#excluded[@]}" reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=yellow "Not upgraded: ${#excluded[@]}" reset)"
   for p in "${excluded[@]}"; do
-    printf '    %-30s (%s)\n' "${p}" "${excluded_reasons[${p}]}"
+    printf >&2 '    %-30s (%s)\n' "${p}" "${excluded_reasons[${p}]}"
   done
-  printf '\nThese projects remain on their current base version.\n'
+  printf >&2 '\nThese projects remain on their current base version.\n'
 fi
 
-printf '\nBase version: %s → %s\n' "${base_version}" "${new_version}"
+printf >&2 '\nBase version: %s → %s\n' "${base_version}" "${new_version}"
 
 if [[ ${#failed[@]} -gt 0 ]]; then
   exit 40

@@ -296,4 +296,4 @@ The snapshot may be empty, or every path in its manifest is absent.
 MESSAGE
 fi
 
-printf '%s\n' "$(terminal_write fg=green "Restored ${files_transferred} files from ${resolved_date}/${resolved_time} into ${project}." reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green "Restored ${files_transferred} files from ${resolved_date}/${resolved_time} into ${project}." reset)"

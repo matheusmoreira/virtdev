@@ -232,7 +232,7 @@ if [[ "$(loginctl show-user "${USER}" --property=Linger --value 2>/dev/null)" !=
   printf >&2 '    sudo loginctl enable-linger %s\n' "${USER}"
 fi
 
-printf "Starting project virtual machine %s on SSH port %d...\n" "${project}" "${port}"
+printf >&2 "Starting project virtual machine %s on SSH port %d...\n" "${project}" "${port}"
 
 # --collect intentionally omitted: it sets CollectMode=inactive-or-failed,
 # which would let systemd garbage-collect a failed unit before anything
@@ -351,6 +351,6 @@ done
 
 vm_started=1
 
-printf '%s\n' "$(terminal_write fg=green 'Virtual machine started.' reset)"
-printf 'SSH will be available after boot at: 127.0.0.1:%d\n' "${port}"
-printf 'Shut down cleanly with: virtdev-stop %s\n' "${project}"
+printf >&2 '%s\n' "$(terminal_write fg=green 'Virtual machine started.' reset)"
+printf >&2 'SSH will be available after boot at: 127.0.0.1:%d\n' "${port}"
+printf >&2 'Shut down cleanly with: virtdev-stop %s\n' "${project}"

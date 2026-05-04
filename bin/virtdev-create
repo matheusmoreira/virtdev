@@ -104,21 +104,21 @@ system_disk="${project_directory}/system.qcow2"
 home_disk="${project_directory}/home.qcow2"
 nvram="${project_directory}/nvram"
 
-printf "Creating system delta image: '%s'\n" "${system_disk}"
+printf >&2 "Creating system delta image: '%s'\n" "${system_disk}"
 qemu-img create \
     -f qcow2 \
     -b "${system_directory}/system.qcow2" \
     -F qcow2 \
     "${system_disk}"
 
-printf "Creating home delta image: '%s'\n" "${home_disk}"
+printf >&2 "Creating home delta image: '%s'\n" "${home_disk}"
 qemu-img create \
     -f qcow2 \
     -b "${system_directory}/home.qcow2" \
     -F qcow2 \
     "${home_disk}"
 
-printf "Copying NVRAM: '%s'\n" "${nvram}"
+printf >&2 "Copying NVRAM: '%s'\n" "${nvram}"
 cp "${system_directory}/nvram" "${nvram}"
 chmod 644 "${nvram}"
 
@@ -129,7 +129,7 @@ fi
 
 create_succeeded=1
 
-printf '\n'
-printf '%s\n' "$(terminal_write fg=green "Project virtual machine created: '${project}'" reset)"
-printf "Directory: '%s'\n" "${project_directory}"
-printf "Start it with: virtdev-start %s\n" "${project}"
+printf >&2 '\n'
+printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine created: '${project}'" reset)"
+printf >&2 "Directory: '%s'\n" "${project_directory}"
+printf >&2 "Start it with: virtdev-start %s\n" "${project}"

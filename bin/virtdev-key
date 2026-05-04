@@ -42,14 +42,14 @@ fi
 key_directory="$(dirname "${VIRTDEV_SSH_KEY}")"
 
 if [[ ! -d "${key_directory}" ]]; then
-  printf "Creating key directory: '%s'\n" "${key_directory}"
+  printf >&2 "Creating key directory: '%s'\n" "${key_directory}"
   mkdir -p "${key_directory}"
   chmod 700 "${key_directory}"
 fi
 
 if [[ -f "${VIRTDEV_SSH_KEY}" ]]; then
-  printf "SSH key already exists: '%s'\n" "${VIRTDEV_SSH_KEY}"
+  printf >&2 "SSH key already exists: '%s'\n" "${VIRTDEV_SSH_KEY}"
 else
   ssh-keygen -t ed25519 -N '' -C 'virtdev' -f "${VIRTDEV_SSH_KEY}"
-  printf "SSH key generated: '%s'\n" "${VIRTDEV_SSH_KEY}"
+  printf >&2 "SSH key generated: '%s'\n" "${VIRTDEV_SSH_KEY}"
 fi

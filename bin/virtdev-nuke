@@ -79,11 +79,11 @@ MESSAGE
   done < <(find "${projects_directory}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null)
 fi
 
-printf 'This will permanently delete all virtdev data:\n\n'
+printf >&2 'This will permanently delete all virtdev data:\n\n'
 
 for path in "${VIRTDEV_HOME}" "${VIRTDEV_CACHE}"; do
   if [[ -e "${path}" ]]; then
-    printf '\t%s\t%s\n' "$(du -sh "${path}" 2>/dev/null | cut -f1)" "${path}"
+    printf >&2 '\t%s\t%s\n' "$(du -sh "${path}" 2>/dev/null | cut -f1)" "${path}"
   fi
 done
 
@@ -94,24 +94,24 @@ if [[ -d "${backups_root}" ]]; then
       | sort
   )
   if (( ${#backup_projects[@]} > 0 )); then
-    printf '\nBackup snapshots:\n'
+    printf >&2 '\nBackup snapshots:\n'
     for bp in "${backup_projects[@]}"; do
       bp_dir="${backups_root}/${bp}"
       count="$(snapshot_count "${bp}")"
       size="$(du -sh "${bp_dir}" 2>/dev/null | cut -f1)"
-      printf '\t%s\t%s\t(%d snapshots)\n' "${size}" "${bp_dir}" "${count}"
+      printf >&2 '\t%s\t%s\t(%d snapshots)\n' "${size}" "${bp_dir}" "${count}"
     done
   fi
 fi
 
-printf '\nThis includes:\n'
-printf '\tALL project virtual machines\n'
-printf '\tALL disk images\n'
-printf '\tALL backup snapshots\n'
-printf '\tBase system images\n'
-printf '\tSSH keys\n'
-printf '\tISOs\n'
-printf '\nThis operation is irreversible.\n'
+printf >&2 '\nThis includes:\n'
+printf >&2 '\tALL project virtual machines\n'
+printf >&2 '\tALL disk images\n'
+printf >&2 '\tALL backup snapshots\n'
+printf >&2 '\tBase system images\n'
+printf >&2 '\tSSH keys\n'
+printf >&2 '\tISOs\n'
+printf >&2 '\nThis operation is irreversible.\n'
 if ! confirm_word "nuke"; then
   error 5 <<<"Aborted."
 fi
@@ -119,4 +119,4 @@ fi
 [[ -d "${VIRTDEV_HOME}"  ]] && rm -rf "${VIRTDEV_HOME}"
 [[ -d "${VIRTDEV_CACHE}" ]] && rm -rf "${VIRTDEV_CACHE}"
 
-printf '%s\n' "$(terminal_write fg=green 'All virtdev data deleted.' reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green 'All virtdev data deleted.' reset)"

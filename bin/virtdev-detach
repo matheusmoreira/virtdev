@@ -179,7 +179,7 @@ MESSAGE
   chmod 644 "${version_file}"
 
   if (( verify_failed )); then
-    printf '\n%s\n' "$(terminal_write fg=yellow "Project detached: ${project} (with verification warnings)" reset)"
+    printf >&2 '\n%s\n' "$(terminal_write fg=yellow "Project detached: ${project} (with verification warnings)" reset)"
     printf 'Check the images or restore from backup.\n' >&2
     exit 12
   fi
@@ -236,4 +236,4 @@ MESSAGE
 fi
 
 printf 'Done.\n\n' >&2
-printf '%s\n' "$(terminal_write fg=green "Project detached: ${project}" reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green "Project detached: ${project}" reset)"

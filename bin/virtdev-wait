@@ -64,7 +64,7 @@ port="$(< "${port_file}")"
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 
-printf 'Waiting for %s to bind SSH on port %d with timeout %ds...\n' \
+printf >&2 'Waiting for %s to bind SSH on port %d with timeout %ds...\n' \
        "${project}" "${port}" "${VIRTDEV_WAIT_TIMEOUT}"
 
 unit=virtdev-"${project}"
@@ -92,7 +92,7 @@ MESSAGE
       dev@127.0.0.1 \
       true 2>/dev/null
   then
-    printf 'SSH is up: %s port %d\n' "${project}" "${port}"
+    printf >&2 'SSH is up: %s port %d\n' "${project}" "${port}"
     exit 0
   fi
   sleep 2

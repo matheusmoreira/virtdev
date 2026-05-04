@@ -37,7 +37,7 @@ fi
 mapfile -t projects < <(project_list)
 
 if [[ ${#projects[@]} -eq 0 ]]; then
-  printf 'No projects found.\n'
+  printf >&2 'No projects found.\n'
   exit 0
 fi
 
@@ -100,5 +100,5 @@ for project in "${projects[@]}"; do
 done
 
 if [[ "${base_version}" != '-' ]]; then
-  printf '\nBase version: %s\n' "${base_version}"
+  printf >&2 '\nBase version: %s\n' "${base_version}"
 fi

@@ -416,9 +416,9 @@ MESSAGE
   fi
 fi
 
-printf '\n'
+printf >&2 '\n'
 if (( do_restore )); then
-  printf '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset)"
 else
-  printf '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset " (restore skipped)")"
+  printf >&2 '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset " (restore skipped)")"
 fi

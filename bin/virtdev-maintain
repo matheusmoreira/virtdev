@@ -122,14 +122,14 @@ trash_directory="${VIRTDEV_HOME}/system.old.trash"
 # from maintenance/ by hand before retrying, but maintenance/ is
 # left untouched here so that option stays open.
 if [[ -d "${old_system_directory}" ]]; then
-  printf '%s\n' "$(terminal_write fg=yellow 'Detected interrupted reseal from a prior virtdev-maintain.' reset)"
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'Detected interrupted reseal from a prior virtdev-maintain.' reset)"
   if [[ -d "${system_directory}" ]]; then
-    printf 'Clobbering partial new base: %s\n' "${system_directory}"
+    printf >&2 'Clobbering partial new base: %s\n' "${system_directory}"
     rm -rf "${system_directory}"
   fi
-  printf 'Restoring previous sealed base from: %s\n' "${old_system_directory}"
+  printf >&2 'Restoring previous sealed base from: %s\n' "${old_system_directory}"
   mv "${old_system_directory}" "${system_directory}"
-  printf '%s\n\n' "$(terminal_write fg=green 'Recovery complete. Proceed with virtdev-maintain as normal.' reset)"
+  printf >&2 '%s\n\n' "$(terminal_write fg=green 'Recovery complete. Proceed with virtdev-maintain as normal.' reset)"
 fi
 
 # Clean up leftover trash from a prior successful reseal whose
@@ -140,7 +140,7 @@ fi
 # system.old/ means "reseal interrupted mid-section, revert", while
 # trash_directory means "reseal succeeded, just remove the leftover".
 if [[ -d "${trash_directory}" ]]; then
-  printf 'Removing leftover trash from a prior reseal: %s\n' "${trash_directory}"
+  printf >&2 'Removing leftover trash from a prior reseal: %s\n' "${trash_directory}"
   rm -rf "${trash_directory}"
 fi
 
@@ -219,7 +219,7 @@ system_disk="${maintenance_directory}/system.qcow2"
 home_disk="${maintenance_directory}/home.qcow2"
 nvram="${maintenance_directory}/nvram"
 
-printf "Copying sealed base images to: '%s'\n" "${maintenance_directory}"
+printf >&2 "Copying sealed base images to: '%s'\n" "${maintenance_directory}"
 # --reflink=auto produces an instant COW clone on filesystems that
 # support reflinks (btrfs, XFS with reflink=1) and silently falls
 # back to a full byte copy everywhere else, so the flag is safe to
@@ -231,7 +231,7 @@ cp --reflink=auto "${system_directory}/system.qcow2" "${system_disk}"
 cp --reflink=auto "${system_directory}/home.qcow2"   "${home_disk}"
 cp --reflink=auto "${system_directory}/nvram"        "${nvram}"
 
-printf 'Making maintenance images writable...\n'
+printf >&2 'Making maintenance images writable...\n'
 chmod 644 "${system_disk}" "${home_disk}" "${nvram}"
 
 # Register maintenance as a virtual project so virtdev-ssh and virtdev-stop work.
@@ -252,7 +252,7 @@ rm -f "${monitor_sock}" "${console_sock}"
 # name-already-in-use.
 systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
-printf 'Starting maintenance VM (virtdev-maintenance)...\n'
+printf >&2 'Starting maintenance VM (virtdev-maintenance)...\n'
 
 systemd-run \
     --user \
@@ -279,7 +279,7 @@ systemd-run \
         -serial chardev:serial
 
 # Poll until SSH is up or the unit exits early.
-printf 'Waiting for SSH on port %d with timeout %ds...' \
+printf >&2 'Waiting for SSH on port %d with timeout %ds...' \
        "${maintenance_port}" "${VIRTDEV_WAIT_TIMEOUT}"
 
 ssh_up=0
@@ -305,12 +305,12 @@ while (( SECONDS < deadline )); do
     ssh_up=1
     break
   fi
-  printf '.'
+  printf >&2 '.'
   sleep 2
 done
 
 if [[ "${ssh_up}" -eq 0 ]]; then
-  printf ' failed.\n'
+  printf >&2 ' failed.\n'
 
   # Distinguish a port-bind race from a generic boot failure. The
   # pre-flight ss check above is a TOCTOU: another process can bind
@@ -365,14 +365,14 @@ Remove manually to retry: rm -rf '${maintenance_directory}'
 MESSAGE
 fi
 
-printf ' up.\n\n'
-printf 'Connect to the maintenance virtual machine:\n\n'
-printf '\tvirtdev-ssh maintenance\n\n'
-printf 'When done, power off to trigger resealing:\n\n'
-printf '\tsudo poweroff\n\n'
-printf 'Waiting for virtual machine to exit...\n'
-printf 'To abort:\n\n'
-printf '\tvirtdev-stop maintenance\n\n'
+printf >&2 ' up.\n\n'
+printf >&2 'Connect to the maintenance virtual machine:\n\n'
+printf >&2 '\tvirtdev-ssh maintenance\n\n'
+printf >&2 'When done, power off to trigger resealing:\n\n'
+printf >&2 '\tsudo poweroff\n\n'
+printf >&2 'Waiting for virtual machine to exit...\n'
+printf >&2 'To abort:\n\n'
+printf >&2 '\tvirtdev-stop maintenance\n\n'
 
 # Wait for the unit to leave active/activating state.
 while true; do
@@ -400,7 +400,7 @@ systemctl --user reset-failed "${unit}" 2>/dev/null || true
 rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
 rmdir "${maintenance_project}" 2>/dev/null || true
 
-printf '\n'
+printf >&2 '\n'
 
 # Any non-zero exit means the maintenance session did not finish
 # with a clean guest poweroff. The sealed base must NOT be
@@ -476,7 +476,7 @@ esac
 # sequence rather than being, say, manually 'exit 0' from a
 # foreground shell inside the guest. Require explicit user
 # confirmation before overwriting the sealed base system.
-printf '%s\n' "$(terminal_write fg=green 'Virtual machine exited cleanly.' reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green 'Virtual machine exited cleanly.' reset)"
 if (( ! flags[yes] )); then
   if ! confirm_proceed 'Reseal the base system? [y/N] '; then
     error 12 <<MESSAGE
@@ -488,7 +488,7 @@ MESSAGE
   fi
 fi
 
-printf 'Checking maintenance image integrity...\n'
+printf >&2 'Checking maintenance image integrity...\n'
 if ! qemu-img check -q "${system_disk}"; then
   error 13 <<<"System disk integrity check failed: '${system_disk}'"
 fi
@@ -557,15 +557,15 @@ fi
 # brief mid-step-1/2/3/4 window but is not wrapped by any
 # shell-accessible tool today.
 trap '' INT TERM HUP QUIT
-printf '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
+printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
 mv "${system_directory}" "${old_system_directory}"
 mv "${maintenance_directory}" "${system_directory}"
 
-printf 'Incrementing version counter (%d → %d)...\n' \
+printf >&2 'Incrementing version counter (%d → %d)...\n' \
        "${old_version}" "$(( old_version + 1 ))"
 printf '%d\n' "$(( old_version + 1 ))" > "${system_directory}/version"
 
-printf 'Marking base system images read-only...\n'
+printf >&2 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
 
 mv "${old_system_directory}" "${trash_directory}"
@@ -580,7 +580,7 @@ if ! rm -rf "${trash_directory}"; then
              "${trash_directory}"
 fi
 
-printf '%s\n' "$(terminal_write fg=green "Base system resealed: ${system_directory}" reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green "Base system resealed: ${system_directory}" reset)"
 
 outdated_count=0
 while IFS= read -r p; do
@@ -588,11 +588,11 @@ while IFS= read -r p; do
 done < <(project_list)
 
 if (( outdated_count > 0 )); then
-  printf '\n'
-  printf '%s\n' "$(terminal_write fg=yellow "${outdated_count} project(s) are now outdated. Upgrade them with:" reset)"
-  printf '\n'
-  printf '    virtdev-upgrade\n'
+  printf >&2 '\n'
+  printf >&2 '%s\n' "$(terminal_write fg=yellow "${outdated_count} project(s) are now outdated. Upgrade them with:" reset)"
+  printf >&2 '\n'
+  printf >&2 '    virtdev-upgrade\n'
 else
-  printf '\n'
-  printf 'No project virtual machines to upgrade.\n'
+  printf >&2 '\n'
+  printf >&2 'No project virtual machines to upgrade.\n'
 fi

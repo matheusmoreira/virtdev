@@ -65,5 +65,5 @@ if ! command -v socat &>/dev/null; then
   error 6 <<<'socat not found, install with: pacman -S socat'
 fi
 
-printf 'Attaching to serial console of %s.\nDetach with Ctrl-].\n\n' "${project}"
+printf >&2 'Attaching to serial console of %s.\nDetach with Ctrl-].\n\n' "${project}"
 exec socat - UNIX-CONNECT:"${console_sock}"

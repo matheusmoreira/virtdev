@@ -56,21 +56,21 @@ Stop it with: virtdev-stop ${project}
 MESSAGE
 fi
 
-printf 'This will permanently delete:\n\n'
-printf '\t%s\n' "${project_directory}"
+printf >&2 'This will permanently delete:\n\n'
+printf >&2 '\t%s\n' "${project_directory}"
 find "${project_directory}" -type f \
   | sort \
   | while IFS= read -r f; do
-      printf '\t\t%s\t%s\n' "$(du -sh "${f}" | cut -f1)" "$(basename "${f}")"
+      printf >&2 '\t\t%s\t%s\n' "$(du -sh "${f}" | cut -f1)" "$(basename "${f}")"
     done
 
 backups_project_dir="$(snapshot_directory "${project}")"
 backup_count="$(snapshot_count "${project}")"
 if (( backup_count > 0 )); then
-  printf '\nBackups preserved: %d snapshot(s) at %s\n' "${backup_count}" "${backups_project_dir}"
+  printf >&2 '\nBackups preserved: %d snapshot(s) at %s\n' "${backup_count}" "${backups_project_dir}"
 fi
 
-printf '\nThis operation is irreversible.\n'
+printf >&2 '\nThis operation is irreversible.\n'
 
 if (( ! flags[yes] )); then
   if ! confirm_word "${project}"; then
@@ -79,4 +79,4 @@ if (( ! flags[yes] )); then
 fi
 
 rm -rf "${project_directory}"
-printf '%s\n' "$(terminal_write fg=green "Project destroyed: ${project}" reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green "Project destroyed: ${project}" reset)"

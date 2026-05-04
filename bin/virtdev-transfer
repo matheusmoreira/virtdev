@@ -119,11 +119,11 @@ remote="dev@127.0.0.1"
 if (( src_is_remote )); then
   rsync_src="${remote}:${src#:}"
   rsync_dest="${dest}"
-  printf 'Copying from %s...\n' "${project}"
+  printf >&2 'Copying from %s...\n' "${project}"
 else
   rsync_src="${src}"
   rsync_dest="${remote}:${dest#:}"
-  printf 'Copying to %s...\n' "${project}"
+  printf >&2 'Copying to %s...\n' "${project}"
 fi
 
 # rsync's -e takes a string that rsync re-parses via the shell. The

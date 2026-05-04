@@ -106,7 +106,7 @@ if (( flags[list] )); then
   mapfile -t day_dirs < <(snapshot_list_days "${project}")
 
   if (( ${#day_dirs[@]} == 0 )); then
-    printf 'No snapshots.\n'
+    printf >&2 'No snapshots.\n'
     exit 0
   fi
 
@@ -319,7 +319,7 @@ rsync_opts=(-a --no-D --ignore-missing-args --stats)
 
 rsync_log="$(mktemp)"
 
-printf 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
+printf >&2 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
 
 # Force LC_ALL=C so rsync's --stats output is in English. The
 # zero-file guard and the partial-transfer count both parse the
