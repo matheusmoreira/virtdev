@@ -261,7 +261,8 @@ systemd-run \
         -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
         -monitor chardev:monitor \
         -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
-        -serial chardev:serial
+        -serial chardev:serial \
+        -fw_cfg name=opt/virtdev/project,string="${project}"
 
 # Wait for systemd to confirm the transient unit is active before the
 # lock is released (via script exit). systemd-run returns when the

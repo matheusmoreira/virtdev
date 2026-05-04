@@ -276,7 +276,8 @@ systemd-run \
         -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
         -monitor chardev:monitor \
         -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
-        -serial chardev:serial
+        -serial chardev:serial \
+        -fw_cfg name=opt/virtdev/project,string=maintenance
 
 # Poll until SSH is up or the unit exits early.
 printf >&2 'Waiting for SSH on port %d with timeout %ds...' \
