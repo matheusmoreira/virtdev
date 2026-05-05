@@ -23,7 +23,7 @@
 #   7. On clean exit
 #      7.1. Integrity check
 #      7.2. Confirm reseal
-#           7.2.1 Replace system/ with maintenance/
+#           7.2.1 Atomically exchange system/ and maintenance/
 #
 # If the virtual machine does not exit cleanly,
 # as signaled by a non-zero systemd unit exit status
@@ -101,47 +101,9 @@ lock_acquire_for_maintain
 system_directory="${VIRTDEV_HOME}/system"
 maintenance_directory="${VIRTDEV_HOME}/maintenance"
 maintenance_project="${VIRTDEV_HOME}/projects/maintenance"
-old_system_directory="${VIRTDEV_HOME}/system.old"
-trash_directory="${VIRTDEV_HOME}/system.old.trash"
 
-# Auto-recover from an interrupted reseal. The reseal block below
-# is a two-mv-plus-writes sequence that this commit further wraps
-# in a signal trap, but a SIGKILL or host power loss can still
-# land in the middle of it and leave the layout in one of these
-# partial states:
-#
-#   - system.old/ exists, system/ does not         (between mv's)
-#   - system.old/ exists, system/ has no generation (post-mv, pre-write)
-#   - system.old/ and system/ both fully populated (pre-rm-of-old)
-#
-# In all three, the prior sealed base is intact at system.old/
-# and the right move is to unconditionally restore it — clobbering
-# whatever partial state is in system/ — so the next operation
-# starts from a known-good layout. The in-progress maintenance
-# work is discarded; a user who wants to recover it must do so
-# from maintenance/ by hand before retrying, but maintenance/ is
-# left untouched here so that option stays open.
-if [[ -d "${old_system_directory}" ]]; then
-  printf >&2 '%s\n' "$(terminal_write fg=yellow 'Detected interrupted reseal from a prior virtdev-maintain.' reset)"
-  if [[ -d "${system_directory}" ]]; then
-    printf >&2 'Clobbering partial new base: %s\n' "${system_directory}"
-    rm -rf "${system_directory}"
-  fi
-  printf >&2 'Restoring previous sealed base from: %s\n' "${old_system_directory}"
-  mv "${old_system_directory}" "${system_directory}"
-  printf >&2 '%s\n\n' "$(terminal_write fg=green 'Recovery complete. Proceed with virtdev-maintain as normal.' reset)"
-fi
-
-# Clean up leftover trash from a prior successful reseal whose
-# best-effort rm did not finish. trash_directory is created by the
-# atomic-rename commit step in the reseal block below; its presence
-# means the new base is already committed and the old base is
-# garbage. This is distinct from the system.old/ revert case above:
-# system.old/ means "reseal interrupted mid-section, revert", while
-# trash_directory means "reseal succeeded, just remove the leftover".
-if [[ -d "${trash_directory}" ]]; then
-  printf >&2 'Removing leftover trash from a prior reseal: %s\n' "${trash_directory}"
-  rm -rf "${trash_directory}"
+if ! command -v virtdev-exchange >/dev/null 2>&1; then
+  error 16 <<<"virtdev-exchange not found on PATH. Run 'make' to compile it."
 fi
 
 if [[ ! -d "${system_directory}" ]]; then
@@ -497,70 +459,40 @@ if ! qemu-img check -q "${home_disk}"; then
   error 14 <<<"Home disk integrity check failed: '${home_disk}'"
 fi
 
-# Read and validate the old generation counter BEFORE the rename
-# sequence below. After the mv, the sealed base has moved to
-# system.old and recovery from a corrupted generation would be manual
-# surgery; failing here leaves the sealed base untouched in place.
-# Accept any non-negative integer, including 0, to stay consistent
-# with the validation elsewhere — virtdev-seal writes the initial
-# counter as '1' but the schema itself does not require that.
-old_generation=1
-if [[ -f "${system_directory}/generation" ]]; then
-  old_generation="$(< "${system_directory}/generation")"
-  if ! [[ "${old_generation}" =~ ^[0-9]+$ ]]; then
-    error 15 <<MESSAGE
+# Read and validate the old generation counter before the exchange
+# below. Failing here leaves the sealed base untouched in place.
+if [[ ! -f "${system_directory}/generation" ]]; then
+  error 15 <<<"Base system generation file missing: '${system_directory}/generation'"
+fi
+old_generation="$(< "${system_directory}/generation")"
+if ! [[ "${old_generation}" =~ ^[0-9]+$ ]]; then
+  error 15 <<MESSAGE
 Corrupted base generation file: '${system_directory}/generation'
 Contents: '${old_generation}'
 Repair manually: the file must contain a single non-negative integer.
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
 MESSAGE
-  fi
 fi
 
-# Reseal:
+# Reseal via atomic exchange.
 #
-#     1. Rename old system directory aside
-#     2. Rename maintenance/ directory to system/
-#     3. Write new generation counter
-#     4. chmod 444 to seal
-#     5. Atomically rename system.old/ to system.old.trash/ (commit)
-#     6. Outside the trap: rm -rf the trash (best-effort cleanup)
+# virtdev-exchange wraps renameat2(2) with RENAME_EXCHANGE: a single
+# syscall that atomically swaps system/ and maintenance/. After the
+# call, system/ holds the new images and maintenance/ holds the old
+# ones. There is no intermediate state where system/ is missing or
+# partially populated — not even under SIGKILL or power loss.
 #
-# Steps 1–5 are the non-atomic critical section. Between the
-# operations the layout is transiently inconsistent: no system/
-# (between the two mv's); system/ without a generation file (post-mv,
-# pre-write); system/ not yet read-only (post-write, pre-chmod); or
-# a leftover system.old/ alongside a fully-sealed system/ (pre-step-5).
-# Catchable signals — Ctrl-C, SIGTERM from systemctl --user stop,
-# HUP from a closed terminal — are trapped away for the duration so
-# those paths cannot interrupt the sequence partway through.
+# The generation counter write and chmod that follow are not part of
+# the atomic swap, but a crash between the exchange and these steps
+# leaves system/ with the new images and a stale generation file
+# (copied from the pre-maintenance base). This is a benign state:
+# the images are correct, and re-running virtdev-maintain recovers.
 #
-# Step 5 (mv system.old → system.old.trash) is the commit point.
-# Auto-recovery treats "system.old/ exists" as "interrupted reseal,
-# revert" — but it ignores trash_directory, which it just removes
-# as cleanup. A single rename(2) is atomic on a single filesystem,
-# so the transition from "system.old/ exists (revert on recovery)"
-# to "trash/ exists (cleanup on recovery)" is one syscall: there is
-# no in-between state where a crash could leave both visible to a
-# later auto-recovery. Step 6's rm is therefore best-effort: if it
-# fails, the trash lingers as garbage and is collected by the next
-# maintain run's auto-recovery, but the new base is already
-# committed and cannot revert.
-#
-# SIGKILL and hardware failure still get through — nothing can
-# trap SIGKILL — but the auto-recovery handles the resulting state
-# correctly: a SIGKILL before step 5 leaves system.old/ and reverts;
-# after step 5 leaves trash and just cleans up. The only loss is
-# the in-progress maintenance work itself if the kill lands before
-# step 5, which the user has to redo. A syscall-level atomic
-# RENAME_EXCHANGE (renameat2, Linux-only) would close even the
-# brief mid-step-1/2/3/4 window but is not wrapped by any
-# shell-accessible tool today.
-trap '' INT TERM HUP QUIT
+# After the post-exchange steps complete, maintenance/ (which now
+# holds the previous base) is removed as best-effort cleanup.
 printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
-mv "${system_directory}" "${old_system_directory}"
-mv "${maintenance_directory}" "${system_directory}"
+virtdev-exchange "${system_directory}" "${maintenance_directory}"
 
 printf >&2 'Incrementing generation counter (%d → %d)...\n' \
        "${old_generation}" "$(( old_generation + 1 ))"
@@ -569,16 +501,9 @@ printf '%d\n' "$(( old_generation + 1 ))" > "${system_directory}/generation"
 printf >&2 'Marking base system images read-only...\n'
 chmod 444 "${system_directory}"/*
 
-mv "${old_system_directory}" "${trash_directory}"
-trap - INT TERM HUP QUIT
-
-# Best-effort trash removal. Failure here does not affect
-# correctness: the next maintain run's auto-recovery will collect
-# any leftover trash directory. Surface a warning so the user knows
-# disk space is being held until then.
-if ! rm -rf "${trash_directory}"; then
+if ! rm -rf "${maintenance_directory}"; then
   printf >&2 'warning: could not remove %s; will be cleaned up on next virtdev-maintain run\n' \
-             "${trash_directory}"
+             "${maintenance_directory}"
 fi
 
 printf >&2 '%s\n' "$(terminal_write fg=green "Base system resealed: ${system_directory}" reset)"
