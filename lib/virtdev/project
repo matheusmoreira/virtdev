@@ -22,9 +22,9 @@
 #
 #   project_is_outdated <project>
 #       Returns 0 if the project's generation does not match the
-#       sealed base generation. Also returns 0 (outdated) when
-#       either generation file is missing. Returns 1 (not outdated)
-#       for detached projects.
+#       sealed base generation. Returns 0 (outdated) when either
+#       generation file is missing. Returns 1 (not outdated) for
+#       detached projects.
 #
 #   project_is_detached <project>
 #       Returns 0 if the project's generation file contains the

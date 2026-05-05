@@ -42,9 +42,11 @@ if [[ ${#projects[@]} -eq 0 ]]; then
 fi
 
 system_generation_file="${VIRTDEV_HOME}/system/generation"
-base_generation='-'
 if [[ -f "${system_generation_file}" ]]; then
   base_generation="$(< "${system_generation_file}")"
+else
+  base_generation='-'
+  printf >&2 'warning: base system generation file missing: %s\n' "${system_generation_file}"
 fi
 
 printf '%-50s %-5s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS' 'GENERATION'
@@ -72,15 +74,16 @@ for project in "${projects[@]}"; do
     port='-'
   fi
 
-  generation='-'
-  generation_color=''
   if [[ -f "${generation_file}" ]]; then
     generation="$(< "${generation_file}")"
-    if [[ "${generation}" == "detached" ]]; then
-      generation_color='fg=yellow'
-    elif [[ "${base_generation}" != '-' && "${generation}" != "${base_generation}" ]]; then
-      generation_color='fg=red'
-    fi
+  else
+    generation='-'
+  fi
+  generation_color=''
+  if [[ "${generation}" == "detached" ]]; then
+    generation_color='fg=yellow'
+  elif [[ "${generation}" != '-' && "${base_generation}" != '-' && "${generation}" != "${base_generation}" ]]; then
+    generation_color='fg=red'
   fi
 
   # printf counts escape bytes as width, so colored fields

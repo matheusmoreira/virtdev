@@ -116,11 +116,7 @@ if ! has_backing "${home_disk}"; then
   error 6 <<<"Home disk has no backing file: ${home_disk}"
 fi
 
-# Read current generation for the summary display.
-current_generation='-'
-if [[ -f "${generation_file}" ]]; then
-  current_generation="$(< "${generation_file}")"
-fi
+current_generation="$(< "${generation_file}")"
 
 # Print summary.
 {

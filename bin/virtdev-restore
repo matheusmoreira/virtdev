@@ -193,10 +193,8 @@ Repair manually: the file must contain a single non-negative integer.
 MESSAGE
 fi
 
-# Read the snapshot's recorded base generation. Empty/absent is a
-# legitimate 'unknown at backup time' (the base predated generation
-# tracking or was missing); display as '-'. Anything non-empty must
-# validate, otherwise the snapshot's audit trail is unreliable.
+# Read the snapshot's recorded base generation for display.
+# Empty/absent is displayed as '-'.
 snapshot_generation='-'
 if [[ -s "${snapshot}/generation" ]]; then
   snapshot_generation="$(< "${snapshot}/generation")"

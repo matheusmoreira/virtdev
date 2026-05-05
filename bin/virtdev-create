@@ -69,19 +69,16 @@ for file in system.qcow2 home.qcow2 nvram; do
   fi
 done
 
-# Validate the base generation file if present, so a corrupt base fails
-# at create time instead of start time. virtdev-start's comparison
-# is strict; inheriting a corrupted counter here would produce a
-# project that can never boot.
-if [[ -f "${system_directory}/generation" ]]; then
-  base_generation="$(< "${system_directory}/generation")"
-  if ! [[ "${base_generation}" =~ ^[0-9]+$ ]]; then
-    error 7 <<MESSAGE
+if [[ ! -f "${system_directory}/generation" ]]; then
+  error 7 <<<"Base system generation file missing: '${system_directory}/generation'"
+fi
+base_generation="$(< "${system_directory}/generation")"
+if ! [[ "${base_generation}" =~ ^[0-9]+$ ]]; then
+  error 7 <<MESSAGE
 Corrupted base generation file: '${system_directory}/generation'
 Contents: '${base_generation}'
 Repair manually: the file must contain a single non-negative integer.
 MESSAGE
-  fi
 fi
 
 if [[ -d "${project_directory}" ]]; then
@@ -122,10 +119,8 @@ printf >&2 "Copying NVRAM: '%s'\n" "${nvram}"
 cp "${system_directory}/nvram" "${nvram}"
 chmod 644 "${nvram}"
 
-if [[ -f "${system_directory}/generation" ]]; then
-  cp "${system_directory}/generation" "${project_directory}/generation"
-  chmod 644 "${project_directory}/generation"
-fi
+cp "${system_directory}/generation" "${project_directory}/generation"
+chmod 644 "${project_directory}/generation"
 
 create_succeeded=1
 

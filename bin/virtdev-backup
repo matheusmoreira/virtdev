@@ -143,13 +143,8 @@ if (( flags[list] )); then
     for t in "${time_dirs[@]}"; do
       snapshot="${backups_project_dir}/${d}/${t}"
       size="$(du -sh "${snapshot}" 2>/dev/null | cut -f1)"
-      # Display the snapshot's recorded base generation. Empty/absent
-      # = legitimate 'unknown at backup time' shows as '-'. Any
-      # non-empty value that does not match the integer convention
-      # is shown as '<corrupt>' rather than the raw string, so
-      # broken metadata is visible without polluting the column.
-      # --list is read-only and tolerant; the writer below catches
-      # the corrupt-input case at backup time and refuses then.
+      # Display the snapshot's recorded base generation.
+      # Non-integer values are shown as '<corrupt>'.
       generation='-'
       if [[ -s "${snapshot}/generation" ]]; then
         generation="$(< "${snapshot}/generation")"
@@ -293,27 +288,19 @@ cp "${manifest_path}" "${partial}/manifest"
 # silently overwrite the target project's home with the source's.
 printf '%s\n' "${project}" > "${partial}/project"
 
-# Read and validate the base generation. Refusing to write an unreadable
-# value into the snapshot keeps the validate-everywhere convention
-# (see commit 4b82a64) consistent across the new producer site.
-# Empty / missing base generation is a legitimate "pre-generation-tracking
-# seal" state and is preserved as an empty file in the snapshot, matching
-# how virtdev-restore tolerates and displays it.
 generation_file="${VIRTDEV_HOME}/system/generation"
-if [[ -f "${generation_file}" ]]; then
-  base_generation="$(< "${generation_file}")"
-  if ! [[ "${base_generation}" =~ ^[0-9]+$ ]]; then
-    error 12 <<MESSAGE
+if [[ ! -f "${generation_file}" ]]; then
+  error 12 <<<"Base system generation file missing: '${generation_file}'"
+fi
+base_generation="$(< "${generation_file}")"
+if ! [[ "${base_generation}" =~ ^[0-9]+$ ]]; then
+  error 12 <<MESSAGE
 Corrupted base generation file: '${generation_file}'
 Contents: '${base_generation}'
 Repair manually: the file must contain a single non-negative integer.
-Refusing to seal a corrupt audit trail into the snapshot.
 MESSAGE
-  fi
-  printf '%s\n' "${base_generation}" > "${partial}/generation"
-else
-  : > "${partial}/generation"
 fi
+printf '%s\n' "${base_generation}" > "${partial}/generation"
 
 mkdir -m 0700 "${partial}/tree"
 
