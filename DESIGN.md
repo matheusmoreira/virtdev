@@ -197,19 +197,44 @@ detached and attached to another.
 `virtdev-maintain` boots the sealed base for maintenance:
 
 1. Copies `system/` to a staging area, makes files writable
-2. Boots the staging images as a regular QEMU process (no cdrom, no install)
-3. User performs maintenance: `pacman -Syu`, dotfile setup, etc.
-4. On poweroff, reseals — replacing the previous seal. The reseal
-   commit point is a single `rename(2)` from `system.old/` to
-   `system.old.trash/` after the new base is fully written and chmod-444'd;
-   an interrupt (Ctrl-C, SIGTERM, or host reset) before that rename leaves
-   the previous sealed base intact at `system.old/` and is auto-recovered
-   on the next `virtdev-maintain` run, while an interrupt after the
-   rename leaves the new base committed and only the trash directory to
-   clean up. A SIGKILL or hardware failure in the brief window between
-   the two `mv`s and the generation-file write is the only path that can
-   leave a partial layout, and the auto-recovery handles that case too
-   by reverting to `system.old/`.
+   (`cp --reflink=auto` for instant COW clones on btrfs/XFS)
+2. Boots the staging images as a systemd user service
+3. Runs the provision hook if present (non-fatal)
+4. Takes inventory if present (captures diffable state for later comparison)
+5. User performs maintenance in a separate terminal: `pacman -Syu`, etc.
+6. User powers off the virtual machine: `sudo poweroff`
+7. On clean exit, if inventory was captured: boots a second time,
+   captures inventory again, shows a diff of what changed
+8. User confirms reseal; `virtdev-exchange` atomically swaps `system/`
+   and `maintenance/` via `renameat2(2)` with `RENAME_EXCHANGE`
+
+The reseal commit point is the `renameat2` syscall — a single atomic
+operation that swaps the two directory names. There is no intermediate
+state where `system/` is missing or partially populated, not even under
+SIGKILL or power loss. The generation counter increment and `chmod 444`
+that follow are not part of the atomic swap, but a crash between the
+exchange and these steps leaves `system/` with the correct new images
+and a stale generation file; re-running `virtdev-maintain` recovers.
+
+### Maintenance hooks
+
+Two optional hooks live in `${XDG_CONFIG_HOME}/virtdev/maintenance/`:
+
+- **`provision`** — runs inside the guest after SSH is up. Sets up
+  dotfiles, tools, and other environment configuration that should be
+  baked into the sealed base. Executed via `virtdev-ssh maintenance --
+  bash -s < provision`. Non-fatal: a failure prints a warning and
+  continues to the interactive session.
+
+- **`inventory`** — runs inside the guest to capture diffable system
+  state (e.g., `pacman -Q`, file trees). Executed twice: once before
+  the interactive session (Boot 1) and once via a second boot after
+  the user powers off. The diff of the two captures is shown before
+  the reseal prompt. Non-fatal: if the hook is absent or fails, the
+  second boot and diff are skipped entirely.
+
+Both hooks can be suppressed per-invocation: `--no-provision`,
+`--no-inventory`.
 
 After resealing:
 - Project VMs in shared read-only mode pick up changes on next boot automatically
@@ -640,6 +665,17 @@ ${XDG_CACHE_HOME:-~/.cache}/virtdev/
   profile/              assembled ISO profile (cleared on each build)
 
 ${XDG_CONFIG_HOME:-~/.config}/virtdev/
+  maintenance/
+    provision           optional bash script run by virtdev-maintain
+                        after SSH is up (before the interactive session).
+                        Sets up dotfiles, tools, etc. for the sealed base.
+                        Non-fatal; suppressible with --no-provision.
+    inventory           optional bash script run by virtdev-maintain
+                        to capture diffable system state (e.g., pacman -Q).
+                        Executed twice: before the interactive session and
+                        via a second boot after poweroff. The diff is shown
+                        before the reseal prompt. Non-fatal; suppressible
+                        with --no-inventory.
   projects/
     <name>/
       manifest       user-curated manifest, dotfile-friendly fallback;
@@ -647,7 +683,7 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
                         manifest is absent. Survives virtdev-nuke.
       provision         optional bash script run by virtdev-recreate
                         between start/wait and restore via
-                        `virtdev-ssh <name> bash -s < provision`.
+                        `virtdev-ssh <name> -- bash -s < provision`.
                         XDG-only (project-local would be wiped by
                         destroy before provision runs). Survives
                         virtdev-nuke. Overridable per-invocation
@@ -704,10 +740,9 @@ there is no silent shadowing when both files exist.
   `virtdev-detach` operates in two modes: in-place rebase (fast, uses
   `qemu-img rebase -b ""`) and convert-then-swap (default, produces a
   clean standalone image via `qemu-img convert`). The convert-then-swap
-  mode has signal-trap protection and auto-recovery matching
-  `virtdev-maintain`'s pattern: signals are blocked during the critical
-  rename sequence, and `.bak` files left by an interrupted swap are
-  detected and rolled back on the next invocation.
+  mode has signal-trap protection and auto-recovery: signals are blocked
+  during the critical rename sequence, and `.bak` files left by an
+  interrupted swap are detected and rolled back on the next invocation.
 
 - **Read-only root setup in base image.** The `systemd.volatile=state` kernel
   parameter is the intended mechanism. The base image configuration for this

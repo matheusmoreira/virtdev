@@ -129,9 +129,17 @@ Update the sealed base (system packages, dotfiles, etc.):
 
 ```bash
 virtdev maintain                  # copies base to staging, boots writable VM
+virtdev ssh maintenance           # connect from another terminal
 # ... perform maintenance inside the VM ...
 sudo poweroff                     # triggers reseal prompt
 ```
+
+Optional hooks in `~/.config/virtdev/maintenance/`:
+
+- **`provision`** — runs inside the guest after SSH is up (dotfiles, tools)
+- **`inventory`** — captures system state before and after; diff shown before reseal
+
+Flags: `--yes`/`-y`, `--no-provision`, `--no-inventory`.
 
 After resealing, existing project VMs refuse to boot (generation mismatch).
 Recreate them:
@@ -179,7 +187,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-iso` | Build the Arch Linux installation ISO |
 | `virtdev-install [iso]` | Install base system to qcow2 disks |
 | `virtdev-seal` | Seal installation as read-only base |
-| `virtdev-maintain` | Boot sealed base for maintenance, reseal on exit |
+| `virtdev-maintain [flags]` | Boot sealed base for maintenance, reseal on exit |
 
 ### Project lifecycle
 
@@ -325,9 +333,13 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
   virtdev.iso                       built ISO
   work/, profile/                   mkarchiso artifacts
 
-~/.config/virtdev/projects/<name>/
-  manifest                       canonical backup manifest (survives nuke)
-  provision                         auto-run by virtdev-recreate
+~/.config/virtdev/
+  maintenance/
+    provision                       auto-run by virtdev-maintain (dotfiles, tools)
+    inventory                       before/after diff by virtdev-maintain
+  projects/<name>/
+    manifest                       canonical backup manifest (survives nuke)
+    provision                         auto-run by virtdev-recreate
 ```
 
 ## License
