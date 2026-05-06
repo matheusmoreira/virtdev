@@ -14,16 +14,28 @@
 #   1. Copy system/ to maintenance/
 #   2. Make maintenance/ images writable
 #   3. Start the maintenance virtual machine as a systemd user service on port 2222
-#   4. Connect via SSH once the virtual machine is ready: virtdev-ssh maintenance
-#   5. Perform maintenance inside the virtual machine
-#      5.1. Update system
-#      5.2. Configure system
-#      5.3. Seed dotfiles
-#   6. Power off, not reboot: sudo poweroff
-#   7. On clean exit
-#      7.1. Integrity check
-#      7.2. Confirm reseal
-#           7.2.1 Atomically exchange system/ and maintenance/
+#   4. Run provision script if present (non-fatal)
+#   5. Take inventory if present (for before/after diff)
+#   6. Connect via SSH once the virtual machine is ready: virtdev-ssh maintenance
+#   7. Perform maintenance inside the virtual machine
+#   8. Power off, not reboot: sudo poweroff
+#   9. On clean exit
+#      9.1. Boot again and take inventory (if step 5 succeeded)
+#      9.2. Show diff of before/after inventory
+#      9.3. Integrity check
+#      9.4. Confirm reseal
+#           9.4.1 Atomically exchange system/ and maintenance/
+#
+# Hooks (optional, in ${XDG_CONFIG_HOME}/virtdev/maintenance/):
+#
+#   provision    Runs inside the guest after SSH is up. Sets up dotfiles,
+#                tools, and other environment configuration. Non-fatal.
+#
+#   inventory    Runs inside the guest to capture diffable system state
+#                (e.g., pacman -Q, file trees). Executed twice: once
+#                before the interactive session and once via a second
+#                boot after the user powers off. The diff is shown
+#                before the reseal prompt. Non-fatal; skipped if absent.
 #
 # If the virtual machine does not exit cleanly,
 # as signaled by a non-zero systemd unit exit status
@@ -81,8 +93,12 @@ import error lock arguments ssh project confirm terminal
 readonly maintenance_port=2222
 readonly unit=virtdev-maintenance
 
+# shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
+
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
+
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([yes]=bool)
+declare -A spec=([yes]=bool [no-provision]=bool [no-inventory]=bool)
 # shellcheck disable=SC2034
 declare -A spec_short=([y]=yes)
 declare -A flags=()
@@ -94,6 +110,110 @@ if [[ $# -ne 0 ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
 
+# ── Hook resolution ─────────────────────────────────────────────────
+
+maintenance_config="${XDG_CONFIG_HOME}/virtdev/maintenance"
+provision_path=""
+inventory_path=""
+
+if (( ! flags[no-provision] )); then
+  if [[ -f "${maintenance_config}/provision" && -r "${maintenance_config}/provision" ]]; then
+    provision_path="${maintenance_config}/provision"
+  fi
+fi
+
+if (( ! flags[no-inventory] )); then
+  if [[ -f "${maintenance_config}/inventory" && -r "${maintenance_config}/inventory" ]]; then
+    inventory_path="${maintenance_config}/inventory"
+  fi
+fi
+
+# ── Functions ───────────────────────────────────────────────────────
+
+maintenance_boot() {
+  mkdir -p "${maintenance_project}"
+  printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
+  rm -f "${monitor_sock}" "${console_sock}"
+  systemctl --user reset-failed "${unit}" 2>/dev/null || true
+
+  systemd-run \
+      --user \
+      --unit="${unit}" \
+      --description='virtdev base system maintenance virtual machine' \
+      -- \
+      qemu-system-x86_64 \
+          -enable-kvm \
+          -cpu host \
+          -machine q35 \
+          -m "${VIRTDEV_VM_MEMORY}" \
+          -smp "${VIRTDEV_VM_CPUS}" \
+          -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+          -drive if=pflash,format=raw,file="${nvram}" \
+          -drive file="${system_disk}",if=virtio,format=qcow2 \
+          -drive file="${home_disk}",if=virtio,format=qcow2 \
+          -netdev user,id=net0,hostfwd=tcp:127.0.0.1:"${maintenance_port}"-:22 \
+          -device virtio-net-pci,netdev=net0 \
+          -device virtio-rng-pci \
+          -display none \
+          -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
+          -monitor chardev:monitor \
+          -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
+          -serial chardev:serial \
+          -fw_cfg name=opt/virtdev/project,string=maintenance
+}
+
+maintenance_wait_ssh() {
+  local deadline
+  deadline=$(( SECONDS + VIRTDEV_WAIT_TIMEOUT ))
+  while (( SECONDS < deadline )); do
+    local unit_state
+    unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
+    case "${unit_state}" in
+      active|activating) ;;
+      *) return 1 ;;
+    esac
+    if ssh \
+        -i "${VIRTDEV_SSH_KEY}" \
+        -p "${maintenance_port}" \
+        -o BatchMode=yes \
+        -o ConnectTimeout=3 \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR \
+        dev@127.0.0.1 \
+        true 2>/dev/null
+    then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+maintenance_wait_exit() {
+  while true; do
+    local unit_state
+    unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
+    case "${unit_state}" in
+      active|activating) sleep 2 ;;
+      *) break ;;
+    esac
+  done
+}
+
+maintenance_cleanup() {
+  systemctl --user reset-failed "${unit}" 2>/dev/null || true
+  rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
+  rmdir "${maintenance_project}" 2>/dev/null || true
+}
+
+maintenance_ssh() {
+  # shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
+  "${virtdev_bin_directory}/virtdev-ssh" maintenance "$@"
+}
+
+# ── Pre-flight checks ──────────────────────────────────────────────
+
 # Held for the entire maintenance session, which may last hours while
 # the user runs pacman -Syu or other long operations inside the guest.
 lock_acquire_for_maintain
@@ -103,7 +223,7 @@ maintenance_directory="${VIRTDEV_HOME}/maintenance"
 maintenance_project="${VIRTDEV_HOME}/projects/maintenance"
 
 if ! command -v virtdev-exchange >/dev/null 2>&1; then
-  error 16 <<<"virtdev-exchange not found on PATH. Run 'make' to compile it."
+  error 17 <<<"virtdev-exchange not found on PATH. Run 'make' to compile it."
 fi
 
 if [[ ! -d "${system_directory}" ]]; then
@@ -196,95 +316,25 @@ cp --reflink=auto "${system_directory}/nvram"        "${nvram}"
 printf >&2 'Making maintenance images writable...\n'
 chmod 644 "${system_disk}" "${home_disk}" "${nvram}"
 
-# Register maintenance as a virtual project so virtdev-ssh and virtdev-stop work.
-mkdir -p "${maintenance_project}"
-printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
-
 monitor_sock="${maintenance_project}/monitor.sock"
 console_sock="${maintenance_project}/console.sock"
-rm -f "${monitor_sock}" "${console_sock}"
 
-# Clear residual failed state from a prior session. Mirrors the same
-# guard in virtdev-start: without --collect (which we also omit so
-# the post-exit ExecMainStatus query below stays queryable), a unit
-# that exited with error persists as 'failed' in systemd's state
-# until explicitly reset. A SIGKILL of a previous virtdev-maintain
-# between its unit's failure and its own cleanup path can leave that
-# residue; the systemd-run below would then refuse with
-# name-already-in-use.
-systemctl --user reset-failed "${unit}" 2>/dev/null || true
+# ── Boot 1: interactive maintenance session ─────────────────────────
 
-printf >&2 'Starting maintenance VM (virtdev-maintenance)...\n'
+printf >&2 'Starting maintenance virtual machine...\n'
+maintenance_boot
 
-systemd-run \
-    --user \
-    --unit="${unit}" \
-    --description='virtdev base system maintenance virtual machine' \
-    -- \
-    qemu-system-x86_64 \
-        -enable-kvm \
-        -cpu host \
-        -machine q35 \
-        -m "${VIRTDEV_VM_MEMORY}" \
-        -smp "${VIRTDEV_VM_CPUS}" \
-        -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
-        -drive if=pflash,format=raw,file="${nvram}" \
-        -drive file="${system_disk}",if=virtio,format=qcow2 \
-        -drive file="${home_disk}",if=virtio,format=qcow2 \
-        -netdev user,id=net0,hostfwd=tcp:127.0.0.1:"${maintenance_port}"-:22 \
-        -device virtio-net-pci,netdev=net0 \
-        -device virtio-rng-pci \
-        -display none \
-        -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
-        -monitor chardev:monitor \
-        -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
-        -serial chardev:serial \
-        -fw_cfg name=opt/virtdev/project,string=maintenance
-
-# Poll until SSH is up or the unit exits early.
 printf >&2 'Waiting for SSH on port %d with timeout %ds...' \
        "${maintenance_port}" "${VIRTDEV_WAIT_TIMEOUT}"
 
-ssh_up=0
-deadline=$(( SECONDS + VIRTDEV_WAIT_TIMEOUT ))
-
-while (( SECONDS < deadline )); do
-  unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
-  case "${unit_state}" in
-    active|activating) ;;
-    *) break ;;   # Unit exited before SSH came up
-  esac
-  if ssh \
-      -i "${VIRTDEV_SSH_KEY}" \
-      -p "${maintenance_port}" \
-      -o BatchMode=yes \
-      -o ConnectTimeout=3 \
-      -o StrictHostKeyChecking=no \
-      -o UserKnownHostsFile=/dev/null \
-      -o LogLevel=ERROR \
-      dev@127.0.0.1 \
-      true 2>/dev/null
-  then
-    ssh_up=1
-    break
-  fi
-  printf >&2 '.'
-  sleep 2
-done
-
-if [[ "${ssh_up}" -eq 0 ]]; then
+if ! maintenance_wait_ssh; then
   printf >&2 ' failed.\n'
 
-  # Distinguish a port-bind race from a generic boot failure. The
-  # pre-flight ss check above is a TOCTOU: another process can bind
-  # port 2222 between our check and QEMU's bind(). If the port is
-  # now in use and the unit already exited, the cause is almost
-  # certainly the port collision, not a guest boot problem.
+  # Distinguish a port-bind race from a generic boot failure.
+  unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
   if [[ "${unit_state}" != active && "${unit_state}" != activating ]] \
      && [[ -n "$(ss -tlnH "sport = :${maintenance_port}" 2>/dev/null)" ]]; then
-    systemctl --user reset-failed "${unit}" 2>/dev/null || true
-    rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
-    rmdir "${maintenance_project}" 2>/dev/null || true
+    maintenance_cleanup
     error 16 <<MESSAGE
 Port ${maintenance_port} is bound by another process.
 Between virtdev-maintain's pre-flight port check and QEMU's bind()
@@ -297,29 +347,17 @@ MESSAGE
 
   systemctl --user stop "${unit}" 2>/dev/null || true
 
-  # Wait for the unit to actually leave active state before tearing
-  # down its sockets and project directory. Without this wait, QEMU
-  # may still hold the maintenance disk images and the deleted
-  # socket inodes open while the host has already removed the path
-  # entries — a subsequent manual 'rm -rf maintenance/' would not
-  # free the blocks until QEMU exits, and 'virtdev-list' shows an
-  # inconsistent view in the interim. Best-effort: if the unit does
-  # not stop within VIRTDEV_STOP_TIMEOUT, proceed with cleanup
-  # anyway. The next virtdev-maintain pre-flight will refuse to
-  # start because an active unit exists, surfacing the stuck state.
   stop_deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
   while systemctl --user --quiet is-active "${unit}" 2>/dev/null; do
     if (( SECONDS >= stop_deadline )); then
-      printf >&2 'warning: %s did not stop within %ds; cleanup may leak open file descriptors\n' \
+      printf >&2 'warning: %s did not stop within %ds\n' \
                  "${unit}" "${VIRTDEV_STOP_TIMEOUT}"
       break
     fi
     sleep 1
   done
 
-  systemctl --user reset-failed "${unit}" 2>/dev/null || true
-  rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
-  rmdir "${maintenance_project}" 2>/dev/null || true
+  maintenance_cleanup
   error 10 <<MESSAGE
 SSH did not become available within ${VIRTDEV_WAIT_TIMEOUT}s.
 The sealed base images are intact: '${system_directory}'
@@ -328,8 +366,33 @@ Remove manually to retry: rm -rf '${maintenance_directory}'
 MESSAGE
 fi
 
-printf >&2 ' up.\n\n'
-printf >&2 'Connect to the maintenance virtual machine:\n\n'
+printf >&2 ' up.\n'
+
+# ── Provision ───────────────────────────────────────────────────────
+
+if [[ -n "${provision_path}" ]]; then
+  printf >&2 '\nRunning provision script: %s\n' "${provision_path}"
+  if ! maintenance_ssh -- bash -s < "${provision_path}"; then
+    printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: provision script failed (non-zero exit)' reset)"
+  fi
+fi
+
+# ── Inventory (before) ──────────────────────────────────────────────
+
+inventory_before=""
+if [[ -n "${inventory_path}" ]]; then
+  inventory_before="$(mktemp)"
+  printf >&2 'Taking inventory (before)...\n'
+  if ! maintenance_ssh -- bash -s < "${inventory_path}" > "${inventory_before}"; then
+    printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: inventory script failed, skipping diff' reset)"
+    rm -f "${inventory_before}"
+    inventory_before=""
+  fi
+fi
+
+# ── Interactive session ─────────────────────────────────────────────
+
+printf >&2 '\nConnect to the maintenance virtual machine:\n\n'
 printf >&2 '\tvirtdev-ssh maintenance\n\n'
 printf >&2 'When done, power off to trigger resealing:\n\n'
 printf >&2 '\tsudo poweroff\n\n'
@@ -337,31 +400,14 @@ printf >&2 'Waiting for virtual machine to exit...\n'
 printf >&2 'To abort:\n\n'
 printf >&2 '\tvirtdev-stop maintenance\n\n'
 
-# Wait for the unit to leave active/activating state.
-while true; do
-  unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
-  case "${unit_state}" in
-    active|activating) sleep 2 ;;
-    *) break ;;
-  esac
-done
+maintenance_wait_exit
 
 # Capture exit status before reset-failed removes it.
-#
-# systemctl show returns empty — not non-zero — when the property is
-# unset, for instance because something else already reset-failed the
-# unit in the narrow window between our wait loop observing the exit
-# and this capture. The || echo 1 fallback only triggers on non-zero
-# exit and does not catch that path. Fall back to a sentinel on empty
-# and compare as a string below: the arithmetic '-ne 0' test coerces
-# empty to 0 and would misclassify that path as a clean shutdown.
 qemu_exit="$(systemctl --user show "${unit}" \
     --property=ExecMainStatus --value 2>/dev/null || echo 1)"
 qemu_exit="${qemu_exit:-unknown}"
 
-systemctl --user reset-failed "${unit}" 2>/dev/null || true
-rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
-rmdir "${maintenance_project}" 2>/dev/null || true
+maintenance_cleanup
 
 printf >&2 '\n'
 
@@ -440,6 +486,53 @@ esac
 # foreground shell inside the guest. Require explicit user
 # confirmation before overwriting the sealed base system.
 printf >&2 '%s\n' "$(terminal_write fg=green 'Virtual machine exited cleanly.' reset)"
+
+# ── Boot 2: inventory capture ──────────────────────────────────────
+
+if [[ -n "${inventory_before}" ]]; then
+  printf >&2 '\nBooting for inventory capture...\n'
+
+  inventory_after="$(mktemp)"
+  do_diff=0
+
+  if maintenance_boot; then
+    printf >&2 'Waiting for SSH...'
+    if maintenance_wait_ssh; then
+      printf >&2 ' up.\n'
+      printf >&2 'Taking inventory (after)...\n'
+      if maintenance_ssh bash -s < "${inventory_path}" > "${inventory_after}"; then
+        do_diff=1
+      else
+        printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: inventory capture failed' reset)"
+      fi
+      maintenance_ssh -- sudo poweroff 2>/dev/null || true
+    else
+      printf >&2 ' failed.\n'
+      printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: SSH did not come up, skipping inventory' reset)"
+      systemctl --user stop "${unit}" 2>/dev/null || true
+    fi
+    maintenance_wait_exit
+    maintenance_cleanup
+  else
+    printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: second boot failed, skipping inventory' reset)"
+    maintenance_cleanup
+  fi
+
+  if (( do_diff )); then
+    printf >&2 '\n%s\n\n' "$(terminal_write bold 'Changes:' reset)"
+    diff_color=auto
+    # shellcheck disable=SC2154  # _virtdev_color_mode set by arguments library
+    case "${_virtdev_color_mode}" in
+      yes) diff_color=always ;;
+      no)  diff_color=never ;;
+    esac
+    diff -u --label before --label after --color="${diff_color}" \
+      "${inventory_before}" "${inventory_after}" >&2 || true
+  fi
+
+  rm -f "${inventory_before}" "${inventory_after}"
+fi
+
 if (( ! flags[yes] )); then
   if ! confirm_proceed 'Reseal the base system? [y/N] '; then
     error 12 <<MESSAGE
