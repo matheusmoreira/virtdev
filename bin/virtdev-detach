@@ -41,9 +41,11 @@
 #   5   already detached
 #   6   disk has no backing file
 #   8   user aborted at confirmation prompt
-#   10  convert/rebase failed for system disk
-#   11  convert/rebase failed for home disk
-#   12  verification failed
+#   10  rebase failed for system disk (--in-place)
+#   11  rebase failed for home disk (--in-place)
+#   12  verification failed (--in-place)
+#   13  convert failed for system disk
+#   14  convert failed for home disk
 #
 # Configuration via environment variables:
 #
@@ -192,8 +194,6 @@ if ! has_backing "${home_disk}"; then
   error 6 <<<"Home disk has no backing file: ${home_disk}"
 fi
 
-current_generation="$(< "${generation_file}")"
-
 if (( flags[in-place] )); then
   # ── In-place mode (rebase) ──────────────────────────────────────
 
@@ -248,7 +248,7 @@ else
 
   printf >&2 'Converting system disk...\n'
   if ! qemu-img convert -O qcow2 "${system_disk}" "${system_detach}"; then
-    error 10 <<MESSAGE
+    error 13 <<MESSAGE
 Convert failed for system disk: ${system_disk}
 Project is unchanged. Check disk space and retry.
 MESSAGE
@@ -256,7 +256,7 @@ MESSAGE
 
   printf >&2 'Converting home disk...\n'
   if ! qemu-img convert -O qcow2 "${home_disk}" "${home_detach}"; then
-    error 11 <<MESSAGE
+    error 14 <<MESSAGE
 Convert failed for home disk: ${home_disk}
 Project is unchanged. Check disk space and retry.
 MESSAGE
