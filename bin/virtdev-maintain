@@ -444,6 +444,7 @@ case "${qemu_exit}" in
     : # Clean guest poweroff. Fall through to the reseal prompt below.
     ;;
   143)
+    [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
     error 11 <<MESSAGE
 Maintenance virtual machine exited abnormally.
 Unit exit status: 143 (SIGTERM).
@@ -475,6 +476,7 @@ proper guest-level shutdown and QEMU will then exit 0.
 MESSAGE
     ;;
   *)
+    [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
     error 18 <<MESSAGE
 Maintenance virtual machine exited abnormally.
 Unit exit status: ${qemu_exit}
