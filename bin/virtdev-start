@@ -304,7 +304,7 @@ while true; do
       # this does not false-positive on QEMU's own brief lifetime.)
       if port_in_use "${port}"; then
         if (( explicit_port )); then
-          error 8 <<MESSAGE
+          error 17 <<MESSAGE
 Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
 Between virtdev-start's pre-flight port check and qemu's bind() call,
 a non-virtdev process took the port. The explicit port cannot be
@@ -314,7 +314,7 @@ Retry with a different port, or omit the port arg to auto-assign:
     virtdev-start ${project}
 MESSAGE
         else
-          error 8 <<MESSAGE
+          error 17 <<MESSAGE
 Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
 Auto-assignment selected this port, but a non-virtdev process took
 it between the port check and qemu's bind() call. Retry —
