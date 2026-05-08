@@ -42,8 +42,7 @@ lock_open_and_flock() {
   mkdir -p "${VIRTDEV_HOME}"
   exec 9>>"${lock_file}"
   if flock -n 9; then
-    : > "${lock_file}"
-    printf '%d\n' "$$" >&9
+    printf '%d\n' "$$" > "${lock_file}"
     return 0
   fi
   return 1
