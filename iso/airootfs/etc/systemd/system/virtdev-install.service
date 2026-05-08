@@ -1,0 +1,16 @@
+[Unit]
+Description=virtdev automatic installer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/virtdev/install.sh
+ExecStartPost=/usr/bin/systemctl poweroff
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=virtdev-install
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

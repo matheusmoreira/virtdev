@@ -11,14 +11,6 @@
 #   VIRTDEV_HOME           Base directory for virtdev data.
 #                          Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #
-#   VIRTDEV_SSH_KEY        Path to the ed25519 private key whose public half
-#                          is injected into the ISO as the authorized key for dev.
-#                          Default: ${VIRTDEV_HOME}/ssh/id
-#                          Run virtdev-key to generate it.
-#
-#   VIRTDEV_TIMEZONE       Timezone for the installed system.
-#                          Default: UTC
-#
 #   VIRTDEV_ISO_PROFILE    Path to the virtdev ISO profile directory.
 #                          Detected automatically; set to override.
 #
@@ -31,8 +23,6 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 import error arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
-: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
-: "${VIRTDEV_TIMEZONE:="UTC"}"
 
 # shellcheck disable=SC2034  # spec read via nameref
 declare -A spec=()
@@ -69,24 +59,11 @@ if ! command -v mkarchiso &>/dev/null; then
   error 4 <<<'mkarchiso not found, install archiso'
 fi
 
-if ! command -v jq &>/dev/null; then
-  error 5 <<<'jq not found, install jq'
-fi
-
-if [[ ! -f "${VIRTDEV_SSH_KEY}.pub" ]]; then
-  error 6 <<MESSAGE
-SSH public key not found: '${VIRTDEV_SSH_KEY}.pub'
-Generate it with virtdev-key.
-MESSAGE
-fi
-
 profile=/usr/share/archiso/configs/releng
 
 if [[ ! -d "${profile}" ]]; then
-  error 7 <<<"archiso releng profile not found: '${profile}'"
+  error 5 <<<"archiso releng profile not found: '${profile}'"
 fi
-
-public_key="$(< "${VIRTDEV_SSH_KEY}.pub")"
 
 build_directory="${XDG_CACHE_HOME:-${HOME}/.cache}"/virtdev
 output_directory="${build_directory}"
@@ -140,17 +117,8 @@ rm -rf "${profile_directory}/grub" \
 printf >&2 'Overlaying ISO configuration files...\n'
 cp -r "${iso_profile}/." "${profile_directory}/"
 
-printf >&2 'Injecting SSH public key and timezone...\n'
-config_json="${profile_directory}/airootfs/root/archinstall/config.json"
-jq --arg key      "${public_key}"      \
-   --arg timezone "${VIRTDEV_TIMEZONE}" \
-   '.users[0].ssh_authorized_keys = [$key] | .timezone = $timezone' \
-   "${config_json}" > "${config_json}.tmp"
-mv "${config_json}.tmp" "${config_json}"
-
 printf >&2 'Creating Arch Linux installation media...\n'
 sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_directory}"
-
 
 mapfile -t built_isos < <(find "${output_directory}" -maxdepth 1 -name '*-x86_64.iso')
 

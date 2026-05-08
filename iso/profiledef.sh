@@ -25,7 +25,5 @@ file_permissions=(
 )
 
 file_permissions+=(
-  ["/root/archinstall/install.sh"]="0:0:755"
-  ["/root/archinstall/config.json"]="0:0:600"
-  ["/root/archinstall/creds.json"]="0:0:600"
+  ["/root/virtdev/install.sh"]="0:0:755"
 )

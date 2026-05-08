@@ -18,6 +18,8 @@
 #
 #   VIRTDEV_HOME              Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #   VIRTDEV_ISO               Default: ${XDG_CACHE_HOME:-~/.cache}/virtdev/virtdev.iso
+#   VIRTDEV_SSH_KEY           Default: ${VIRTDEV_HOME}/ssh/id
+#   VIRTDEV_TIMEZONE          Default: host timezone (UTC fallback)
 #   VIRTDEV_SYSTEM_DISK_SIZE  Default: 24G
 #   VIRTDEV_HOME_DISK_SIZE    Default: 48G
 #   VIRTDEV_VM_MEMORY         Default: 4096
@@ -31,10 +33,15 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments terminal
+import error lock arguments terminal ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_ISO:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev/virtdev.iso"}"
+: "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+
+host_timezone="$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')"
+: "${VIRTDEV_TIMEZONE:="${host_timezone:-UTC}"}"
+
 : "${VIRTDEV_SYSTEM_DISK_SIZE:=24G}"
 : "${VIRTDEV_HOME_DISK_SIZE:=48G}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -61,6 +68,14 @@ if [[ $# -eq 1 ]]; then
 fi
 
 lock_acquire
+
+ssh_key_validate "${VIRTDEV_SSH_KEY}"
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}.pub" ]]; then
+  error 8 <<<"SSH public key not found: '${VIRTDEV_SSH_KEY}.pub'"
+fi
+
+ssh_public_key="$(< "${VIRTDEV_SSH_KEY}.pub")"
 
 if [[ ! -f "${VIRTDEV_ISO}" ]]; then
   error 3 <<<"ISO not found: '${VIRTDEV_ISO}'"
@@ -97,7 +112,7 @@ mkdir -p "${installation_directory}"
 # Any failure or interruption between here and the final success marker
 # removes the partial installation directory so the user can retry
 # virtdev-install without having to rm -rf by hand. QEMU returns 0 only
-# on successful guest poweroff (archinstall-auto.service runs
+# on successful guest poweroff (virtdev-install.service runs
 # 'systemctl poweroff' on success); any other exit path indicates an
 # incomplete install.
 install_succeeded=0
@@ -141,7 +156,9 @@ qemu-system-x86_64 \
     -device virtio-rng-pci \
     -display none \
     -serial stdio \
-    -monitor none
+    -monitor none \
+    -fw_cfg name=opt/virtdev/ssh_key,string="${ssh_public_key}" \
+    -fw_cfg name=opt/virtdev/timezone,string="${VIRTDEV_TIMEZONE}"
 
 install_succeeded=1
 
