@@ -29,7 +29,7 @@ set -euo pipefail
 
 virtdev_library_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck disable=SC2034  # used by consumers (virtdev-recreate, virtdev-upgrade)
-virtdev_bin_directory="${virtdev_library_directory}/../../bin"
+virtdev_bin_directory="$(readlink -f "${virtdev_library_directory}/../../bin")"
 
 declare -A virtdev_loaded_libraries=([import]=1)
 
