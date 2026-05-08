@@ -230,7 +230,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 
 | Command | Description |
 |---------|-------------|
-| `virtdev-backup [--list] [--verbose] <project>` | Snapshot guest paths to host |
+| `virtdev-backup [--list] [--latest] [--verbose] <project>` | Snapshot guest paths to host |
 | `virtdev-restore [--verbose] <project> [snapshot]` | Restore a snapshot into a running VM |
 
 ## Configuration

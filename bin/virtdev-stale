@@ -18,6 +18,8 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
 import error arguments project
 
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=()
 # shellcheck disable=SC2034

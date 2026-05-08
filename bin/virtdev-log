@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# virtdev-logs [--follow] <project>
+# virtdev-log [--follow] <project>
 #
 # Shows journal output for a project virtual machine's systemd unit.
 # Shorthand for journalctl --user -u virtdev-<project>.
