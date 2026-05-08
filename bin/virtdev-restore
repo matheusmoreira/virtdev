@@ -185,11 +185,11 @@ The project's audit trail is incomplete; refusing to proceed.
 MESSAGE
 fi
 project_generation="$(< "${project_generation_file}")"
-if ! [[ "${project_generation}" =~ ^[0-9]+$ ]]; then
+if ! [[ "${project_generation}" =~ ^([0-9]+|detached)$ ]]; then
   error 20 <<MESSAGE
 Corrupted project generation file: '${project_generation_file}'
 Contents: '${project_generation}'
-Repair manually: the file must contain a single non-negative integer.
+Valid contents: a single non-negative integer, or 'detached'.
 MESSAGE
 fi
 
