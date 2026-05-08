@@ -261,7 +261,7 @@ wait_ssh() {
 }
 
 provision() {
-  "${virtdev_bin_directory}/virtdev-ssh" "${project}" bash -s < "${provision_path}"
+  "${virtdev_bin_directory}/virtdev-ssh" "${project}" -- bash -s < "${provision_path}"
 }
 
 restore() {
