@@ -222,8 +222,9 @@ system_directory="${VIRTDEV_HOME}/system"
 maintenance_directory="${VIRTDEV_HOME}/maintenance"
 maintenance_project="${VIRTDEV_HOME}/projects/maintenance"
 
-if ! command -v virtdev-exchange >/dev/null 2>&1; then
-  error 17 <<<"virtdev-exchange not found on PATH. Run 'make' to compile it."
+# shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
+if [[ ! -x "${virtdev_bin_directory}/virtdev-exchange" ]]; then
+  error 17 <<<"virtdev-exchange not found: '${virtdev_bin_directory}/virtdev-exchange'. Run 'make' to compile it."
 fi
 
 if [[ ! -d "${system_directory}" ]]; then
@@ -297,6 +298,12 @@ fi
 
 mkdir -p "${maintenance_directory}"
 
+staging_ready=0
+cleanup_partial_staging() {
+  (( staging_ready )) || rm -rf "${maintenance_directory}"
+}
+trap cleanup_partial_staging EXIT
+
 system_disk="${maintenance_directory}/system.qcow2"
 home_disk="${maintenance_directory}/home.qcow2"
 nvram="${maintenance_directory}/nvram"
@@ -315,6 +322,9 @@ cp --reflink=auto "${system_directory}/nvram"        "${nvram}"
 
 printf >&2 'Making maintenance images writable...\n'
 chmod 644 "${system_disk}" "${home_disk}" "${nvram}"
+
+staging_ready=1
+trap - EXIT
 
 monitor_sock="${maintenance_project}/monitor.sock"
 console_sock="${maintenance_project}/console.sock"
@@ -500,7 +510,7 @@ if [[ -n "${inventory_before}" ]]; then
     if maintenance_wait_ssh; then
       printf >&2 ' up.\n'
       printf >&2 'Taking inventory (after)...\n'
-      if maintenance_ssh bash -s < "${inventory_path}" > "${inventory_after}"; then
+      if maintenance_ssh -- bash -s < "${inventory_path}" > "${inventory_after}"; then
         do_diff=1
       else
         printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: inventory capture failed' reset)"
@@ -512,6 +522,13 @@ if [[ -n "${inventory_before}" ]]; then
       systemctl --user stop "${unit}" 2>/dev/null || true
     fi
     maintenance_wait_exit
+    boot2_exit="$(systemctl --user show "${unit}" \
+        --property=ExecMainStatus --value 2>/dev/null || echo 1)"
+    boot2_exit="${boot2_exit:-1}"
+    if [[ "${boot2_exit}" != "0" ]]; then
+      printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: inventory boot exited ${boot2_exit}, discarding diff" reset)"
+      do_diff=0
+    fi
     maintenance_cleanup
   else
     printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: second boot failed, skipping inventory' reset)"
@@ -559,7 +576,7 @@ if [[ ! -f "${system_directory}/generation" ]]; then
 fi
 old_generation="$(< "${system_directory}/generation")"
 if ! [[ "${old_generation}" =~ ^[0-9]+$ ]]; then
-  error 15 <<MESSAGE
+  error 19 <<MESSAGE
 Corrupted base generation file: '${system_directory}/generation'
 Contents: '${old_generation}'
 Repair manually: the file must contain a single non-negative integer.
@@ -585,7 +602,7 @@ fi
 # After the post-exchange steps complete, maintenance/ (which now
 # holds the previous base) is removed as best-effort cleanup.
 printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
-virtdev-exchange "${system_directory}" "${maintenance_directory}"
+"${virtdev_bin_directory}/virtdev-exchange" "${system_directory}" "${maintenance_directory}"
 
 printf >&2 'Incrementing generation counter (%d → %d)...\n' \
        "${old_generation}" "$(( old_generation + 1 ))"
