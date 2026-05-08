@@ -52,9 +52,10 @@ disk_info() {
     printf >&2 '%s: not found\n' "${label}"
     return
   fi
-  local actual virtual backing
+  local actual virtual backing info_json
   actual="$(du -sh "${path}" 2>/dev/null | cut -f1)"
-  virtual="$(qemu-img info --output=json "${path}" 2>/dev/null \
+  info_json="$(qemu-img info --output=json "${path}" 2>/dev/null || true)"
+  virtual="$(printf '%s' "${info_json}" \
     | grep -o '"virtual-size": [0-9]*' \
     | grep -o '[0-9]*')"
   if [[ -n "${virtual}" ]]; then
@@ -63,8 +64,8 @@ disk_info() {
     virtual="?"
   fi
   backing=""
-  if qemu-img info --output=json "${path}" 2>/dev/null | grep -q '"backing-filename"'; then
-    backing="$(qemu-img info --output=json "${path}" 2>/dev/null \
+  if printf '%s' "${info_json}" | grep -q '"backing-filename"'; then
+    backing="$(printf '%s' "${info_json}" \
       | grep -o '"backing-filename": "[^"]*"' \
       | sed 's/.*": "//;s/"$//')"
     backing=" (backing: $(basename "${backing}"))"
@@ -72,17 +73,17 @@ disk_info() {
   printf '  %-8s %6s / %-10s %s%s\n' "${label}" "${actual}" "${virtual}" "$(basename "${path}")" "${backing}"
 }
 
-printf >&2 '%s\n' "$(terminal_write bold "${project}" reset)"
+printf '%s\n' "$(terminal_write bold "${project}" reset)"
 
 if project_is_detached "${project}"; then
-  printf >&2 '  mode: detached (standalone)\n'
+  printf '  mode: detached (standalone)\n'
 else
-  printf >&2 '  mode: delta\n'
+  printf '  mode: delta\n'
 fi
 
-printf >&2 '\n'
+printf '\n'
 disk_info "${system_disk}" "system"
 disk_info "${home_disk}" "home"
 
 total="$(du -sh "${project_directory}" 2>/dev/null | cut -f1)"
-printf >&2 '\n  total: %s\n' "${total}"
+printf '\n  total: %s\n' "${total}"
