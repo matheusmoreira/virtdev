@@ -74,7 +74,7 @@ if [[ ! -f "${system_directory}/generation" ]]; then
 fi
 base_generation="$(< "${system_directory}/generation")"
 if ! [[ "${base_generation}" =~ ^[0-9]+$ ]]; then
-  error 7 <<MESSAGE
+  error 8 <<MESSAGE
 Corrupted base generation file: '${system_directory}/generation'
 Contents: '${base_generation}'
 Repair manually: the file must contain a single non-negative integer.

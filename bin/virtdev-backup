@@ -294,7 +294,7 @@ if [[ ! -f "${generation_file}" ]]; then
 fi
 base_generation="$(< "${generation_file}")"
 if ! [[ "${base_generation}" =~ ^[0-9]+$ ]]; then
-  error 12 <<MESSAGE
+  error 14 <<MESSAGE
 Corrupted base generation file: '${generation_file}'
 Contents: '${base_generation}'
 Repair manually: the file must contain a single non-negative integer.

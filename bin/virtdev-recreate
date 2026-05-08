@@ -126,7 +126,7 @@ MESSAGE
 
   manifest_path="$(manifest_resolve "${project}")"
   if ! manifest_has_entries "${manifest_path}"; then
-    error 5 <<MESSAGE
+    error 8 <<MESSAGE
 Backup manifest is empty (no non-blank, non-comment lines):
     ${manifest_path}
 Add at least one path. Or skip the backup with:
