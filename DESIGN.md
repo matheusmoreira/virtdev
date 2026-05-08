@@ -67,10 +67,7 @@ project VM without modifying fstab.
 
 - Bootloader: systemd-boot
 - Boot entry is written to XBOOTLDR (`/boot/loader/entries/arch.conf`)
-- archinstall generates entries assuming kernel lives on ESP; those are erased
-  post-install and replaced with a correct XBOOTLDR entry
-- XBOOTLDR partition type is set to EA00 via `sgdisk` post-install, since
-  archinstall creates it as a plain fat32 partition
+- XBOOTLDR partition type EA00 is set at partitioning time via `sgdisk`
 
 ### Networking
 
@@ -84,8 +81,8 @@ project VM without modifying fstab.
 - Username: `dev`
 - Passwordless sudo (`NOPASSWD: ALL`)
 - All accounts locked (`passwd -l`) — no password-based login is possible
-- SSH public key injected at ISO build time, installed to
-  `/home/dev/.ssh/authorized_keys` post-install
+- SSH public key injected at install time via QEMU fw_cfg, installed to
+  `/home/dev/.ssh/authorized_keys`
 
 ---
 
@@ -630,7 +627,7 @@ ${VIRTDEV_HOME}/
   lock                  flock(2) target; contains PID of current holder
   ssh/
     id                  ed25519 private key (mode 600)
-    id.pub              ed25519 public key (injected into ISO at build time)
+    id.pub              ed25519 public key (injected at install time via fw_cfg)
   system/               sealed read-only base images (mode 444)
     system.qcow2
     home.qcow2

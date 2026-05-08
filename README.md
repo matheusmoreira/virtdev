@@ -12,7 +12,7 @@ hypervisor, not a namespace or permission system.
 
 - Arch Linux host, bash >= 5.2
 - KVM-capable CPU, QEMU (`qemu-system-x86`), OVMF (`edk2-ovmf`)
-- OpenSSH (`openssh`), socat, rsync, jq, archiso
+- OpenSSH (`openssh`), socat, rsync, archiso
 
 ### Install
 
@@ -242,7 +242,7 @@ Environment variables (defaults shown):
 | `VIRTDEV_HOME` | `~/.local/share/virtdev` |
 | `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` |
 | `VIRTDEV_CACHE` | `~/.cache/virtdev` |
-| `VIRTDEV_TIMEZONE` | `UTC` |
+| `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) |
 | `VIRTDEV_ISO_PROFILE` | auto-detected |
 | `VIRTDEV_ISO` | `${VIRTDEV_CACHE}/virtdev.iso` |
 | `VIRTDEV_SYSTEM_DISK_SIZE` | `24G` |
