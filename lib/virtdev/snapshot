@@ -81,7 +81,7 @@ snapshot_list_days() {
   [[ -d "${dir}" ]] || return 0
   find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
     | grep -E "${snapshot_date_regex}" \
-    | sort
+    | sort || true
 }
 
 snapshot_list_times() {
@@ -91,7 +91,7 @@ snapshot_list_times() {
   [[ -d "${dir}" ]] || return 0
   find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
     | grep -E "${snapshot_time_regex}" \
-    | sort
+    | sort || true
 }
 
 snapshot_list() {
