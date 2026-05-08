@@ -85,6 +85,16 @@ if ! command -v socat &>/dev/null; then
     fi
     sleep 1
   done
+  case "${socat_state}" in
+    inactive|failed) ;;
+    *)
+      error 5 <<MESSAGE
+Unit ${unit} is in unexpected state after stop: '${socat_state}'.
+Expected 'inactive' or 'failed'. The virtual machine may still be running.
+Investigate: systemctl --user status ${unit}
+MESSAGE
+      ;;
+  esac
   qemu_exit="$(systemctl --user show "${unit}" --property=ExecMainStatus --value 2>/dev/null || true)"
   qemu_exit="${qemu_exit:-?}"
   if [[ "${project}" != "maintenance" ]]; then
