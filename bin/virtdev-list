@@ -49,8 +49,14 @@ else
   printf >&2 'warning: base system generation file missing: %s\n' "${system_generation_file}"
 fi
 
-printf '%-50s %-5s %-8s %s\n' 'PROJECT' 'PORT' 'STATUS' 'GENERATION'
-printf '%-50s %-5s %-8s %s\n' '-------' '----' '------' '----------'
+max_name=7
+for project in "${projects[@]}"; do
+  (( ${#project} > max_name )) && max_name=${#project}
+done
+(( max_name += 2 ))
+
+printf "%-${max_name}s %-5s %-8s %s\n" 'PROJECT' 'PORT' 'STATUS' 'GENERATION'
+printf "%-${max_name}s %-5s %-8s %s\n" '-------' '----' '------' '----------'
 
 declare -A running_state=()
 project_load_running_state running_state "${projects[@]}"
@@ -86,9 +92,6 @@ for project in "${projects[@]}"; do
     generation_color='fg=red'
   fi
 
-  # printf counts escape bytes as width, so colored fields
-  # use manual padding: print the colored text, then pad to
-  # the column width with spaces.
   colored_status="$(terminal_write "${status_color}" "${status}" reset)"
   if [[ -n "${generation_color}" ]]; then
     colored_generation="$(terminal_write "${generation_color}" "${generation}" reset)"
@@ -96,7 +99,7 @@ for project in "${projects[@]}"; do
     colored_generation="${generation}"
   fi
 
-  printf '%-50s %-5s %s%-*s %s\n' \
+  printf "%-${max_name}s %-5s %s%-*s %s\n" \
     "${project}" "${port}" \
     "${colored_status}" $(( 8 - ${#status} )) "" \
     "${colored_generation}"
