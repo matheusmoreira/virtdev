@@ -71,7 +71,7 @@ make -C ~/dotfiles install
 Run it manually on a fresh VM:
 
 ```bash
-virtdev ssh myproject bash -s < ~/.config/virtdev/projects/myproject/provision
+virtdev ssh myproject -- bash -s < ~/.config/virtdev/projects/myproject/provision
 ```
 
 Or let `virtdev-recreate` run it automatically (see below).

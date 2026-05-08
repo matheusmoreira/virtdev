@@ -282,7 +282,7 @@ backup → stop → destroy → create → start → wait → provision → rest
 command. The provision script lives at
 `~/.config/virtdev/projects/<name>/provision` (or is passed explicitly with
 `virtdev-recreate --provision <path>`) and is invoked via
-`virtdev-ssh <name> bash -s` on the fresh VM. The provision script makes the
+`virtdev-ssh <name> -- bash -s` on the fresh VM. The provision script makes the
 destroy-recreate cycle fast and repeatable.
 
 Dotfiles are not a special case in this model. A symlink farm applied by a
@@ -580,7 +580,16 @@ during a maintenance session.
 | `virtdev-transfer` | Copy files between host and VM via rsync over SSH            |
 | `virtdev-console`  | Attach to the serial console via socat                       |
 | `virtdev-wait`     | Poll until SSH is accepting connections post-start            |
-| `virtdev-list`     | List all projects with port and running status               |
+| `virtdev-list`     | List all projects with port, status, and generation          |
+| `virtdev-status`   | Print `running` or `stopped` for a project                   |
+| `virtdev-port`     | Print the SSH port of a running project VM                   |
+| `virtdev-pid`      | Print the QEMU process ID of a running project VM            |
+| `virtdev-path`     | Print the path to a project resource                         |
+| `virtdev-disk`     | Show disk usage information for a project VM                 |
+| `virtdev-log`      | Show journal logs for a project's systemd unit               |
+| `virtdev-monitor`  | Attach to the QEMU monitor of a running project VM           |
+| `virtdev-generation` | Print the base or project generation counter               |
+| `virtdev-stale`    | List projects with stale base generation                     |
 | `virtdev-destroy`  | Delete a project VM and its disks (requires typing name)     |
 | `virtdev-nuke`     | Delete all virtdev data (requires typing "nuke")             |
 | `virtdev-backup`   | Snapshot user-curated guest-side paths to a host-side timestamped directory |
