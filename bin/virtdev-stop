@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
-# virtdev-stop <project>
+# virtdev-stop [--no-escalate] <project>
 #
 # Shuts down a project virtual machine cleanly via ACPI powerdown.
 # Falls back to systemctl stop (SIGTERM) if the monitor is unavailable
 # or the guest does not respond within a timeout.
+#
+# --no-escalate disables the SIGTERM fallback on timeout. Used by
+# the systemd ExecStop hook where systemd itself handles the
+# escalation via TimeoutStopSec after ExecStop returns.
 #
 # The QEMU monitor socket is used to send 'system_powerdown',
 # which triggers a clean ACPI shutdown in the guest.
@@ -26,7 +30,7 @@ import error validate lock arguments terminal
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=()
+declare -A spec=([no-escalate]=bool)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project)
 # shellcheck disable=SC2034
@@ -152,7 +156,7 @@ while :; do
     inactive|failed) break ;;
   esac
   if (( SECONDS >= deadline )); then
-    if (( ! escalated )); then
+    if (( ! escalated )) && [[ -z "${flags[no-escalate]:-}" ]]; then
       printf >&2 '%s\n' "$(terminal_write fg=yellow "Guest did not halt within ${VIRTDEV_STOP_TIMEOUT}s, falling back to SIGTERM..." reset)"
       systemctl --user stop "${unit}"
       escalated=1

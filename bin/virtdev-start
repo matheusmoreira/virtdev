@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
 # virtdev-start <project> [port]
 #
@@ -239,6 +240,7 @@ systemd-run \
     --user \
     --unit="${unit}" \
     --description="virtdev project virtual machine: ${project}" \
+    --property="ExecStop=${virtdev_bin_directory}/virtdev-stop --no-escalate ${project}" \
     -- \
     qemu-system-x86_64 \
         -enable-kvm \
