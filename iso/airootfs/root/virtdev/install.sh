@@ -398,7 +398,51 @@ arch-chroot "${target}" systemctl enable \
 printf 'virtdev: services enabled\n'
 
 # ---------------------------------------------------------------------------
-# 18. Finalize
+# 18. Custom script (if injected)
+# ---------------------------------------------------------------------------
+
+progress_report script
+if [[ -f "${fw_cfg_dir}"/script/raw ]]; then
+  printf 'virtdev: running custom script\n'
+  install -m 755 "${fw_cfg_dir}"/script/raw "${target}"/tmp/virtdev-custom.sh
+  arch-chroot "${target}" /tmp/virtdev-custom.sh
+  rm -f "${target}"/tmp/virtdev-custom.sh
+  printf 'virtdev: custom script completed\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 19. Inventory
+# ---------------------------------------------------------------------------
+
+progress_report inventory
+progress_report inventory:base
+
+mkdir -p "${target}"/var/lib/virtdev
+
+{
+  printf '=== packages ===\n'
+  arch-chroot "${target}" pacman -Q
+
+  printf '=== partitions ===\n'
+  blkid /dev/vda1 /dev/vda2 /dev/vda3 /dev/vdb1
+
+  printf '=== services ===\n'
+  arch-chroot "${target}" systemctl list-unit-files --state=enabled --no-pager
+} > "${target}"/var/lib/virtdev/inventory
+
+printf 'virtdev: base inventory written\n'
+
+progress_report inventory:user
+if [[ -f "${fw_cfg_dir}"/inventory/raw ]]; then
+  printf 'virtdev: running user inventory script\n'
+  install -m 755 "${fw_cfg_dir}"/inventory/raw "${target}"/tmp/virtdev-inventory.sh
+  arch-chroot "${target}" /tmp/virtdev-inventory.sh >> "${target}"/var/lib/virtdev/inventory
+  rm -f "${target}"/tmp/virtdev-inventory.sh
+  printf 'virtdev: user inventory appended\n'
+fi
+
+# ---------------------------------------------------------------------------
+# 20. Finalize
 # ---------------------------------------------------------------------------
 
 progress_report sync
