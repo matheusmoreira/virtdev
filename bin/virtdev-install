@@ -152,15 +152,20 @@ fi
 
 mkdir -p "${installation_directory}"
 
-# Any failure or interruption between here and the final success marker
-# removes the partial installation directory so the user can retry
-# virtdev-install without having to rm -rf by hand. QEMU returns 0 only
-# on successful guest poweroff (virtdev-install.service runs
-# 'systemctl poweroff' on success); any other exit path indicates an
-# incomplete install.
+install_sock="${installation_directory}"/install.sock
+console_sock="${installation_directory}"/console.sock
+install_progress="${installation_directory}"/progress.log
+
+: "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
+pacman_cache="${VIRTDEV_CACHE}/pacman"
+mkdir -p "${pacman_cache}"
+
 install_succeeded=0
 cleanup_partial_installation() {
-  (( install_succeeded )) || rm -rf "${installation_directory}"
+  if ! (( install_succeeded )); then
+    rm -rf "${installation_directory}"
+  fi
+  rm -f "${install_sock:-}" "${console_sock:-}" "${install_progress:-}"
 }
 trap cleanup_partial_installation EXIT
 
@@ -178,9 +183,50 @@ nvram="${installation_directory}"/nvram
 printf >&2 'Copying default NVRAM...\n'
 cp "${OVMF_VARS}" "${nvram}"
 
-printf >&2 'Booting installer with serial output attached.\n'
-printf >&2 'On success, the virtual machine will power off automatically.\n'
-printf >&2 'On failure, the shell will be accessible via the serial console.\n\n'
+qemu_extra_args=()
+# shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
+[[ -d /var/cache/pacman/pkg ]] && qemu_extra_args+=(
+  -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=none,readonly=on)
+[[ -n "${VIRTDEV_PACKAGES:-}" && -f "${VIRTDEV_PACKAGES}" ]] && qemu_extra_args+=(
+  -fw_cfg "name=opt/virtdev/packages,file=${VIRTDEV_PACKAGES}")
+[[ -n "${VIRTDEV_SCRIPT:-}" && -f "${VIRTDEV_SCRIPT}" ]] && qemu_extra_args+=(
+  -fw_cfg "name=opt/virtdev/script,file=${VIRTDEV_SCRIPT}")
+[[ -n "${VIRTDEV_INVENTORY:-}" && -f "${VIRTDEV_INVENTORY}" ]] && qemu_extra_args+=(
+  -fw_cfg "name=opt/virtdev/inventory,file=${VIRTDEV_INVENTORY}")
+
+install_display_progress() {
+  local -r token="${1}"
+  local message
+  case "${token}" in
+    partitioning)     message='Partitioning disks' ;;
+    formatting)       message='Formatting filesystems' ;;
+    mounting)         message='Mounting filesystems' ;;
+    cache)            message='Configuring package cache' ;;
+    pre_pacstrap)     message='Preparing for package installation' ;;
+    pacstrap)         message='Installing base system and packages' ;;
+    pacman_config)    message='Configuring pacman' ;;
+    fstab)            message='Generating fstab' ;;
+    locale)           message='Configuring locale' ;;
+    timezone)         message='Setting timezone' ;;
+    hostname)         message='Configuring hostname' ;;
+    initramfs)        message='Rebuilding initramfs' ;;
+    bootloader)       message='Installing bootloader' ;;
+    network)          message='Configuring network' ;;
+    user)             message='Configuring user and SSH' ;;
+    autologin)        message='Configuring serial console' ;;
+    services)         message='Enabling services' ;;
+    script)           message='Running custom script' ;;
+    inventory)        message='Capturing system inventory' ;;
+    sync)             message='Syncing filesystems' ;;
+    complete)         message='Installation complete' ;;
+    *)                return ;;
+  esac
+  printf >&2 '  %s\n' "$(terminal_write fg=cyan "${message}" reset)"
+}
+
+printf >&2 'Booting installer...\n'
+printf >&2 'On failure, attach to the console for debugging:\n'
+printf >&2 '    socat - UNIX-CONNECT:%s\n\n' "${console_sock}"
 
 qemu-system-x86_64 \
     -enable-kvm \
@@ -198,13 +244,43 @@ qemu-system-x86_64 \
     -device virtio-net-pci,netdev=net0 \
     -device virtio-rng-pci \
     -display none \
-    -serial stdio \
+    -serial unix:"${console_sock}",server=on,wait=off \
     -monitor none \
-    -fw_cfg name=opt/virtdev/ssh_key,string="${ssh_public_key}" \
-    -fw_cfg name=opt/virtdev/timezone,string="${VIRTDEV_TIMEZONE}"
+    -device virtio-serial \
+    -chardev socket,path="${install_sock}",server=on,wait=off,id=install_ch \
+    -device virtserialport,chardev=install_ch,name=org.virtdev.install \
+    -virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=none \
+    -fw_cfg name=opt/virtdev/ssh_key,file="${VIRTDEV_SSH_KEY}.pub" \
+    -fw_cfg name=opt/virtdev/timezone,string="${VIRTDEV_TIMEZONE}" \
+    -fw_cfg name=opt/virtdev/locale,string="${VIRTDEV_LOCALE}" \
+    -fw_cfg name=opt/virtdev/keymap,string="${VIRTDEV_KEYMAP}" \
+    -fw_cfg name=opt/virtdev/dns,string="${VIRTDEV_DNS}" \
+    "${qemu_extra_args[@]+"${qemu_extra_args[@]}"}" &
+qemu_pid=$!
 
-install_succeeded=1
+while [[ ! -S "${install_sock}" ]]; do
+  kill -0 "${qemu_pid}" 2>/dev/null || break
+  sleep 0.1
+done
 
-printf >&2 '\n'
-printf >&2 '%s\n' "$(terminal_write fg=green 'Installer finished.' reset)"
-printf >&2 'Run virtdev-seal to seal the base system images.\n'
+socat UNIX-CONNECT:"${install_sock}" - 2>/dev/null \
+  | tee "${install_progress}" \
+  | while IFS= read -r token; do
+      install_display_progress "${token}"
+    done
+
+wait "${qemu_pid}" 2>/dev/null || true
+
+if grep -qx 'complete' "${install_progress}" 2>/dev/null; then
+  install_succeeded=1
+  printf >&2 '\n%s\n' "$(terminal_write fg=green 'Installer finished.' reset)"
+  printf >&2 'Run virtdev-seal to seal the base system images.\n'
+else
+  printf >&2 '\n%s\n' "$(terminal_write fg=red 'Installation did not complete successfully.' reset)"
+  printf >&2 'Attach to the console for debugging:\n'
+  printf >&2 '    socat - UNIX-CONNECT:%s\n' "${console_sock}"
+  printf >&2 'Press Ctrl-C to terminate the virtual machine.\n'
+  wait "${qemu_pid}" 2>/dev/null || true
+fi
+
+rm -f "${install_progress}" "${install_sock}" "${console_sock}"
