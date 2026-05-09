@@ -139,6 +139,11 @@ else
   timezone=UTC
 fi
 
+if [[ ! -f "${target}/usr/share/zoneinfo/${timezone}" ]]; then
+  printf >&2 'virtdev: timezone not found: %s, falling back to UTC\n' "${timezone}"
+  timezone=UTC
+fi
+
 arch-chroot "${target}" ln -sf "/usr/share/zoneinfo/${timezone}" /etc/localtime
 
 printf 'virtdev: timezone set to %s\n' "${timezone}"
