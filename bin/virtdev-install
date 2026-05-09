@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 #
-# virtdev-install [iso]
+# virtdev-install [--timezone tz] [--locale locale] [--keymap keymap]
+#                 [--dns ip] [--packages path] [--script path]
+#                 [--inventory path] [iso]
 #
 # Boots the virtdev ISO in a temporary QEMU process to install
-# the base system into fresh qcow2 disks. Does not daemonize,
-# waits for the VM to power off which happens automatically
-# on successful installation. Serial output is attached
-# to the terminal so that progress is visible.
+# the base system into fresh qcow2 disks. Does not daemonize.
+# Progress is reported via a virtio-serial channel and displayed
+# as structured status messages. The serial console is available
+# for debugging via the console socket.
 #
 # If no ISO path is given, defaults to the ISO produced by virtdev-iso.
 #
@@ -23,6 +25,7 @@
 #   6   installation directory already exists
 #   7   sealed base system already present
 #   8   SSH public key not found
+#   9   socat not found
 #
 # Configuration via environment variables:
 #
@@ -30,6 +33,12 @@
 #   VIRTDEV_ISO               Default: ${XDG_CACHE_HOME:-~/.cache}/virtdev/virtdev.iso
 #   VIRTDEV_SSH_KEY           Default: ${VIRTDEV_HOME}/ssh/id
 #   VIRTDEV_TIMEZONE          Default: host timezone (UTC fallback)
+#   VIRTDEV_LOCALE            Default: host locale (en_US.UTF-8 fallback)
+#   VIRTDEV_KEYMAP            Default: host keymap (us fallback)
+#   VIRTDEV_DNS               Default: 9.9.9.9
+#   VIRTDEV_PACKAGES          Default: (none) path to extra packages file
+#   VIRTDEV_SCRIPT            Default: (none) path to custom install script
+#   VIRTDEV_INVENTORY         Default: (none) path to user inventory script
 #   VIRTDEV_SYSTEM_DISK_SIZE  Default: 24G
 #   VIRTDEV_HOME_DISK_SIZE    Default: 48G
 #   VIRTDEV_VM_MEMORY         Default: 4096
@@ -52,6 +61,14 @@ import error lock arguments terminal ssh
 host_timezone="$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')"
 : "${VIRTDEV_TIMEZONE:="${host_timezone:-UTC}"}"
 
+host_locale="$(sed -n 's/^LANG=//p' /etc/locale.conf 2>/dev/null || true)"
+: "${VIRTDEV_LOCALE:="${host_locale:-en_US.UTF-8}"}"
+
+host_keymap="$(sed -n 's/^KEYMAP=//p' /etc/vconsole.conf 2>/dev/null || true)"
+: "${VIRTDEV_KEYMAP:="${host_keymap:-us}"}"
+
+: "${VIRTDEV_DNS:=9.9.9.9}"
+
 : "${VIRTDEV_SYSTEM_DISK_SIZE:=24G}"
 : "${VIRTDEV_HOME_DISK_SIZE:=48G}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -60,7 +77,13 @@ host_timezone="$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')"
 : "${OVMF_VARS:="/usr/share/edk2/x64/OVMF_VARS.4m.fd"}"
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=()
+declare -A spec=([timezone]=value [locale]=value [keymap]=value
+                 [dns]=value [packages]=value [script]=value
+                 [inventory]=value)
+# shellcheck disable=SC2034
+declare -A spec_placeholders=([timezone]=tz [locale]=locale [keymap]=keymap
+                              [dns]=ip [packages]=path [script]=path
+                              [inventory]=path)
 # shellcheck disable=SC2034
 declare -a spec_positionals=("iso?")
 # shellcheck disable=SC2034
@@ -68,6 +91,14 @@ declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
+
+[[ -n "${flags[timezone]:-}" ]]  && VIRTDEV_TIMEZONE="${flags[timezone]}"
+[[ -n "${flags[locale]:-}" ]]    && VIRTDEV_LOCALE="${flags[locale]}"
+[[ -n "${flags[keymap]:-}" ]]    && VIRTDEV_KEYMAP="${flags[keymap]}"
+[[ -n "${flags[dns]:-}" ]]       && VIRTDEV_DNS="${flags[dns]}"
+[[ -n "${flags[packages]:-}" ]]  && VIRTDEV_PACKAGES="${flags[packages]}"
+[[ -n "${flags[script]:-}" ]]    && VIRTDEV_SCRIPT="${flags[script]}"
+[[ -n "${flags[inventory]:-}" ]] && VIRTDEV_INVENTORY="${flags[inventory]}"
 
 if [[ $# -gt 1 ]]; then
   error 64 <<<"$(arguments_usage spec)"
@@ -79,13 +110,15 @@ fi
 
 lock_acquire
 
+if ! command -v socat &>/dev/null; then
+  error 9 <<<'socat not found, install socat'
+fi
+
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 
 if [[ ! -f "${VIRTDEV_SSH_KEY}.pub" ]]; then
   error 8 <<<"SSH public key not found: '${VIRTDEV_SSH_KEY}.pub'"
 fi
-
-ssh_public_key="$(< "${VIRTDEV_SSH_KEY}.pub")"
 
 if [[ ! -f "${VIRTDEV_ISO}" ]]; then
   error 3 <<<"ISO not found: '${VIRTDEV_ISO}'"
