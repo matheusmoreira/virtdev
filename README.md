@@ -196,6 +196,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-create <project>` | Derive a project VM from the sealed base |
 | `virtdev-start <project> [port]` | Start VM as a systemd user service |
 | `virtdev-stop <project>` | ACPI shutdown with SIGTERM fallback |
+| `virtdev-move <old-name> <new-name>` | Rename a project (must be stopped) |
 | `virtdev-destroy [-y] <project>` | Delete a project VM (confirmation required) |
 | `virtdev-detach [--in-place] [-y] <project>` | Convert delta images to standalone, removing base dependency |
 | `virtdev-recreate [flags] <project>` | Backup, destroy, rebuild, provision, restore |

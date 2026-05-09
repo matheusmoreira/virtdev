@@ -435,7 +435,7 @@ the guard is one line and depends on the script's own state.
 **Commands that take the lock** (serialized against each other):
 
 - `virtdev-install`, `virtdev-seal`, `virtdev-maintain`
-- `virtdev-create`, `virtdev-start`, `virtdev-stop`, `virtdev-destroy`, `virtdev-detach`
+- `virtdev-create`, `virtdev-start`, `virtdev-stop`, `virtdev-destroy`, `virtdev-detach`, `virtdev-move`
 - `virtdev-nuke`
 
 **Commands that do not take the lock** (read-only or ISO-level):
@@ -580,6 +580,7 @@ during a maintenance session.
 | `virtdev-install`  | Boot ISO in QEMU, install base system to fresh qcow2 disks   |
 | `virtdev-seal`     | Promote installation images to read-only sealed base         |
 | `virtdev-maintain` | Boot sealed base for maintenance, reseal after poweroff       |
+| `virtdev-move`     | Rename a project (atomic directory rename)                    |
 | `virtdev-create`   | Derive a project VM from the sealed base                     |
 | `virtdev-start`    | Start a project VM as a transient systemd user service; assigns SSH port |
 | `virtdev-stop`     | Clean ACPI shutdown; SIGTERM fallback                        |

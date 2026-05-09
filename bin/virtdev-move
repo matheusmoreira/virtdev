@@ -4,10 +4,14 @@
 #
 # Renames a project. The project must be stopped.
 #
-# The rename is atomic — it is a single rename(2) call on the
-# project directory within ${VIRTDEV_HOME}/projects/. Backing
-# file paths in qcow2 images are absolute and do not reference
-# the project name, so no image rewriting is needed.
+# Moves the project directory, any backup snapshots, and updates
+# the project marker inside each snapshot. Backing file paths in
+# qcow2 images are absolute and do not reference the project name,
+# so no image rewriting is needed.
+#
+# If a provision script or manifest exists under the XDG config
+# path for the source project, a warning is printed — those are
+# user-owned files and must be moved manually.
 #
 # Exit codes:
 #
@@ -16,6 +20,7 @@
 #   4   target project already exists
 #   5   source virtual machine is running
 #   6   reserved project name
+#   7   source and target are the same
 #
 
 set -euo pipefail
@@ -26,11 +31,12 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 import error validate lock arguments terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=()
 # shellcheck disable=SC2034
-declare -a spec_positionals=(source target)
+declare -a spec_positionals=(old-name new-name)
 # shellcheck disable=SC2034
 declare -A flags=()
 declare -a positional=()
@@ -46,6 +52,10 @@ target_name="${2}"
 
 validate_project_name "${source_name}"
 validate_project_name "${target_name}"
+
+if [[ "${source_name}" == "${target_name}" ]]; then
+  error 7 <<<"Source and target are the same: ${source_name}"
+fi
 
 for name in "${source_name}" "${target_name}"; do
   if [[ "${name}" == "maintenance" ]]; then
@@ -73,4 +83,27 @@ fi
 
 mv -- "${source_directory}" "${target_directory}"
 
-printf >&2 '%s\n' "$(terminal_write fg=green "Project renamed: ${source_name} → ${target_name}" reset)"
+source_backups="${VIRTDEV_HOME}/backups/${source_name}"
+target_backups="${VIRTDEV_HOME}/backups/${target_name}"
+
+if [[ -d "${source_backups}" ]]; then
+  mv -- "${source_backups}" "${target_backups}"
+
+  while IFS= read -r -d '' marker; do
+    printf '%s\n' "${target_name}" > "${marker}"
+  done < <(find "${target_backups}" -name project -print0)
+
+  printf >&2 'Backup snapshots moved and markers updated.\n'
+fi
+
+xdg_config_source="${XDG_CONFIG_HOME}/virtdev/projects/${source_name}"
+if [[ -d "${xdg_config_source}" ]]; then
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'Warning:' reset " XDG config directory exists for the old name:")"
+  printf >&2 '    %s\n' "${xdg_config_source}"
+  printf >&2 'Move it manually if needed:\n'
+  printf >&2 '    mv %q %q\n' \
+    "${xdg_config_source}" \
+    "${XDG_CONFIG_HOME}/virtdev/projects/${target_name}"
+fi
+
+printf >&2 '%s\n' "$(terminal_write fg=green "Project renamed: ${source_name} -> ${target_name}" reset)"
