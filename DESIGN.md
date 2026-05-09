@@ -606,7 +606,7 @@ All scripts respect these variables:
 | `VIRTDEV_HOME`            | `${XDG_DATA_HOME:-~/.local/share}/virtdev`      |
 | `VIRTDEV_SSH_KEY`         | `${VIRTDEV_HOME}/ssh/id`                        |
 | `VIRTDEV_CACHE`           | `${XDG_CACHE_HOME:-~/.cache}/virtdev`           |
-| `VIRTDEV_TIMEZONE`        | `UTC`                                           |
+| `VIRTDEV_TIMEZONE`        | host timezone (UTC fallback)                    |
 | `VIRTDEV_ISO_PROFILE`     | Auto-detected from script location              |
 | `VIRTDEV_ISO`             | `${VIRTDEV_CACHE}/virtdev.iso`                  |
 | `VIRTDEV_SYSTEM_DISK_SIZE`| `24G`                                           |
