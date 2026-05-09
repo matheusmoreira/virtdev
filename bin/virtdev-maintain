@@ -83,6 +83,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 import error lock arguments ssh project confirm terminal
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_WAIT_TIMEOUT:=120}"
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
@@ -131,6 +132,16 @@ fi
 # ── Functions ───────────────────────────────────────────────────────
 
 maintenance_boot() {
+  local pacman_cache="${VIRTDEV_CACHE}/pacman"
+  mkdir -p "${pacman_cache}"
+
+  local -a cache_args=()
+  # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
+  cache_args+=(-virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=none)
+  # shellcheck disable=SC2054
+  [[ -d /var/cache/pacman/pkg ]] && cache_args+=(
+    -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=none,readonly=on)
+
   mkdir -p "${maintenance_project}"
   printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
   rm -f "${monitor_sock}" "${console_sock}"
@@ -159,6 +170,7 @@ maintenance_boot() {
           -monitor chardev:monitor \
           -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
           -serial chardev:serial \
+          "${cache_args[@]}" \
           -fw_cfg name=opt/virtdev/project,string=maintenance
 }
 
