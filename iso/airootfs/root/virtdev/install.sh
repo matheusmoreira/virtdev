@@ -99,7 +99,26 @@ progress_report mounting:home
 mount --mkdir  /dev/vdb1 "${target}"/home
 
 # ---------------------------------------------------------------------------
-# 4. Pre-pacstrap configuration
+# 4. Mount 9p cache (best-effort)
+# ---------------------------------------------------------------------------
+
+progress_report cache
+if modprobe 9p 9pnet 9pnet_virtio 2>/dev/null; then
+  progress_report cache:modprobe
+  mkdir -p /var/cache/pacman/pkg
+  if mount -t 9p -o trans=virtio,version=9p2000.L pacman_cache /var/cache/pacman/pkg 2>/dev/null; then
+    progress_report cache:mounted
+    printf 'virtdev: pacman cache shared via 9p\n'
+  fi
+  mkdir -p /var/cache/pacman/host
+  if mount -t 9p -o ro,trans=virtio,version=9p2000.L host_cache /var/cache/pacman/host 2>/dev/null; then
+    sed -i 's|^#\?CacheDir.*|CacheDir = /var/cache/pacman/pkg/\nCacheDir = /var/cache/pacman/host/|' /etc/pacman.conf
+    printf 'virtdev: host pacman cache shared via 9p (read-only)\n'
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Pre-pacstrap configuration
 # ---------------------------------------------------------------------------
 
 progress_report pre_pacstrap
@@ -107,7 +126,7 @@ mkdir -p "${target}"/etc
 printf 'KEYMAP=us\n' > "${target}"/etc/vconsole.conf
 
 # ---------------------------------------------------------------------------
-# 5. Pacstrap
+# 6. Pacstrap
 # ---------------------------------------------------------------------------
 
 progress_report pacstrap
@@ -126,7 +145,7 @@ pacstrap -K "${target}" \
     rustup
 
 # ---------------------------------------------------------------------------
-# 6. Configure pacman on target
+# 7. Configure pacman on target
 # ---------------------------------------------------------------------------
 
 progress_report pacman_config
@@ -136,7 +155,7 @@ sed -i 's/^#ParallelDownloads = 5$/ParallelDownloads = 5/' "${target}"/etc/pacma
 printf 'virtdev: pacman configured\n'
 
 # ---------------------------------------------------------------------------
-# 7. Generate fstab
+# 8. Generate fstab
 # ---------------------------------------------------------------------------
 
 progress_report fstab
@@ -148,7 +167,7 @@ sed -i "s|^UUID=${home_uuid}|LABEL=home|" "${target}"/etc/fstab
 printf 'virtdev: fstab generated\n'
 
 # ---------------------------------------------------------------------------
-# 8. Locale
+# 9. Locale
 # ---------------------------------------------------------------------------
 
 progress_report locale
@@ -163,7 +182,7 @@ printf 'LANG=en_US.UTF-8\n' > "${target}"/etc/locale.conf
 printf 'virtdev: locale configured\n'
 
 # ---------------------------------------------------------------------------
-# 9. Timezone
+# 10. Timezone
 # ---------------------------------------------------------------------------
 
 progress_report timezone
@@ -184,7 +203,7 @@ arch-chroot "${target}" ln -sf "/usr/share/zoneinfo/${timezone}" /etc/localtime
 printf 'virtdev: timezone set to %s\n' "${timezone}"
 
 # ---------------------------------------------------------------------------
-# 10. Hostname
+# 11. Hostname
 # ---------------------------------------------------------------------------
 
 progress_report hostname
@@ -195,7 +214,7 @@ cp /root/virtdev/virtdev-hostname.service "${target}"/etc/systemd/system/
 printf 'virtdev: hostname configured\n'
 
 # ---------------------------------------------------------------------------
-# 11. mkinitcpio
+# 12. mkinitcpio
 # ---------------------------------------------------------------------------
 
 progress_report initramfs
@@ -207,7 +226,7 @@ arch-chroot "${target}" mkinitcpio -P
 printf 'virtdev: initramfs rebuilt\n'
 
 # ---------------------------------------------------------------------------
-# 12. Bootloader
+# 13. Bootloader
 # ---------------------------------------------------------------------------
 
 progress_report bootloader
@@ -240,7 +259,7 @@ CONF
 printf 'virtdev: bootloader installed\n'
 
 # ---------------------------------------------------------------------------
-# 13. Network
+# 14. Network
 # ---------------------------------------------------------------------------
 
 progress_report network
@@ -273,7 +292,7 @@ cp /etc/pacman.d/mirrorlist "${target}"/etc/pacman.d/mirrorlist
 printf 'virtdev: network configured\n'
 
 # ---------------------------------------------------------------------------
-# 14. User
+# 15. User
 # ---------------------------------------------------------------------------
 
 progress_report user
@@ -308,7 +327,7 @@ cp /etc/ssh/sshd_config "${target}"/etc/ssh/sshd_config
 printf 'virtdev: user and SSH configured\n'
 
 # ---------------------------------------------------------------------------
-# 15. Serial console autologin
+# 16. Serial console autologin
 # ---------------------------------------------------------------------------
 
 progress_report autologin
@@ -322,7 +341,7 @@ CONF
 printf 'virtdev: serial console autologin configured\n'
 
 # ---------------------------------------------------------------------------
-# 16. Enable services
+# 17. Enable services
 # ---------------------------------------------------------------------------
 
 progress_report services
@@ -338,7 +357,7 @@ arch-chroot "${target}" systemctl enable \
 printf 'virtdev: services enabled\n'
 
 # ---------------------------------------------------------------------------
-# 17. Finalize
+# 18. Finalize
 # ---------------------------------------------------------------------------
 
 progress_report sync
