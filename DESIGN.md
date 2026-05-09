@@ -349,7 +349,17 @@ QEMU flags of note:
 - `-drive if=pflash ...` — OVMF firmware; OVMF_CODE read-only, per-project NVRAM copy writable
 - `-netdev user,hostfwd=tcp:127.0.0.1:<port>-:22` — SSH port forwarding, loopback only
 - `-fw_cfg name=opt/virtdev/project,string=<name>` — injects the project name into the guest via QEMU firmware configuration; used for hostname setting
+- `-fw_cfg name=opt/virtdev/ssh_key,file=<path>` — SSH public key (install time)
+- `-fw_cfg name=opt/virtdev/timezone,string=<tz>` — timezone (install time)
+- `-fw_cfg name=opt/virtdev/locale,string=<locale>` — locale (install time)
+- `-fw_cfg name=opt/virtdev/keymap,string=<keymap>` — console keymap (install time)
+- `-fw_cfg name=opt/virtdev/dns,string=<ip>` — DNS server (install time)
+- `-fw_cfg name=opt/virtdev/packages,file=<path>` — extra packages (install time, optional)
+- `-fw_cfg name=opt/virtdev/script,file=<path>` — custom install script (install time, optional)
+- `-fw_cfg name=opt/virtdev/inventory,file=<path>` — user inventory script (install time, optional)
 - `-device virtio-rng-pci` — entropy for the guest
+- `-device virtio-serial` + `-device virtserialport` — progress channel (install time)
+- `-virtfs local,...` — 9p pacman cache sharing (install and maintenance)
 - `-display none` — headless
 - `-chardev socket ... -monitor` — QEMU monitor via Unix socket
 - `-chardev socket ... -serial` — serial console via Unix socket
@@ -607,6 +617,12 @@ All scripts respect these variables:
 | `VIRTDEV_SSH_KEY`         | `${VIRTDEV_HOME}/ssh/id`                        |
 | `VIRTDEV_CACHE`           | `${XDG_CACHE_HOME:-~/.cache}/virtdev`           |
 | `VIRTDEV_TIMEZONE`        | host timezone (UTC fallback)                    |
+| `VIRTDEV_LOCALE`          | host locale (`en_US.UTF-8` fallback)            |
+| `VIRTDEV_KEYMAP`          | host keymap (`us` fallback)                     |
+| `VIRTDEV_DNS`             | `9.9.9.9`                                       |
+| `VIRTDEV_PACKAGES`        | (none)                                          |
+| `VIRTDEV_SCRIPT`          | (none)                                          |
+| `VIRTDEV_INVENTORY`       | (none)                                          |
 | `VIRTDEV_ISO_PROFILE`     | Auto-detected from script location              |
 | `VIRTDEV_ISO`             | `${VIRTDEV_CACHE}/virtdev.iso`                  |
 | `VIRTDEV_SYSTEM_DISK_SIZE`| `24G`                                           |

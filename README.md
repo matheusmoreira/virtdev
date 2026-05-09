@@ -243,6 +243,12 @@ Environment variables (defaults shown):
 | `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` |
 | `VIRTDEV_CACHE` | `~/.cache/virtdev` |
 | `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) |
+| `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) |
+| `VIRTDEV_KEYMAP` | host keymap (`us` fallback) |
+| `VIRTDEV_DNS` | `9.9.9.9` |
+| `VIRTDEV_PACKAGES` | (none) |
+| `VIRTDEV_SCRIPT` | (none) |
+| `VIRTDEV_INVENTORY` | (none) |
 | `VIRTDEV_ISO_PROFILE` | auto-detected |
 | `VIRTDEV_ISO` | `${VIRTDEV_CACHE}/virtdev.iso` |
 | `VIRTDEV_SYSTEM_DISK_SIZE` | `24G` |
