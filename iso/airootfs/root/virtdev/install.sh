@@ -122,8 +122,15 @@ fi
 # ---------------------------------------------------------------------------
 
 progress_report pre_pacstrap
+
+if [[ -f "${fw_cfg_dir}"/keymap/raw ]]; then
+  keymap="$(< "${fw_cfg_dir}"/keymap/raw)"
+else
+  keymap=us
+fi
+
 mkdir -p "${target}"/etc
-printf 'KEYMAP=us\n' > "${target}"/etc/vconsole.conf
+printf 'KEYMAP=%s\n' "${keymap}" > "${target}"/etc/vconsole.conf
 
 # ---------------------------------------------------------------------------
 # 6. Pacstrap
@@ -131,6 +138,14 @@ printf 'KEYMAP=us\n' > "${target}"/etc/vconsole.conf
 
 progress_report pacstrap
 printf 'virtdev: installing base system and packages\n'
+
+extra_packages=()
+if [[ -f "${fw_cfg_dir}"/packages/raw ]]; then
+  while read -r line; do
+    line="${line%%#*}"
+    [[ -n "${line}" ]] && extra_packages+=("${line}")
+  done < "${fw_cfg_dir}"/packages/raw
+fi
 
 pacstrap -K "${target}" \
     base linux linux-firmware sudo mkinitcpio efibootmgr \
@@ -142,7 +157,8 @@ pacstrap -K "${target}" \
     bash-completion shellcheck time github-cli ncdu hyperfine 7zip tokei direnv \
     python python-pip python-virtualenv \
     nodejs npm \
-    rustup
+    rustup \
+    "${extra_packages[@]+"${extra_packages[@]}"}"
 
 # ---------------------------------------------------------------------------
 # 7. Configure pacman on target
@@ -153,6 +169,12 @@ sed -i 's/^#Color$/Color/' "${target}"/etc/pacman.conf
 sed -i 's/^#ParallelDownloads = 5$/ParallelDownloads = 5/' "${target}"/etc/pacman.conf
 
 printf 'virtdev: pacman configured\n'
+
+if ! find "${target}"/usr/share/kbd/keymaps -name "${keymap}.map*" -print -quit 2>/dev/null | grep -q .; then
+  printf >&2 'virtdev: keymap not found: %s, falling back to us\n' "${keymap}"
+  keymap=us
+  printf 'KEYMAP=%s\n' "${keymap}" > "${target}"/etc/vconsole.conf
+fi
 
 # ---------------------------------------------------------------------------
 # 8. Generate fstab
@@ -172,14 +194,27 @@ printf 'virtdev: fstab generated\n'
 
 progress_report locale
 
+if [[ -f "${fw_cfg_dir}"/locale/raw ]]; then
+  locale="$(< "${fw_cfg_dir}"/locale/raw)"
+else
+  locale=en_US.UTF-8
+fi
+
+locale_escaped="${locale//./\\.}"
+if ! grep -q "^#\?${locale_escaped} " "${target}"/etc/locale.gen 2>/dev/null; then
+  printf >&2 'virtdev: locale not found in locale.gen: %s, falling back to en_US.UTF-8\n' "${locale}"
+  locale=en_US.UTF-8
+  locale_escaped="${locale//./\\.}"
+fi
+
 progress_report locale:gen
-sed -i 's/^#en_US.UTF-8 UTF-8$/en_US.UTF-8 UTF-8/' "${target}"/etc/locale.gen
+sed -i "s/^#${locale_escaped} /${locale} /" "${target}"/etc/locale.gen
 arch-chroot "${target}" locale-gen
 
 progress_report locale:conf
-printf 'LANG=en_US.UTF-8\n' > "${target}"/etc/locale.conf
+printf 'LANG=%s\n' "${locale}" > "${target}"/etc/locale.conf
 
-printf 'virtdev: locale configured\n'
+printf 'virtdev: locale configured (%s)\n' "${locale}"
 
 # ---------------------------------------------------------------------------
 # 10. Timezone
@@ -277,10 +312,16 @@ UseDNS=false
 CONF
 
 progress_report network:dns
+if [[ -f "${fw_cfg_dir}"/dns/raw ]]; then
+  dns="$(< "${fw_cfg_dir}"/dns/raw)"
+else
+  dns=9.9.9.9
+fi
+
 install -d "${target}"/etc/systemd/resolved.conf.d
 cat > "${target}"/etc/systemd/resolved.conf.d/dns.conf <<CONF
 [Resolve]
-DNS=9.9.9.9
+DNS=${dns}
 CONF
 
 progress_report network:resolv
