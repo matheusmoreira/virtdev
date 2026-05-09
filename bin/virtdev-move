@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+#
+# virtdev-move <source> <target>
+#
+# Renames a project. The project must be stopped.
+#
+# The rename is atomic — it is a single rename(2) call on the
+# project directory within ${VIRTDEV_HOME}/projects/. Backing
+# file paths in qcow2 images are absolute and do not reference
+# the project name, so no image rewriting is needed.
+#
+# Exit codes:
+#
+#   0   success
+#   3   source project not found
+#   4   target project already exists
+#   5   source virtual machine is running
+#   6   reserved project name
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error validate lock arguments terminal
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=(source target)
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+if [[ $# -ne 2 ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+source_name="${1}"
+target_name="${2}"
+
+validate_project_name "${source_name}"
+validate_project_name "${target_name}"
+
+for name in "${source_name}" "${target_name}"; do
+  if [[ "${name}" == "maintenance" ]]; then
+    error 6 <<<"Project name 'maintenance' is reserved by virtdev-maintain"
+  fi
+done
+
+lock_acquire
+
+source_directory="${VIRTDEV_HOME}/projects/${source_name}"
+target_directory="${VIRTDEV_HOME}/projects/${target_name}"
+
+if [[ ! -d "${source_directory}" ]]; then
+  error 3 <<<"Project not found: ${source_name}"
+fi
+
+if [[ -d "${target_directory}" ]]; then
+  error 4 <<<"Project already exists: ${target_name}"
+fi
+
+unit="virtdev-${source_name}"
+if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+  error 5 <<<"Project virtual machine is running: ${source_name}"
+fi
+
+mv -- "${source_directory}" "${target_directory}"
+
+printf >&2 '%s\n' "$(terminal_write fg=green "Project renamed: ${source_name} → ${target_name}" reset)"
