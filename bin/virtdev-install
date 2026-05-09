@@ -166,7 +166,7 @@ cleanup_partial_installation() {
   if ! (( install_succeeded )); then
     rm -rf "${installation_directory}"
   fi
-  rm -f "${install_sock:-}" "${console_sock:-}" "${install_progress:-}"
+  rm -f "${install_sock:-}" "${console_sock:-}" "${install_progress:-}" "${progress_fifo:-}"
 }
 trap cleanup_partial_installation EXIT
 
@@ -220,6 +220,7 @@ install_display_progress() {
     inventory)        message='Capturing system inventory' ;;
     sync)             message='Syncing filesystems' ;;
     complete)         message='Installation complete' ;;
+    failed)           message='Installation failed' ;;
     *)                return ;;
   esac
   printf >&2 '  %s\n' "$(terminal_write fg=cyan "${message}" reset)"
@@ -264,34 +265,32 @@ while [[ ! -S "${install_sock}" ]]; do
   sleep 0.1
 done
 
+# Read progress tokens from the virtio-serial channel via a FIFO.
+# The guest install script sends either 'complete' (success) or
+# 'failed' (EXIT trap on non-zero exit) as its terminal token.
+# Both unblock the reader naturally — no watchdog or polling needed.
+# If QEMU dies before the guest sends a terminal token (crash, bad
+# firmware, etc.), socat gets EOF and the reader exits with no match.
+progress_fifo="${installation_directory}/progress.fifo"
 if [[ -S "${install_sock}" ]]; then
-  socat UNIX-CONNECT:"${install_sock}" - 2>/dev/null \
-    | tee "${install_progress}" \
-    | while IFS= read -r token; do
-        install_display_progress "${token}"
-      done &
-  reader_pid=$!
+  mkfifo "${progress_fifo}"
+  socat UNIX-CONNECT:"${install_sock}" - > "${progress_fifo}" 2>/dev/null &
+  socat_pid=$!
 
-  # Kill the reader pipeline when QEMU dies — without this, socat
-  # blocks forever if the guest install fails (QEMU stays running
-  # but no more data arrives on the virtio-serial port).
-  (
-    while kill -0 "${qemu_pid}" 2>/dev/null && kill -0 "${reader_pid}" 2>/dev/null; do
-      sleep 1
-    done
-    kill "${reader_pid}" 2>/dev/null || true
-  ) &
-  watchdog_pid=$!
+  while IFS= read -r token; do
+    printf '%s\n' "${token}" >> "${install_progress}"
+    install_display_progress "${token}"
+    case "${token}" in complete|failed) break ;; esac
+  done < "${progress_fifo}"
 
-  wait "${reader_pid}" 2>/dev/null || true
-  kill "${watchdog_pid}" 2>/dev/null || true
-  wait "${watchdog_pid}" 2>/dev/null || true
+  kill "${socat_pid}" 2>/dev/null || true
+  wait "${socat_pid}" 2>/dev/null || true
+  rm -f "${progress_fifo}"
 fi
-
-wait "${qemu_pid}" 2>/dev/null || true
 
 if grep -qx 'complete' "${install_progress}" 2>/dev/null; then
   install_succeeded=1
+  wait "${qemu_pid}" 2>/dev/null || true
   printf >&2 '\n%s\n' "$(terminal_write fg=green 'Installer finished.' reset)"
   printf >&2 'Run virtdev-seal to seal the base system images.\n'
 elif kill -0 "${qemu_pid}" 2>/dev/null; then
@@ -305,4 +304,4 @@ else
   printf >&2 'The virtual machine has already exited.\n'
 fi
 
-rm -f "${install_progress}" "${install_sock}" "${console_sock}"
+rm -f "${install_progress}" "${install_sock}" "${console_sock}" "${progress_fifo}"

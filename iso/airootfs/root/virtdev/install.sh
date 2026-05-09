@@ -33,6 +33,10 @@ progress_report() {
   [[ -e "${progress}" ]] && printf '%s\n' "${1}" > "${progress}"
 }
 
+# shellcheck disable=SC2034  # read inside the EXIT trap string
+install_failed=1
+trap 'if (( install_failed )); then progress_report failed; fi' EXIT
+
 # ---------------------------------------------------------------------------
 # 1. Partition
 # ---------------------------------------------------------------------------
@@ -445,6 +449,9 @@ fi
 # ---------------------------------------------------------------------------
 # 20. Finalize
 # ---------------------------------------------------------------------------
+
+# shellcheck disable=SC2034  # read inside the EXIT trap
+install_failed=0
 
 progress_report sync
 sync
