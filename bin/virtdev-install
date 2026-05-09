@@ -14,6 +14,16 @@
 # Use virtdev-seal to promote them to sealed base system images
 # from which project virtual machines may be derived.
 #
+# Exit codes:
+#
+#   0   success
+#   3   ISO not found
+#   4   OVMF_CODE not found
+#   5   OVMF_VARS not found
+#   6   installation directory already exists
+#   7   sealed base system already present
+#   8   SSH public key not found
+#
 # Configuration via environment variables:
 #
 #   VIRTDEV_HOME              Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
