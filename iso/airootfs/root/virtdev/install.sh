@@ -143,6 +143,7 @@ extra_packages=()
 if [[ -f "${fw_cfg_dir}"/packages/raw ]]; then
   while read -r line; do
     line="${line%%#*}"
+    line="${line%"${line##*[![:space:]]}"}"
     [[ -n "${line}" ]] && extra_packages+=("${line}")
   done < "${fw_cfg_dir}"/packages/raw
 fi

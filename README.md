@@ -185,7 +185,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 |---------|-------------|
 | `virtdev-key` | Generate ed25519 SSH key pair |
 | `virtdev-iso` | Build the Arch Linux installation ISO |
-| `virtdev-install [iso]` | Install base system to qcow2 disks |
+| `virtdev-install [flags] [iso]` | Install base system to qcow2 disks |
 | `virtdev-seal` | Seal installation as read-only base |
 | `virtdev-maintain [flags]` | Boot sealed base for maintenance, reseal on exit |
 

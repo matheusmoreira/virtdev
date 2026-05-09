@@ -39,6 +39,7 @@
 #   VIRTDEV_PACKAGES          Default: (none) path to extra packages file
 #   VIRTDEV_SCRIPT            Default: (none) path to custom install script
 #   VIRTDEV_INVENTORY         Default: (none) path to user inventory script
+#   VIRTDEV_CACHE             Default: ${XDG_CACHE_HOME:-~/.cache}/virtdev
 #   VIRTDEV_SYSTEM_DISK_SIZE  Default: 24G
 #   VIRTDEV_HOME_DISK_SIZE    Default: 48G
 #   VIRTDEV_VM_MEMORY         Default: 4096
@@ -263,11 +264,29 @@ while [[ ! -S "${install_sock}" ]]; do
   sleep 0.1
 done
 
-socat UNIX-CONNECT:"${install_sock}" - 2>/dev/null \
-  | tee "${install_progress}" \
-  | while IFS= read -r token; do
-      install_display_progress "${token}"
+if [[ -S "${install_sock}" ]]; then
+  socat UNIX-CONNECT:"${install_sock}" - 2>/dev/null \
+    | tee "${install_progress}" \
+    | while IFS= read -r token; do
+        install_display_progress "${token}"
+      done &
+  reader_pid=$!
+
+  # Kill the reader pipeline when QEMU dies — without this, socat
+  # blocks forever if the guest install fails (QEMU stays running
+  # but no more data arrives on the virtio-serial port).
+  (
+    while kill -0 "${qemu_pid}" 2>/dev/null && kill -0 "${reader_pid}" 2>/dev/null; do
+      sleep 1
     done
+    kill "${reader_pid}" 2>/dev/null || true
+  ) &
+  watchdog_pid=$!
+
+  wait "${reader_pid}" 2>/dev/null || true
+  kill "${watchdog_pid}" 2>/dev/null || true
+  wait "${watchdog_pid}" 2>/dev/null || true
+fi
 
 wait "${qemu_pid}" 2>/dev/null || true
 
@@ -275,12 +294,15 @@ if grep -qx 'complete' "${install_progress}" 2>/dev/null; then
   install_succeeded=1
   printf >&2 '\n%s\n' "$(terminal_write fg=green 'Installer finished.' reset)"
   printf >&2 'Run virtdev-seal to seal the base system images.\n'
-else
+elif kill -0 "${qemu_pid}" 2>/dev/null; then
   printf >&2 '\n%s\n' "$(terminal_write fg=red 'Installation did not complete successfully.' reset)"
   printf >&2 'Attach to the console for debugging:\n'
   printf >&2 '    socat - UNIX-CONNECT:%s\n' "${console_sock}"
   printf >&2 'Press Ctrl-C to terminate the virtual machine.\n'
   wait "${qemu_pid}" 2>/dev/null || true
+else
+  printf >&2 '\n%s\n' "$(terminal_write fg=red 'Installation did not complete successfully.' reset)"
+  printf >&2 'The virtual machine has already exited.\n'
 fi
 
 rm -f "${install_progress}" "${install_sock}" "${console_sock}"
