@@ -27,9 +27,12 @@ AuthenticationMethods publickey
 AllowUsers dev
 AcceptEnv            VIRTDEV_*
 
-PermitRootLogin       no
-PermitUserEnvironment no
-PermitTunnel          no
+PermitRootLogin        no
+PermitUserEnvironment  no
+PermitTunnel           no
+AllowAgentForwarding   no
+AllowTcpForwarding     no
+X11Forwarding          no
 
 StreamLocalBindUnlink yes
 
