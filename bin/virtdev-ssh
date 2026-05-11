@@ -20,16 +20,34 @@
 #
 #     export VIRTDEV_SSH_KEY=~/.ssh/virtdev_id
 #
+# SSH configuration is assembled from up to four sources
+# (highest priority first):
+#
+#   1. per-project pre-ssh trigger output
+#   2. system pre-ssh trigger output
+#   3. ${XDG_CONFIG_HOME}/virtdev/projects/<name>/ssh_config
+#   4. ${XDG_CONFIG_HOME}/virtdev/ssh_config
+#
+# Pre-ssh triggers fire before connecting; post-ssh triggers
+# fire after disconnecting. See lib/virtdev/trigger for details.
+#
+# Exit codes:
+#   3   project not found
+#   4   no port assigned (virtual machine not started)
+#   5   virtual machine not running
+#   80  pre-ssh trigger aborted (from lib/virtdev/trigger)
+#
 
 set -euo pipefail
 
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh
+import error validate arguments ssh trigger
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=()
@@ -75,11 +93,55 @@ fi
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 
-exec ssh                             \
-  -i "${VIRTDEV_SSH_KEY}"            \
-  -p "${port}"                       \
-  -o StrictHostKeyChecking=no        \
-  -o UserKnownHostsFile=/dev/null    \
-  -o LogLevel=ERROR                  \
-  dev@127.0.0.1                      \
-  "$@"
+# --- Trigger and SSH config assembly ---
+
+export VIRTDEV_PROJECT="${project}"
+export VIRTDEV_PORT="${port}"
+export VIRTDEV_SSH_KEY
+
+system_trigger_config=""
+project_trigger_config=""
+pre_ssh_fired=0
+
+config_file=""
+ssh_exit=0
+
+# shellcheck disable=SC2329  # invoked via trap
+cleanup() {
+  if (( pre_ssh_fired )); then
+    export VIRTDEV_SSH_EXIT="${ssh_exit}"
+    trigger_fire post-ssh || true
+  fi
+  [[ -n "${config_file}" ]] && rm -f "${config_file}"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+trigger_fire pre-ssh system_trigger_config project_trigger_config
+pre_ssh_fired=1
+
+project_ssh_config="${XDG_CONFIG_HOME}/virtdev/projects/${project}/ssh_config"
+system_ssh_config="${XDG_CONFIG_HOME}/virtdev/ssh_config"
+
+config_file="$(mktemp)"
+{
+  [[ -n "${project_trigger_config}" ]] && printf '%s\n' "${project_trigger_config}"
+  [[ -n "${system_trigger_config}" ]]  && printf '%s\n' "${system_trigger_config}"
+  [[ -f "${project_ssh_config}" ]]     && cat "${project_ssh_config}"
+  [[ -f "${system_ssh_config}" ]]      && cat "${system_ssh_config}"
+} > "${config_file}"
+
+ssh                                    \
+  -F "${config_file}"                  \
+  -i "${VIRTDEV_SSH_KEY}"              \
+  -p "${port}"                         \
+  -o StrictHostKeyChecking=no          \
+  -o UserKnownHostsFile=/dev/null      \
+  -o LogLevel=ERROR                    \
+  dev@127.0.0.1                        \
+  "$@"                                 \
+  || ssh_exit=$?
+
+exit "${ssh_exit}"

@@ -9,9 +9,10 @@
 # qcow2 images are absolute and do not reference the project name,
 # so no image rewriting is needed.
 #
-# If a provision script or manifest exists under the XDG config
-# path for the source project, a warning is printed — those are
-# user-owned files and must be moved manually.
+# If a config directory exists under the XDG config path for the
+# source project (provision scripts, manifests, triggers,
+# ssh_config), a warning is printed — those are user-owned files
+# and must be moved manually.
 #
 # Exit codes:
 #

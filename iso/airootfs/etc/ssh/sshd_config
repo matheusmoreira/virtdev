@@ -25,10 +25,13 @@ UsePAM                       yes
 AuthenticationMethods publickey
 
 AllowUsers dev
+AcceptEnv            VIRTDEV_*
 
 PermitRootLogin       no
 PermitUserEnvironment no
 PermitTunnel          no
+
+StreamLocalBindUnlink yes
 
 Banner          none
 VersionAddendum none

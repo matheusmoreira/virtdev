@@ -207,7 +207,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 
 | Command | Description |
 |---------|-------------|
-| `virtdev-ssh <project> [args...]` | SSH into a running virtual machine |
+| `virtdev-ssh <project> [args...]` | SSH into a running virtual machine (fires pre/post-ssh triggers) |
 | `virtdev-console <project>` | Serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is available |
 | `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
@@ -270,6 +270,41 @@ color when stderr is a terminal, `NO_COLOR` is unset, and `TERM` is not
 
 Output convention: user-facing messages go to stderr, machine-readable
 output (ports, paths, PIDs, status words) goes to stdout.
+
+## Triggers
+
+Triggers are user-supplied scripts that run at defined points in a
+command's lifecycle. Currently supported events: `pre-ssh` and `post-ssh`.
+
+```
+~/.config/virtdev/triggers/pre-ssh                     # system (all projects)
+~/.config/virtdev/projects/myproject/triggers/pre-ssh   # per-project
+```
+
+System triggers fire first, then per-project. Each must be an executable
+file. Triggers inherit the calling process's environment. virtdev exports
+`VIRTDEV_PROJECT`, `VIRTDEV_PORT`, and `VIRTDEV_SSH_KEY` before firing
+pre-ssh triggers; post-ssh triggers also receive `VIRTDEV_SSH_EXIT`.
+
+For pre-ssh, stdout is treated as SSH config lines and incorporated into
+the SSH config assembly (see below). A non-zero exit aborts the
+connection (exit code 80). For post-ssh, stdout is ignored and a non-zero
+exit produces a warning.
+
+## SSH configuration
+
+`virtdev-ssh` assembles its SSH configuration from four sources (highest
+priority first):
+
+1. Per-project pre-ssh trigger output
+2. System pre-ssh trigger output
+3. `~/.config/virtdev/projects/<name>/ssh_config`
+4. `~/.config/virtdev/ssh_config`
+
+The assembled config is written to a temporary file and passed via
+`ssh -F`. The user's `~/.ssh/config` is intentionally excluded — virtdev
+connects to untrusted virtual machines and dangerous global settings
+(`ForwardAgent`, `ControlMaster`) should not leak in.
 
 ## Architecture
 
@@ -341,10 +376,16 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
   work/, profile/                   mkarchiso artifacts
 
 ~/.config/virtdev/
+  ssh_config                          system-level SSH config for all projects
+  triggers/
+    pre-ssh, post-ssh                 system-level trigger scripts
   maintenance/
     provision                       auto-run by virtdev-maintain (dotfiles, tools)
     inventory                       before/after diff by virtdev-maintain
   projects/<name>/
+    ssh_config                        per-project SSH config (overrides system)
+    triggers/
+      pre-ssh, post-ssh              per-project trigger scripts (override system)
     manifest                       canonical backup manifest (survives nuke)
     provision                         auto-run by virtdev-recreate
 ```

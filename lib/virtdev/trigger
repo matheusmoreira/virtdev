@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+#
+# trigger library: run user-supplied trigger scripts at defined
+# lifecycle points.
+#
+# Public:
+#   trigger_fire <event> [<system-output-var> <project-output-var>]
+#
+# Exit codes:
+#   80  pre-event trigger aborted the command
+#
+# Triggers are standalone executables discovered at two levels:
+#
+#   ${XDG_CONFIG_HOME}/virtdev/triggers/<event>              (system)
+#   ${XDG_CONFIG_HOME}/virtdev/projects/<name>/triggers/<event>  (per-project)
+#
+# System triggers fire first, then per-project. Both are optional.
+# A trigger must be a regular file with the executable bit set;
+# otherwise it is silently skipped.
+#
+# Stdout is captured and returned via optional nameref variables.
+# Stderr passes through to the terminal. When namerefs are omitted,
+# stdout is discarded.
+#
+# For pre-* events, a non-zero trigger exit calls error 80 (terminal).
+# For post-* events, a non-zero trigger exit emits a warning to stderr
+# and returns 0. The caller's exit code is not affected.
+#
+# The caller must export VIRTDEV_PROJECT and any other event-specific
+# VIRTDEV_* variables before calling trigger_fire.
+#
+set -euo pipefail
+: "${XDG_CONFIG_HOME:="${HOME}/.config"}"
+import error
+
+readonly trigger_aborted_exit_code=80
+
+trigger_fire() {
+  local -r event="${1}"
+  local -r system_var="${2:-}"
+  local -r project_var="${3:-}"
+
+  local -r system_trigger="${XDG_CONFIG_HOME}/virtdev/triggers/${event}"
+  local -r project_trigger="${XDG_CONFIG_HOME}/virtdev/projects/${VIRTDEV_PROJECT}/triggers/${event}"
+
+  local system_output="" project_output=""
+
+  if [[ -f "${system_trigger}" && -x "${system_trigger}" ]]; then
+    trigger_run "${event}" "${system_trigger}" system_output
+  fi
+
+  if [[ -f "${project_trigger}" && -x "${project_trigger}" ]]; then
+    trigger_run "${event}" "${project_trigger}" project_output
+  fi
+
+  if [[ -n "${system_var}" ]]; then
+    local -n _trigger_sys_ref="${system_var}"
+    _trigger_sys_ref="${system_output}"
+  fi
+
+  if [[ -n "${project_var}" ]]; then
+    local -n _trigger_proj_ref="${project_var}"
+    _trigger_proj_ref="${project_output}"
+  fi
+}
+
+trigger_run() {
+  local -r event="${1}"
+  local -r path="${2}"
+  local -n _trigger_output_ref="${3}"
+  local exit_code=0
+  _trigger_output_ref="$("${path}")" || exit_code=$?
+
+  if (( exit_code != 0 )); then
+    if [[ "${event}" == pre-* ]]; then
+      error "${trigger_aborted_exit_code}" <<<"Trigger aborted: ${path} (exit ${exit_code})"
+    else
+      printf >&2 'Warning: post-event trigger failed: %s (exit %d)\n' "${path}" "${exit_code}"
+    fi
+  fi
+}

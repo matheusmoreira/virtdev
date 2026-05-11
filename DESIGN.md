@@ -301,16 +301,31 @@ The installed system runs a hardened `sshd`:
 - NIST ECDH kex algorithms removed
 - Weak MACs removed
 - `AllowUsers dev`
+- `AcceptEnv VIRTDEV_*` — allows the host to set `VIRTDEV_*` environment
+  variables in the guest session (used by pre-ssh triggers to pass
+  per-session context like socket paths)
+- `StreamLocalBindUnlink yes` — removes stale unix socket files before
+  binding `RemoteForward` sockets (defense in depth for crash recovery)
 - `PermitRootLogin no`
 - `UsePAM yes` (required on Arch)
-- Passes ssh-audit with all green (verified 2026-04-02)
+- Passes ssh-audit with all green (verified 2026-04-02; re-verify after
+  adding `AcceptEnv` and `StreamLocalBindUnlink`)
 
 The same `sshd_config` is used in both the live ISO environment and the
 installed system.
 
-Client-side, every host-to-VM SSH invocation (`virtdev-ssh`,
-`virtdev-wait`, `virtdev-maintain`, `virtdev-transfer`,
-`virtdev-backup`, `virtdev-restore`) passes
+Client-side, `virtdev-ssh` assembles an SSH config from up to four
+sources (per-project trigger output, system trigger output, per-project
+static config, system static config) and passes it via `ssh -F`. The
+user's `~/.ssh/config` is intentionally excluded — virtdev connects to
+untrusted virtual machines, and dangerous global settings
+(`ForwardAgent`, `ControlMaster`) should not leak into the connection.
+
+Other host-to-VM SSH invocations (`virtdev-wait`, `virtdev-maintain`,
+`virtdev-transfer`, `virtdev-backup`, `virtdev-restore`) pass SSH
+options directly via command-line flags.
+
+All host-to-VM connections pass
 `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`. The
 host key changes on every base reseal and every project recreate, so
 a persistent `known_hosts` entry would produce a host-key-mismatch
@@ -529,6 +544,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `lock` | exclusive `flock(2)` acquisition on `${VIRTDEV_HOME}/lock`, with maintain-aware diagnostics | 75 |
 | `ssh` | SSH key file existence and permission validation (`ssh_key_validate`) | 77, 78 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
+| `trigger` | run user-supplied trigger scripts at lifecycle points (`trigger_fire`); discovers system and per-project triggers, captures stdout via namerefs | 80 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`, `project_is_detached`) | none (caller-supplied) |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
@@ -584,7 +600,7 @@ during a maintenance session.
 | `virtdev-create`   | Derive a project VM from the sealed base                     |
 | `virtdev-start`    | Start a project VM as a transient systemd user service; assigns SSH port |
 | `virtdev-stop`     | Clean ACPI shutdown; SIGTERM fallback                        |
-| `virtdev-ssh`      | SSH into a running project VM as dev                         |
+| `virtdev-ssh`      | SSH into a running project VM as dev; fires pre/post-ssh triggers, assembles hierarchical SSH config |
 | `virtdev-transfer` | Copy files between host and VM via rsync over SSH            |
 | `virtdev-console`  | Attach to the serial console via socat                       |
 | `virtdev-wait`     | Poll until SSH is accepting connections post-start            |
@@ -688,6 +704,13 @@ ${XDG_CACHE_HOME:-~/.cache}/virtdev/
   profile/              assembled ISO profile (cleared on each build)
 
 ${XDG_CONFIG_HOME:-~/.config}/virtdev/
+  ssh_config              system-level SSH config for all virtdev-ssh
+                          connections. Lowest-priority static source.
+  triggers/
+    pre-ssh               system-level trigger fired before virtdev-ssh
+                          connects. Stdout is SSH config lines.
+    post-ssh              system-level trigger fired after virtdev-ssh
+                          disconnects. Used for cleanup.
   maintenance/
     provision           optional bash script run by virtdev-maintain
                         after SSH is up (before the interactive session).
@@ -701,6 +724,10 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
                         with --no-inventory.
   projects/
     <name>/
+      ssh_config          per-project SSH config. Overrides system-level.
+      triggers/
+        pre-ssh           per-project pre-ssh trigger (overrides system)
+        post-ssh          per-project post-ssh trigger (overrides system)
       manifest       user-curated manifest, dotfile-friendly fallback;
                         used by virtdev-backup when a project-local
                         manifest is absent. Survives virtdev-nuke.
