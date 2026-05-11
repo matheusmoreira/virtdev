@@ -137,10 +137,10 @@ maintenance_boot() {
 
   local -a cache_args=()
   # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
-  cache_args+=(-virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=none)
+  cache_args+=(-virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=mapped-xattr)
   # shellcheck disable=SC2054
   [[ -d /var/cache/pacman/pkg ]] && cache_args+=(
-    -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=none,readonly=on)
+    -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=mapped-xattr,readonly=on)
 
   mkdir -p "${maintenance_project}"
   printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"

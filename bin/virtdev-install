@@ -187,7 +187,7 @@ cp "${OVMF_VARS}" "${nvram}"
 qemu_extra_args=()
 # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
 [[ -d /var/cache/pacman/pkg ]] && qemu_extra_args+=(
-  -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=none,readonly=on)
+  -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=mapped-xattr,readonly=on)
 [[ -n "${VIRTDEV_PACKAGES:-}" && -f "${VIRTDEV_PACKAGES}" ]] && qemu_extra_args+=(
   -fw_cfg "name=opt/virtdev/packages,file=${VIRTDEV_PACKAGES}")
 [[ -n "${VIRTDEV_SCRIPT:-}" && -f "${VIRTDEV_SCRIPT}" ]] && qemu_extra_args+=(
@@ -251,7 +251,7 @@ qemu-system-x86_64 \
     -device virtio-serial \
     -chardev socket,path="${install_sock}",server=on,wait=off,id=install_ch \
     -device virtserialport,chardev=install_ch,name=org.virtdev.install \
-    -virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=none \
+    -virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=mapped-xattr \
     -fw_cfg name=opt/virtdev/ssh_key,file="${VIRTDEV_SSH_KEY}.pub" \
     -fw_cfg name=opt/virtdev/timezone,string="${VIRTDEV_TIMEZONE}" \
     -fw_cfg name=opt/virtdev/locale,string="${VIRTDEV_LOCALE}" \
