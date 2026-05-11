@@ -16,7 +16,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments
+import error validate arguments port
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -44,14 +44,6 @@ if [[ ! -d "${project_directory}" ]]; then
   error 3 <<<"Project not found: ${project}"
 fi
 
-port_file="${project_directory}/port"
-if [[ ! -f "${port_file}" ]]; then
-  error 4 <<MESSAGE
-Project has no port assigned: ${project}
-Start the virtual machine first: virtdev-start ${project}
-MESSAGE
-fi
-
 if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
   error 5 <<MESSAGE
 Virtual machine is not running: ${project}
@@ -59,8 +51,11 @@ Start it with: virtdev-start ${project}
 MESSAGE
 fi
 
-port="$(< "${port_file}")"
-if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
-  error 4 <<<"Corrupt port file: ${port_file}"
+if ! port="$(port_read "${project}")"; then
+  error 4 <<MESSAGE
+Project has no port assigned: ${project}
+Start the virtual machine first: virtdev-start ${project}
+MESSAGE
 fi
+
 printf '%s\n' "${port}"

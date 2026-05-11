@@ -545,6 +545,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `ssh` | SSH key file existence and permission validation (`ssh_key_validate`) | 77, 78 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at lifecycle points (`trigger_fire`); discovers system and per-project triggers, captures stdout via namerefs | 80 |
+| `port` | SSH forwarding port file reading and validation (`port_read`, `port_read_lenient`) | 81 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`, `project_is_detached`) | none (caller-supplied) |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |

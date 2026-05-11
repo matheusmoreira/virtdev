@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+#
+# port library: SSH forwarding port file reading and validation.
+#
+# Public:
+#   port_read <project>          read and validate the port file;
+#                                prints the port to stdout.
+#                                Returns 1 if the port file does not exist.
+#   port_read_lenient <project>  like port_read but prints "?" and returns 0
+#                                when the file is missing or corrupt.
+#                                For display-oriented commands (list).
+#
+# Exit codes:
+#   81  corrupt port file (not a valid integer)
+#
+# The port file is written by virtdev-start with printf '%d\n' and
+# removed by virtdev-stop. Corruption requires filesystem-level issues
+# or external tampering.
+#
+set -euo pipefail
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+import error
+
+readonly port_corrupt_exit_code=81
+
+port_read() {
+  local -r project="${1}"
+  local -r port_file="${VIRTDEV_HOME}/projects/${project}/port"
+
+  if [[ ! -f "${port_file}" ]]; then
+    return 1
+  fi
+
+  local port
+  port="$(< "${port_file}")"
+
+  if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+    error "${port_corrupt_exit_code}" <<<"Corrupt port file: ${port_file}"
+  fi
+
+  printf '%s' "${port}"
+}
+
+port_read_lenient() {
+  local -r project="${1}"
+  local result
+  if result="$(port_read "${project}" 2>/dev/null)"; then
+    printf '%s' "${result}"
+  else
+    printf '%s' '?'
+  fi
+}

@@ -18,7 +18,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments project terminal
+import error arguments project terminal port
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=()
@@ -63,18 +63,12 @@ project_load_running_state running_state "${projects[@]}"
 
 for project in "${projects[@]}"; do
   project_directory="${VIRTDEV_HOME}/projects/${project}"
-  port_file="${project_directory}/port"
   generation_file="${project_directory}/generation"
 
   if [[ "${running_state[${project}]}" == "1" ]]; then
     status='running'
     status_color='fg=green'
-    if [[ -f "${port_file}" ]]; then
-      port="$(< "${port_file}")"
-      [[ "${port}" =~ ^[0-9]+$ ]] || port='?'
-    else
-      port='?'
-    fi
+    port="$(port_read_lenient "${project}")"
   else
     status='stopped'
     status_color='fg=red'

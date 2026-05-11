@@ -74,6 +74,7 @@ Same error → same code, everywhere:
 | 78 | SSH key permissions too open | `ssh_key_validate` |
 | 79 | invalid snapshot format | `snapshot_validate_format` |
 | 80 | trigger aborted the command | `trigger_fire` |
+| 81 | corrupt port file | `port_read` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").

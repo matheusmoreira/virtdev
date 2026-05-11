@@ -39,7 +39,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh snapshot terminal
+import error validate arguments ssh snapshot terminal port
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -86,16 +86,11 @@ Start it with: virtdev-start ${project}
 MESSAGE
 fi
 
-port_file="${project_directory}/port"
-if [[ ! -f "${port_file}" ]]; then
+if ! port="$(port_read "${project}")"; then
   error 15 <<MESSAGE
 Project has no port assigned: ${project}
 Start the virtual machine first: virtdev-start ${project}
 MESSAGE
-fi
-port="$(< "${port_file}")"
-if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
-  error 15 <<<"Corrupt port file: ${port_file}"
 fi
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
