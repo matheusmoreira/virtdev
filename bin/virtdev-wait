@@ -61,6 +61,9 @@ MESSAGE
 fi
 
 port="$(< "${port_file}")"
+if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+  error 4 <<<"Corrupt port file: ${port_file}"
+fi
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 

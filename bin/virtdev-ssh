@@ -83,6 +83,9 @@ MESSAGE
 fi
 
 port="$(< "${port_file}")"
+if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+  error 4 <<<"Corrupt port file: ${port_file}"
+fi
 
 if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
   error 5 <<MESSAGE
