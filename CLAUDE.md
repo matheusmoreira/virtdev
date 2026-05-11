@@ -29,8 +29,9 @@ how it's structured. Don't duplicate their content here — point to them.
 - Writes errors via `error <exit-code>` with the message on stdin (heredoc
   or here-string). `error()` is from `lib/virtdev/error`.
 - Validates project-name arguments with `validate_project_name "${project}"`
-  from `lib/virtdev/validate` (regex `^[a-zA-Z0-9_-]{1,100}$` — NAME_MAX-safe
-  and `sun_path`-safe).
+  from `lib/virtdev/validate` (regex `^[a-zA-Z0-9_-]+$`, dynamically
+  length-capped to fit within the 108-byte `sun_path` limit given the
+  current `VIRTDEV_HOME` path).
 - Acquires the exclusive virtdev lock with `lock_acquire` (or
   `lock_acquire_for_maintain` from `virtdev-maintain`) before doing anything
   that mutates virtdev state. See `DESIGN.md`'s "Concurrency and Locking"

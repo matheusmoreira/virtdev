@@ -7,14 +7,37 @@
 #   2  invalid project name
 #
 set -euo pipefail
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 import error
 
 validate_project_name() {
   local -r name="${1}"
-  if [[ ! "${name}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]]; then
+
+  if [[ ! "${name}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
     error 2 <<MESSAGE
 Invalid project name: '${name}'
-Allowed: a-z A-Z 0-9 _ - (1 to 100 characters)
+Allowed: a-z A-Z 0-9 _ - (letters, digits, underscores, hyphens)
+MESSAGE
+  fi
+
+  # The longest socket path is ${VIRTDEV_HOME}/projects/<name>/console.sock.
+  # Unix domain socket paths are limited to 108 bytes (sun_path).
+  local -r socket_overhead=22  # /projects//console.sock
+  local -r sun_path_limit=108
+  local -r max_length=$(( sun_path_limit - ${#VIRTDEV_HOME} - socket_overhead ))
+
+  if (( max_length < 1 )); then
+    error 2 <<MESSAGE
+VIRTDEV_HOME path is too long for Unix domain sockets: '${VIRTDEV_HOME}'
+The path must leave room for project socket paths within the 108-byte sun_path limit.
+MESSAGE
+  fi
+
+  if (( ${#name} > max_length )); then
+    error 2 <<MESSAGE
+Project name too long: '${name}' (${#name} characters)
+Maximum ${max_length} characters with current VIRTDEV_HOME.
+Unix domain socket paths are limited to 108 bytes (sun_path).
 MESSAGE
   fi
 }
