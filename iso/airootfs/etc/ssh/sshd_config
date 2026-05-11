@@ -30,10 +30,10 @@ AcceptEnv            VIRTDEV_*
 PermitRootLogin        no
 PermitUserEnvironment  no
 PermitTunnel           no
-AllowAgentForwarding          no
-AllowTcpForwarding            local
-AllowStreamLocalForwarding    remote
-X11Forwarding                 no
+AllowAgentForwarding   no
+AllowTcpForwarding     yes
+AllowStreamLocalForwarding yes
+X11Forwarding          no
 
 StreamLocalBindUnlink yes
 
