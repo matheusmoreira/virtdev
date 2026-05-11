@@ -31,8 +31,8 @@ PermitRootLogin        no
 PermitUserEnvironment  no
 PermitTunnel           no
 AllowAgentForwarding          no
-AllowTcpForwarding            no
-AllowStreamLocalForwarding    no
+AllowTcpForwarding            local
+AllowStreamLocalForwarding    remote
 X11Forwarding                 no
 
 StreamLocalBindUnlink yes
