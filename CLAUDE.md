@@ -72,6 +72,7 @@ Same error → same code, everywhere:
 | 77 | SSH key not found | `ssh_key_validate` |
 | 78 | SSH key permissions too open | `ssh_key_validate` |
 | 79 | invalid snapshot format | `snapshot_validate_format` |
+| 80 | trigger aborted the command | `trigger_fire` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").
@@ -147,6 +148,57 @@ Companion arrays are discovered by naming convention:
 (provided by the import module) to invoke sibling scripts by resolved
 path, avoiding PATH ordering issues between the dev tree and the
 installed package.
+
+### Triggers (`lib/virtdev/trigger`)
+
+The trigger library provides `trigger_fire <event> [sys_var proj_var]`.
+Triggers are user-supplied executables at two levels:
+
+    ${XDG_CONFIG_HOME}/virtdev/triggers/<event>              (system)
+    ${XDG_CONFIG_HOME}/virtdev/projects/<name>/triggers/<event>  (per-project)
+
+**Contract:**
+- Standalone executables, run as child processes (not sourced).
+- Inherit the caller's full environment. virtdev exports `VIRTDEV_*`
+  variables; everything else comes from the user's session naturally.
+- Stdout is captured by virtdev (meaning is event-specific). Stderr
+  passes through to the terminal.
+- Pre-event non-zero exit: `error 80` aborts the command. Post-event
+  non-zero exit: warning to stderr, no effect on command exit code.
+- No arguments — all context via environment.
+- Triggers determine their own applicability. virtdev fires them
+  unconditionally (interactive and scripted). A trigger that should
+  only act in tmux checks `$TMUX` itself.
+
+**Interface:** `trigger_fire` accepts optional nameref variable names
+for system and per-project output. When omitted, stdout is discarded
+(used for post-ssh where output is irrelevant).
+
+### SSH config assembly (`virtdev-ssh`)
+
+`virtdev-ssh` assembles configuration from four sources via a temp
+file passed to `ssh -F`. Priority order (SSH first-match-wins):
+
+1. Per-project trigger output (most specific)
+2. System trigger output
+3. `${XDG_CONFIG_HOME}/virtdev/projects/<name>/ssh_config`
+4. `${XDG_CONFIG_HOME}/virtdev/ssh_config`
+
+Process substitution (`<(...)`) cannot be used because ssh opens the
+`-F` path by name; the `/dev/fd/N` path is inaccessible by the time
+ssh reads it. A temp file with EXIT trap cleanup is required.
+
+The user's `~/.ssh/config` is intentionally excluded. This prevents
+dangerous global settings (`ForwardAgent`, `ControlMaster`) from
+leaking into untrusted VM connections.
+
+**Trap composition in `virtdev-ssh`:** ssh runs in the foreground
+(not backgrounded). An EXIT trap handles all cleanup: fires post-ssh
+triggers and removes the temp file. Signal traps (INT, TERM, HUP)
+simply call `exit` which triggers the EXIT trap — they do not
+perform cleanup themselves, preventing double-cleanup. A
+`pre_ssh_fired` guard ensures post-ssh only fires if pre-ssh
+succeeded.
 
 ### Library file rules (`lib/virtdev/*`)
 
