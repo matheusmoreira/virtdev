@@ -59,4 +59,8 @@ Start it with: virtdev-start ${project}
 MESSAGE
 fi
 
-printf '%s\n' "$(< "${port_file}")"
+port="$(< "${port_file}")"
+if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
+  error 4 <<<"Corrupt port file: ${port_file}"
+fi
+printf '%s\n' "${port}"

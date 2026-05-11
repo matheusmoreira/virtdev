@@ -71,6 +71,7 @@ for project in "${projects[@]}"; do
     status_color='fg=green'
     if [[ -f "${port_file}" ]]; then
       port="$(< "${port_file}")"
+      [[ "${port}" =~ ^[0-9]+$ ]] || port='?'
     else
       port='?'
     fi
