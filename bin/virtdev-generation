@@ -37,7 +37,7 @@ if [[ $# -eq 0 ]]; then
   if [[ ! -f "${generation_file}" ]]; then
     error 5 <<<"Base system generation file not found: '${generation_file}'"
   fi
-  printf '%s\n' "$(< "${generation_file}")"
+  printf '%s\n' "$(generation_read "${generation_file}")"
   exit 0
 fi
 
@@ -54,4 +54,4 @@ if [[ ! -f "${generation_file}" ]]; then
   error 4 <<<"Generation file not found: '${generation_file}'"
 fi
 
-printf '%s\n' "$(< "${generation_file}")"
+printf '%s\n' "$(generation_read "${generation_file}")"
