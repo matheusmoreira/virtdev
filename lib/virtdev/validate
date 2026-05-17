@@ -23,7 +23,7 @@ MESSAGE
   # The longest socket path is ${VIRTDEV_HOME}/projects/<name>/console.sock.
   # Unix domain socket paths are limited to 108 bytes (sun_path).
   local -r socket_overhead=23  # /projects//console.sock
-  local -r sun_path_limit=108
+  local -r sun_path_limit=107
   local -r max_length=$(( sun_path_limit - ${#VIRTDEV_HOME} - socket_overhead ))
 
   if (( max_length < 1 )); then

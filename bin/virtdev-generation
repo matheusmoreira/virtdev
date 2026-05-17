@@ -35,7 +35,7 @@ fi
 if [[ $# -eq 0 ]]; then
   generation_file="${VIRTDEV_HOME}/system/generation"
   if [[ ! -f "${generation_file}" ]]; then
-    error 3 <<<"Base system generation file not found: '${generation_file}'"
+    error 5 <<<"Base system generation file not found: '${generation_file}'"
   fi
   printf '%s\n' "$(< "${generation_file}")"
   exit 0
