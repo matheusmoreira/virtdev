@@ -443,7 +443,11 @@ printf >&2 'Waiting for virtual machine to exit...\n'
 printf >&2 'To abort:\n\n'
 printf >&2 '\tvirtdev-stop maintenance\n\n'
 
+trap 'printf >&2 "\n%s\n" "$(terminal_write fg=yellow "Interrupt ignored — the maintenance virtual machine is still running." reset)"; printf >&2 "To abort cleanly: virtdev-stop maintenance\n"' INT TERM HUP
+
 maintenance_wait_exit
+
+trap - INT TERM HUP
 
 # Capture exit status before reset-failed removes it.
 qemu_exit="$(systemctl --user show "${unit}" \
