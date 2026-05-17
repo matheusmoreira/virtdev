@@ -68,7 +68,7 @@ lock_acquire
 projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
   while IFS= read -r project; do
-    [[ "${project}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
+    [[ "${project}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
     if systemctl --user --quiet is-active virtdev-"${project}" 2>/dev/null; then
       error 4 <<MESSAGE
 Project virtual machine is running: ${project}

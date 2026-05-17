@@ -29,6 +29,10 @@ import error validate lock arguments terminal
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
 
+if [[ ! "${VIRTDEV_STOP_TIMEOUT}" =~ ^[0-9]+$ ]]; then
+  error 64 <<<"Invalid VIRTDEV_STOP_TIMEOUT: must be a positive integer"
+fi
+
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=([no-escalate]=bool)
 # shellcheck disable=SC2034
@@ -156,7 +160,7 @@ while :; do
     inactive|failed) break ;;
   esac
   if (( SECONDS >= deadline )); then
-    if (( ! escalated )) && [[ -z "${flags[no-escalate]:-}" ]]; then
+    if (( ! escalated )) && (( ! flags[no-escalate] )); then
       printf >&2 '%s\n' "$(terminal_write fg=yellow "Guest did not halt within ${VIRTDEV_STOP_TIMEOUT}s, falling back to SIGTERM..." reset)"
       systemctl --user stop "${unit}"
       escalated=1
@@ -165,7 +169,7 @@ while :; do
     fi
     break
   fi
-  sleep 1
+  sleep 0.2
 done
 
 # Post-condition: the loop above must leave the unit in a terminal

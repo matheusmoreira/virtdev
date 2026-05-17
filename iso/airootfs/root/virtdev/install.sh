@@ -189,6 +189,10 @@ progress_report fstab
 genfstab -U "${target}" >> "${target}"/etc/fstab
 
 home_uuid="$(blkid -s UUID -o value /dev/vdb1)"
+if [[ -z "${home_uuid}" ]]; then
+  >&2 printf 'virtdev: failed to read UUID of home partition\n'
+  exit 1
+fi
 sed -i "s|^UUID=${home_uuid}|LABEL=home|" "${target}"/etc/fstab
 
 printf 'virtdev: fstab generated\n'

@@ -43,7 +43,7 @@ PrintMotd       no
 PrintLastLog    yes
 
 TCPKeepAlive yes
-Compression  yes
+Compression  no
 StrictModes  yes
 UseDNS       no
 LogLevel     VERBOSE

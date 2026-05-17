@@ -597,7 +597,7 @@ during a maintenance session.
 | `virtdev-install`  | Boot ISO in QEMU, install base system to fresh qcow2 disks   |
 | `virtdev-seal`     | Promote installation images to read-only sealed base         |
 | `virtdev-maintain` | Boot sealed base for maintenance, reseal after poweroff       |
-| `virtdev-move`     | Rename a project (atomic directory rename)                    |
+| `virtdev-move`     | Rename a project (directory rename, backups, markers)         |
 | `virtdev-create`   | Derive a project VM from the sealed base                     |
 | `virtdev-start`    | Start a project VM as a transient systemd user service; assigns SSH port |
 | `virtdev-stop`     | Clean ACPI shutdown; SIGTERM fallback                        |

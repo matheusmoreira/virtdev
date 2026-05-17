@@ -26,6 +26,7 @@
 #   7   sealed base system already present
 #   8   SSH public key not found
 #   9   socat not found
+#  10   installation failed
 #
 # Configuration via environment variables:
 #
@@ -299,9 +300,11 @@ elif kill -0 "${qemu_pid}" 2>/dev/null; then
   printf >&2 '    socat - UNIX-CONNECT:%s\n' "${console_sock}"
   printf >&2 'Press Ctrl-C to terminate the virtual machine.\n'
   wait "${qemu_pid}" 2>/dev/null || true
+  exit 10
 else
   printf >&2 '\n%s\n' "$(terminal_write fg=red 'Installation did not complete successfully.' reset)"
   printf >&2 'The virtual machine has already exited.\n'
+  exit 10
 fi
 
 rm -f "${install_progress}" "${install_sock}" "${console_sock}" "${progress_fifo}"

@@ -28,6 +28,10 @@ import error validate arguments ssh port
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_WAIT_TIMEOUT:=120}"
 
+if [[ ! "${VIRTDEV_WAIT_TIMEOUT}" =~ ^[0-9]+$ ]]; then
+  error 64 <<<"Invalid VIRTDEV_WAIT_TIMEOUT: must be a positive integer"
+fi
+
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=()
 # shellcheck disable=SC2034
@@ -79,6 +83,7 @@ MESSAGE
       ;;
   esac
   if ssh \
+      -F /dev/null \
       -i "${VIRTDEV_SSH_KEY}" \
       -p "${port}" \
       -o BatchMode=yes \

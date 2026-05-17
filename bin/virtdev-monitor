@@ -11,7 +11,7 @@
 #     system_powerdown    ACPI power button
 #     quit                kill QEMU immediately
 #
-# Detach with Ctrl-].
+# Exit with Ctrl-C.
 #
 # Requires socat.
 #
@@ -70,5 +70,5 @@ if ! command -v socat &>/dev/null; then
   error 6 <<<'socat not found, install with: pacman -S socat'
 fi
 
-printf >&2 'Attaching to QEMU monitor of %s.\nDetach with Ctrl-].\n\n' "${project}"
+printf >&2 'Attaching to QEMU monitor of %s.\nExit with Ctrl-C.\n\n' "${project}"
 exec socat - UNIX-CONNECT:"${monitor_sock}"

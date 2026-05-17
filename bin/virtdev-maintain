@@ -91,6 +91,18 @@ import error lock arguments ssh project confirm terminal
 : "${VIRTDEV_VM_CPUS:=4}"
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 
+for _timeout_var in VIRTDEV_WAIT_TIMEOUT VIRTDEV_STOP_TIMEOUT; do
+  if [[ ! "${!_timeout_var}" =~ ^[0-9]+$ ]]; then
+    error 64 <<<"Invalid ${_timeout_var}: must be a positive integer"
+  fi
+done
+if [[ ! "${VIRTDEV_VM_MEMORY}" =~ ^[0-9]+$ ]]; then
+  error 64 <<<"Invalid VIRTDEV_VM_MEMORY: must be a positive integer"
+fi
+if [[ ! "${VIRTDEV_VM_CPUS}" =~ ^[0-9]+$ ]]; then
+  error 64 <<<"Invalid VIRTDEV_VM_CPUS: must be a positive integer"
+fi
+
 readonly maintenance_port=2222
 readonly unit=virtdev-maintenance
 
@@ -185,6 +197,7 @@ maintenance_wait_ssh() {
       *) return 1 ;;
     esac
     if ssh \
+        -F /dev/null \
         -i "${VIRTDEV_SSH_KEY}" \
         -p "${maintenance_port}" \
         -o BatchMode=yes \
@@ -344,7 +357,15 @@ console_sock="${maintenance_project}/console.sock"
 # ── Boot 1: interactive maintenance session ─────────────────────────
 
 printf >&2 'Starting maintenance virtual machine...\n'
-maintenance_boot
+if ! maintenance_boot; then
+  maintenance_cleanup
+  error 20 <<MESSAGE
+Failed to start maintenance virtual machine.
+systemd-run exited with an error before the virtual machine could boot.
+Inspect with: journalctl --user -u ${unit}
+Maintenance images preserved: '${maintenance_directory}'
+MESSAGE
+fi
 
 printf >&2 'Waiting for SSH on port %d with timeout %ds...' \
        "${maintenance_port}" "${VIRTDEV_WAIT_TIMEOUT}"
@@ -601,29 +622,30 @@ fi
 
 # Reseal via atomic exchange.
 #
+# The generation counter and chmod 444 are applied to maintenance/
+# BEFORE the swap so the exchange is the single commit point: after
+# it, system/ has the new images with correct generation and
+# read-only permissions. A crash before the exchange leaves the old
+# system/ intact; a crash after leaves system/ fully sealed.
+#
 # virtdev-exchange wraps renameat2(2) with RENAME_EXCHANGE: a single
 # syscall that atomically swaps system/ and maintenance/. After the
 # call, system/ holds the new images and maintenance/ holds the old
 # ones. There is no intermediate state where system/ is missing or
 # partially populated — not even under SIGKILL or power loss.
 #
-# The generation counter write and chmod that follow are not part of
-# the atomic swap, but a crash between the exchange and these steps
-# leaves system/ with the new images and a stale generation file
-# (copied from the pre-maintenance base). This is a benign state:
-# the images are correct, and re-running virtdev-maintain recovers.
-#
-# After the post-exchange steps complete, maintenance/ (which now
-# holds the previous base) is removed as best-effort cleanup.
-printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
-"${virtdev_bin_directory}/virtdev-exchange" "${system_directory}" "${maintenance_directory}"
-
+# After the exchange, maintenance/ (which now holds the previous
+# base) is removed as best-effort cleanup.
 printf >&2 'Incrementing generation counter (%d → %d)...\n' \
        "${old_generation}" "$(( old_generation + 1 ))"
-printf '%d\n' "$(( old_generation + 1 ))" > "${system_directory}/generation"
+printf '%d\n' "$(( old_generation + 1 ))" > "${maintenance_directory}/generation.tmp"
+mv "${maintenance_directory}/generation.tmp" "${maintenance_directory}/generation"
 
-printf >&2 'Marking base system images read-only...\n'
-chmod 444 "${system_directory}"/*
+printf >&2 'Marking maintenance images read-only before exchange...\n'
+chmod 444 "${maintenance_directory}"/*
+
+printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
+"${virtdev_bin_directory}/virtdev-exchange" "${system_directory}" "${maintenance_directory}"
 
 if ! rm -rf "${maintenance_directory}"; then
   printf >&2 'warning: could not remove %s; will be cleaned up on next virtdev-maintain run\n' \

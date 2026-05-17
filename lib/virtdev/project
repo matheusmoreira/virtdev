@@ -22,9 +22,8 @@
 #
 #   project_is_outdated <project>
 #       Returns 0 if the project's generation does not match the
-#       sealed base generation. Returns 0 (outdated) when either
-#       generation file is missing. Returns 1 (not outdated) for
-#       detached projects.
+#       sealed base generation. Returns 1 (not outdated) when either
+#       generation file is missing or the project is detached.
 #
 #   project_is_detached <project>
 #       Returns 0 if the project's generation file contains the
@@ -35,8 +34,6 @@
 
 set -euo pipefail
 
-import validate
-
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
 project_list() {
@@ -44,7 +41,7 @@ project_list() {
   [[ -d "${projects_dir}" ]] || return 0
   local name
   while IFS= read -r name; do
-    [[ "${name}" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || continue
+    [[ "${name}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
     [[ "${name}" == "maintenance" ]] && continue
     printf '%s\n' "${name}"
   done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort)
@@ -81,9 +78,8 @@ project_is_outdated() {
   project_is_detached "${project}" && return 1
   local -r base_file="${VIRTDEV_HOME}/system/generation"
   local -r project_file="${VIRTDEV_HOME}/projects/${project}/generation"
-  if [[ ! -f "${base_file}" || ! -f "${project_file}" ]]; then
-    return 0
-  fi
+  [[ -f "${base_file}" ]] || return 1
+  [[ -f "${project_file}" ]] || return 1
   local base_gen project_gen
   base_gen="$(< "${base_file}")"
   project_gen="$(< "${project_file}")"
