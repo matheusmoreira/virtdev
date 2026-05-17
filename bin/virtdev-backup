@@ -76,7 +76,7 @@ import error validate arguments ssh snapshot manifest terminal port
 umask 077
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([verbose]=bool [list]=bool [latest]=bool)
+declare -A spec=([verbose]=bool [list]=bool [latest]=bool [copy-links]=bool)
 # shellcheck disable=SC2034
 declare -A spec_short=([v]=verbose [l]=list)
 # shellcheck disable=SC2034
@@ -305,8 +305,9 @@ mkdir -m 0700 "${partial}/tree"
 ssh_command=""
 ssh_rsync_command ssh_command "${VIRTDEV_SSH_KEY}" "${port}"
 
-rsync_opts=(-a --no-D --ignore-missing-args --stats)
+rsync_opts=(-a --no-D --ignore-missing-args --stats --safe-links)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
+(( flags[copy-links] )) && rsync_opts+=(--copy-links)
 
 rsync_log="$(mktemp)"
 
