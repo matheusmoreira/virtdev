@@ -71,6 +71,22 @@ unit=virtdev-"${project}"
 project_directory="${VIRTDEV_HOME}"/projects/"${project}"
 monitor_sock="${project_directory}"/monitor.sock
 
+stop_finalize() {
+  local qemu_exit
+  qemu_exit="$(systemctl --user show "${unit}" --property=ExecMainStatus --value 2>/dev/null || true)"
+  qemu_exit="${qemu_exit:-?}"
+  # Skipped for maintenance: virtdev-maintain owns the unit lifecycle
+  # and calls reset-failed itself. Doing it here would race with
+  # maintain's ExecMainStatus capture.
+  if [[ "${project}" != "maintenance" ]]; then
+    systemctl --user reset-failed "${unit}" 2>/dev/null || true
+  fi
+  rm -f "${project_directory}"/port \
+       "${project_directory}"/monitor.sock \
+       "${project_directory}"/console.sock
+  printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
+}
+
 if [[ ! -d "${project_directory}" ]]; then
   error 3 <<<"Project not found: ${project}"
 fi
@@ -103,15 +119,7 @@ Investigate: systemctl --user status ${unit}
 MESSAGE
       ;;
   esac
-  qemu_exit="$(systemctl --user show "${unit}" --property=ExecMainStatus --value 2>/dev/null || true)"
-  qemu_exit="${qemu_exit:-?}"
-  if [[ "${project}" != "maintenance" ]]; then
-    systemctl --user reset-failed "${unit}" 2>/dev/null || true
-  fi
-  rm -f "${project_directory}"/port \
-       "${project_directory}"/monitor.sock \
-       "${project_directory}"/console.sock
-  printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
+  stop_finalize
   exit 0
 fi
 
@@ -187,34 +195,4 @@ MESSAGE
     ;;
 esac
 
-# Capture the raw QEMU exit status for the user. Typical values:
-#   0       clean guest poweroff
-#   143     SIGTERM (our SIGTERM fallback path or external 'systemctl stop')
-#   128+N   killed by signal N
-#   other   QEMU-level error
-qemu_exit="$(systemctl --user show "${unit}" --property=ExecMainStatus --value 2>/dev/null || true)"
-qemu_exit="${qemu_exit:-?}"
-
-# Reset any residual failed state so the next virtdev-start does not
-# hit a name collision. Done after the ExecMainStatus capture, which
-# needs the unit to still be loaded.
-#
-# Skipped when target is 'maintenance': virtdev-maintain owns the
-# unit lifecycle there. It calls reset-failed before its systemd-run
-# and again at end-of-session (clean and error paths). Doing it
-# here would race with maintain's read of ExecMainStatus in the
-# narrow window between maintain's wait-loop seeing 'inactive' and
-# its show --property capture: clearing the property leaves maintain
-# reading empty, which it coerces to 'unknown' and treats as
-# abnormal exit, refusing the reseal of an otherwise-clean session.
-# The cosmetic cost (the unit lingers in 'failed' between sessions
-# when virtdev-stop maintenance is used) is paid by the next
-# virtdev-maintain run via its pre-systemd-run reset-failed.
-if [[ "${project}" != "maintenance" ]]; then
-  systemctl --user reset-failed "${unit}" 2>/dev/null || true
-fi
-
-rm -f "${project_directory}"/port \
-     "${project_directory}"/monitor.sock \
-     "${project_directory}"/console.sock
-printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
+stop_finalize
