@@ -69,33 +69,59 @@ lock_acquire
 source_directory="${VIRTDEV_HOME}/projects/${source_name}"
 target_directory="${VIRTDEV_HOME}/projects/${target_name}"
 
-if [[ ! -d "${source_directory}" ]]; then
+# Allow recovery: if target exists but source doesn't, a previous run
+# was interrupted after the project dir rename. Skip the checks and
+# resume the critical section below.
+recovering=0
+if [[ ! -d "${source_directory}" && -d "${target_directory}" ]]; then
+  recovering=1
+elif [[ ! -d "${source_directory}" ]]; then
   error 3 <<<"Project not found: ${source_name}"
 fi
 
-if [[ -d "${target_directory}" ]]; then
-  error 4 <<<"Project already exists: ${target_name}"
-fi
+if (( ! recovering )); then
+  if [[ -d "${target_directory}" ]]; then
+    error 4 <<<"Project already exists: ${target_name}"
+  fi
 
-unit="virtdev-${source_name}"
-if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
-  error 5 <<<"Project virtual machine is running: ${source_name}"
+  unit="virtdev-${source_name}"
+  if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+    error 5 <<<"Project virtual machine is running: ${source_name}"
+  fi
 fi
-
-mv -- "${source_directory}" "${target_directory}"
 
 source_backups="${VIRTDEV_HOME}/backups/${source_name}"
 target_backups="${VIRTDEV_HOME}/backups/${target_name}"
 
+# Recovery: detect interrupted previous run via leftover target with
+# missing source. This means the project dir was renamed but the
+# script was interrupted before completion. Resume from where it
+# stopped rather than erroring on "source not found".
+if [[ -d "${target_directory}" && ! -d "${source_directory}" ]]; then
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'Recovering from interrupted move...' reset)"
+fi
+
+# Critical section: suppress signals to prevent partial state.
+# The rename sequence is: project dir, backups dir, marker update.
+# An interrupt between steps is recoverable by re-running the command.
+trap '' INT TERM HUP QUIT
+
+if [[ -d "${source_directory}" ]]; then
+  mv -- "${source_directory}" "${target_directory}"
+fi
+
 if [[ -d "${source_backups}" ]]; then
   mv -- "${source_backups}" "${target_backups}"
+fi
 
+if [[ -d "${target_backups}" ]]; then
   while IFS= read -r -d '' marker; do
     printf '%s\n' "${target_name}" > "${marker}"
   done < <(find "${target_backups}" -name project -print0)
-
   printf >&2 'Backup snapshots moved and markers updated.\n'
 fi
+
+trap - INT TERM HUP QUIT
 
 xdg_config_source="${XDG_CONFIG_HOME}/virtdev/projects/${source_name}"
 if [[ -d "${xdg_config_source}" ]]; then
