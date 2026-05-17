@@ -18,7 +18,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments snapshot confirm terminal
+import error validate lock arguments snapshot confirm terminal project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -45,9 +45,7 @@ lock_acquire
 
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
-if [[ ! -d "${project_directory}" ]]; then
-  error 3 <<<"Project not found: ${project}"
-fi
+project_require "${project}"
 
 if systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
   error 4 <<MESSAGE

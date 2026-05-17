@@ -39,7 +39,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh snapshot terminal port
+import error validate arguments ssh snapshot terminal port project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -75,9 +75,7 @@ validate_project_name "${project}"
 
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
-if [[ ! -d "${project_directory}" ]]; then
-  error 3 <<<"Project not found: ${project}"
-fi
+project_require "${project}"
 
 if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
   error 4 <<MESSAGE
@@ -182,26 +180,16 @@ Project generation file missing: '${project_generation_file}'
 The project's audit trail is incomplete; refusing to proceed.
 MESSAGE
 fi
-project_generation="$(< "${project_generation_file}")"
-if ! [[ "${project_generation}" =~ ^([0-9]+|detached)$ ]]; then
-  error 20 <<MESSAGE
-Corrupted project generation file: '${project_generation_file}'
-Contents: '${project_generation}'
-Valid contents: a single non-negative integer, or 'detached'.
-MESSAGE
-fi
+project_generation="$(generation_read "${project_generation_file}")"
 
 # Read the snapshot's recorded base generation for display.
-# Empty/absent is displayed as '-'.
+# Empty/absent is displayed as '-'. Corrupt content is non-fatal here
+# (display-only) so we validate inline rather than via generation_read.
 snapshot_generation='-'
 if [[ -s "${snapshot}/generation" ]]; then
   snapshot_generation="$(< "${snapshot}/generation")"
-  if ! [[ "${snapshot_generation}" =~ ^[0-9]+$ ]]; then
-    error 14 <<MESSAGE
-Corrupted snapshot generation file: '${snapshot}/generation'
-Contents: '${snapshot_generation}'
-The snapshot's base-generation audit trail is unreadable.
-MESSAGE
+  if [[ ! "${snapshot_generation}" =~ ^[0-9]+$ ]]; then
+    snapshot_generation='<corrupt>'
   fi
 fi
 

@@ -55,7 +55,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest confirm terminal
+import error validate arguments snapshot manifest confirm terminal project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -92,9 +92,7 @@ unit="virtdev-${project}"
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 backups_project_dir="$(snapshot_directory "${project}")"
 
-if [[ ! -d "${project_directory}" ]]; then
-  error 3 <<<"Project not found: ${project}"
-fi
+project_require "${project}"
 
 # Capture VM state once. Used for both the precondition check (which
 # requires it active unless --no-backup) and the do_stop decision

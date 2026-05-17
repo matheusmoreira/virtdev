@@ -24,7 +24,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal
+import error validate lock arguments terminal project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
@@ -87,9 +87,7 @@ stop_finalize() {
   printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
 }
 
-if [[ ! -d "${project_directory}" ]]; then
-  error 3 <<<"Project not found: ${project}"
-fi
+project_require "${project}"
 
 if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
   error 4 <<<"Project virtual machine is not running: ${project}"

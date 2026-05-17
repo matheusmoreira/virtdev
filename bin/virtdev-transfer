@@ -35,7 +35,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh port
+import error validate arguments ssh port project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -60,11 +60,8 @@ dest="${3}"
 
 validate_project_name "${project}"
 
-project_directory="${VIRTDEV_HOME}/projects/${project}"
 
-if [[ ! -d "${project_directory}" ]]; then
-  error 3 <<<"Project not found: ${project}"
-fi
+project_require "${project}"
 
 if ! port="$(port_read "${project}")"; then
   error 4 <<MESSAGE

@@ -588,16 +588,7 @@ fi
 if [[ ! -f "${system_directory}/generation" ]]; then
   error 15 <<<"Base system generation file missing: '${system_directory}/generation'"
 fi
-old_generation="$(< "${system_directory}/generation")"
-if ! [[ "${old_generation}" =~ ^[0-9]+$ ]]; then
-  error 19 <<MESSAGE
-Corrupted base generation file: '${system_directory}/generation'
-Contents: '${old_generation}'
-Repair manually: the file must contain a single non-negative integer.
-The sealed base images are intact: '${system_directory}'
-Maintenance images preserved for inspection: '${maintenance_directory}'
-MESSAGE
-fi
+old_generation="$(generation_read "${system_directory}/generation")"
 
 # Reseal via atomic exchange.
 #

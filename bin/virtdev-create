@@ -24,7 +24,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal
+import error validate lock arguments terminal project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -72,14 +72,7 @@ done
 if [[ ! -f "${system_directory}/generation" ]]; then
   error 7 <<<"Base system generation file missing: '${system_directory}/generation'"
 fi
-base_generation="$(< "${system_directory}/generation")"
-if ! [[ "${base_generation}" =~ ^[0-9]+$ ]]; then
-  error 8 <<MESSAGE
-Corrupted base generation file: '${system_directory}/generation'
-Contents: '${base_generation}'
-Repair manually: the file must contain a single non-negative integer.
-MESSAGE
-fi
+generation_read "${system_directory}/generation" >/dev/null
 
 if [[ -d "${project_directory}" ]]; then
   error 6 <<<"Project already exists: '${project_directory}'"
