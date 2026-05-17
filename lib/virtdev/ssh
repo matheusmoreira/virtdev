@@ -8,6 +8,12 @@
 #       to the caller's variable named by <varname>. The command
 #       includes key, port, and host-key/logging options.
 #
+#   ssh_poll_until_ready <key-path> <port> <unit> <timeout>
+#       Polls SSH on 127.0.0.1:<port> every 2s until a connection
+#       succeeds or <timeout> seconds elapse. Checks systemd unit
+#       state each iteration; returns immediately if the unit dies.
+#       Returns: 0 = SSH up, 1 = timeout, 2 = unit exited.
+#
 #   ssh_key_validate <key-path>
 #       Verify the file at <key-path> exists and has acceptable
 #       permissions (mode 600 or 400). Errors with code 77 if
@@ -32,6 +38,36 @@ ssh_rsync_command() {
   printf -v "${varname}" \
       'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
       "${key}" "${port}"
+}
+
+ssh_poll_until_ready() {
+  local -r key="${1}" port="${2}" unit="${3}" timeout="${4}"
+  local deadline
+  deadline=$(( SECONDS + timeout ))
+  while (( SECONDS < deadline )); do
+    local unit_state
+    unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
+    case "${unit_state}" in
+      active|activating) ;;
+      *) return 2 ;;
+    esac
+    if ssh \
+        -F /dev/null \
+        -i "${key}" \
+        -p "${port}" \
+        -o BatchMode=yes \
+        -o ConnectTimeout=3 \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR \
+        dev@127.0.0.1 \
+        true 2>/dev/null
+    then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
 }
 
 ssh_key_validate() {

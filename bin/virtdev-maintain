@@ -187,32 +187,7 @@ maintenance_boot() {
 }
 
 maintenance_wait_ssh() {
-  local deadline
-  deadline=$(( SECONDS + VIRTDEV_WAIT_TIMEOUT ))
-  while (( SECONDS < deadline )); do
-    local unit_state
-    unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
-    case "${unit_state}" in
-      active|activating) ;;
-      *) return 1 ;;
-    esac
-    if ssh \
-        -F /dev/null \
-        -i "${VIRTDEV_SSH_KEY}" \
-        -p "${maintenance_port}" \
-        -o BatchMode=yes \
-        -o ConnectTimeout=3 \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        -o LogLevel=ERROR \
-        dev@127.0.0.1 \
-        true 2>/dev/null
-    then
-      return 0
-    fi
-    sleep 2
-  done
-  return 1
+  ssh_poll_until_ready "${VIRTDEV_SSH_KEY}" "${maintenance_port}" "${unit}" "${VIRTDEV_WAIT_TIMEOUT}"
 }
 
 maintenance_wait_exit() {
