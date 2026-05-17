@@ -97,7 +97,7 @@ target_backups="${VIRTDEV_HOME}/backups/${target_name}"
 # missing source. This means the project dir was renamed but the
 # script was interrupted before completion. Resume from where it
 # stopped rather than erroring on "source not found".
-if [[ -d "${target_directory}" && ! -d "${source_directory}" ]]; then
+if (( recovering )); then
   printf >&2 '%s\n' "$(terminal_write fg=yellow 'Recovering from interrupted move...' reset)"
 fi
 

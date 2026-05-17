@@ -92,14 +92,14 @@ import error lock arguments ssh project confirm terminal port
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 
 for _timeout_var in VIRTDEV_WAIT_TIMEOUT VIRTDEV_STOP_TIMEOUT; do
-  if [[ ! "${!_timeout_var}" =~ ^[0-9]+$ ]]; then
+  if [[ ! "${!_timeout_var}" =~ ^[1-9][0-9]*$ ]]; then
     error 64 <<<"Invalid ${_timeout_var}: must be a positive integer"
   fi
 done
-if [[ ! "${VIRTDEV_VM_MEMORY}" =~ ^[0-9]+$ ]]; then
+if [[ ! "${VIRTDEV_VM_MEMORY}" =~ ^[1-9][0-9]*$ ]]; then
   error 64 <<<"Invalid VIRTDEV_VM_MEMORY: must be a positive integer"
 fi
-if [[ ! "${VIRTDEV_VM_CPUS}" =~ ^[0-9]+$ ]]; then
+if [[ ! "${VIRTDEV_VM_CPUS}" =~ ^[1-9][0-9]*$ ]]; then
   error 64 <<<"Invalid VIRTDEV_VM_CPUS: must be a positive integer"
 fi
 

@@ -93,8 +93,8 @@ project_is_outdated() {
   [[ -f "${base_file}" ]] || return 1
   [[ -f "${project_file}" ]] || return 1
   local base_gen project_gen
-  base_gen="$(< "${base_file}")"
-  project_gen="$(< "${project_file}")"
+  base_gen="$(generation_read "${base_file}")"
+  project_gen="$(generation_read "${project_file}")"
   [[ "${project_gen}" != "${base_gen}" ]]
 }
 

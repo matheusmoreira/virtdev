@@ -29,7 +29,7 @@ import error validate lock arguments terminal project
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
 
-if [[ ! "${VIRTDEV_STOP_TIMEOUT}" =~ ^[0-9]+$ ]]; then
+if [[ ! "${VIRTDEV_STOP_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
   error 64 <<<"Invalid VIRTDEV_STOP_TIMEOUT: must be a positive integer"
 fi
 

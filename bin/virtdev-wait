@@ -28,7 +28,7 @@ import error validate arguments ssh port project
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_WAIT_TIMEOUT:=120}"
 
-if [[ ! "${VIRTDEV_WAIT_TIMEOUT}" =~ ^[0-9]+$ ]]; then
+if [[ ! "${VIRTDEV_WAIT_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
   error 64 <<<"Invalid VIRTDEV_WAIT_TIMEOUT: must be a positive integer"
 fi
 
