@@ -119,7 +119,7 @@ system_generation_file="${system_directory}/generation"
 if [[ ! -f "${system_generation_file}" ]]; then
   error 9 <<<"Base system generation file missing: '${system_generation_file}'"
 fi
-base_generation="$(< "${system_generation_file}")"
+base_generation="$(generation_read "${system_generation_file}")"
 
 declare -a valid_projects=()
 mapfile -t valid_projects < <(project_list)
@@ -395,7 +395,7 @@ done
 
 # ── Phase 5: Summary ────────────────────────────────────────────────
 
-new_generation="$(< "${system_generation_file}")"
+new_generation="$(generation_read "${system_generation_file}")"
 
 printf '\n%s\n\n' "$(terminal_write bold "[Phase 4/${total_phases}] Summary" reset)" >&2
 

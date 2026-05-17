@@ -44,6 +44,9 @@ fi
 system_generation_file="${VIRTDEV_HOME}/system/generation"
 if [[ -f "${system_generation_file}" ]]; then
   base_generation="$(< "${system_generation_file}")"
+  if [[ ! "${base_generation}" =~ ^[0-9]+$ ]]; then
+    base_generation='<corrupt>'
+  fi
 else
   base_generation='-'
   printf >&2 'warning: base system generation file missing: %s\n' "${system_generation_file}"
@@ -77,6 +80,9 @@ for project in "${projects[@]}"; do
 
   if [[ -f "${generation_file}" ]]; then
     generation="$(< "${generation_file}")"
+    if [[ ! "${generation}" =~ ^([0-9]+|detached)$ ]]; then
+      generation='<corrupt>'
+    fi
   else
     generation='-'
   fi
