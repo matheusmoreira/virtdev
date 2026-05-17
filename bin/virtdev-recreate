@@ -282,6 +282,7 @@ latest_snapshot() {
 # tells them what state the project is in now and which command to
 # run by hand to resume.
 step=0
+provision_failed=0
 
 if (( do_backup )); then
   (( ++step ))
@@ -383,18 +384,10 @@ if (( do_provision )); then
   (( ++step ))
   printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] provision ${provision_path}" reset)" >&2
   if ! provision; then
-    snap="$(latest_snapshot)"
-    snap_hint=""
-    [[ -n "${snap}" ]] && snap_hint="
-Snapshot path: ${backups_project_dir}/${snap}/"
-    error 26 <<MESSAGE
-provision failed (script exited non-zero): ${provision_path}
-The fresh VM is up; the guest is in whatever state the script left it.
-Inspect, fix the script, and either re-run it manually:
-    virtdev-ssh ${project} bash -s < ${provision_path}
-Or finish the chain by hand:
-    virtdev-restore ${project}${snap_hint}
-MESSAGE
+    provision_failed=1
+    printf >&2 '%s\n' "$(terminal_write bold fg=yellow "Provision failed (script exited non-zero): ${provision_path}" reset)"
+    printf >&2 'The virtual machine is up but unprovisioned. Re-run manually:\n'
+    printf >&2 '    virtdev-ssh %s bash -s < %s\n' "${project}" "${provision_path}"
   fi
 fi
 
@@ -417,7 +410,9 @@ MESSAGE
 fi
 
 printf >&2 '\n'
-if (( do_restore )); then
+if (( provision_failed )); then
+  printf >&2 '%s\n' "$(terminal_write fg=yellow "Project recreated: ${project}" reset " (provision failed — unprovisioned)")"
+elif (( do_restore )); then
   printf >&2 '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset)"
 else
   printf >&2 '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset " (restore skipped)")"
