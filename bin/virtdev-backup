@@ -302,12 +302,8 @@ printf '%s\n' "${base_generation}" > "${partial}/generation"
 
 mkdir -m 0700 "${partial}/tree"
 
-# Build the SSH command for rsync's -e. printf %q survives rsync's
-# internal shell reparse even if VIRTDEV_SSH_KEY or port contain
-# unusual characters. Matches bin/virtdev-transfer.
-printf -v ssh_command \
-    'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
-    "${VIRTDEV_SSH_KEY}" "${port}"
+ssh_command=""
+ssh_rsync_command ssh_command "${VIRTDEV_SSH_KEY}" "${port}"
 
 rsync_opts=(-a --no-D --ignore-missing-args --stats)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)

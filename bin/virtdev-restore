@@ -214,9 +214,8 @@ printf >&2 'Restoring %s from %s/%s\n' \
 printf >&2 '  snapshot generation: %s\n' "${snapshot_generation}"
 printf >&2 '  current generation:  %s\n' "${project_generation}"
 
-printf -v ssh_command \
-    'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
-    "${VIRTDEV_SSH_KEY}" "${port}"
+ssh_command=""
+ssh_rsync_command ssh_command "${VIRTDEV_SSH_KEY}" "${port}"
 
 rsync_opts=(-a --no-D --ignore-missing-args --stats)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)

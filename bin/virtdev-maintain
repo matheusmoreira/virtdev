@@ -80,7 +80,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm terminal
+import error lock arguments ssh project confirm terminal port
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -317,7 +317,7 @@ Stop all project virtual machines before running virtdev-maintain:
 MESSAGE
 fi
 
-if [[ -n "$(ss -tlnH "sport = :${maintenance_port}" 2>/dev/null)" ]]; then
+if port_in_use "${maintenance_port}"; then
   error 9 <<<"Port ${maintenance_port} is already in use on this host"
 fi
 

@@ -9,6 +9,7 @@
 #   port_read_lenient <project>  like port_read but prints "?" and returns 0
 #                                when the file is missing or corrupt.
 #                                For display-oriented commands (list).
+#   port_in_use <port>           returns 0 if the given port is bound.
 #
 # Exit codes:
 #   81  corrupt port file (not a valid integer)
@@ -49,4 +50,8 @@ port_read_lenient() {
   else
     printf '%s' '?'
   fi
+}
+
+port_in_use() {
+  [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
 }

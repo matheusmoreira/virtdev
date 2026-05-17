@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 #
-# ssh library: SSH key validation for virtdev guest connections.
+# ssh library: SSH helpers for virtdev guest connections.
 #
 # Public:
+#   ssh_rsync_command <varname> <key-path> <port>
+#       Builds an rsync-compatible SSH command string and assigns it
+#       to the caller's variable named by <varname>. The command
+#       includes key, port, and host-key/logging options.
+#
 #   ssh_key_validate <key-path>
 #       Verify the file at <key-path> exists and has acceptable
 #       permissions (mode 600 or 400). Errors with code 77 if
@@ -21,6 +26,13 @@ import error
 
 readonly ssh_key_not_found_exit_code=77
 readonly ssh_key_permissions_exit_code=78
+
+ssh_rsync_command() {
+  local -r varname="${1}" key="${2}" port="${3}"
+  printf -v "${varname}" \
+      'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
+      "${key}" "${port}"
+}
 
 ssh_key_validate() {
   local -r key="${1}"

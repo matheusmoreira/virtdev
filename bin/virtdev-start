@@ -22,11 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project terminal
-
-port_in_use() {
-  [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
-}
+import error validate lock arguments project terminal port
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"

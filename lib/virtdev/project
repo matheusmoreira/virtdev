@@ -29,10 +29,22 @@
 #       Returns 0 if the project's generation file contains the
 #       literal string 'detached'.
 #
-# No reserved exit codes.
+#   project_require <project>
+#       Errors with code 3 if the project directory does not exist.
+#
+#   generation_read <file>
+#       Reads and validates a generation file. Prints the content
+#       (an integer or 'detached') to stdout. Errors with code 82
+#       if the file content is invalid.
+#
+# Exit codes:
+#   3   project not found (project_require)
+#   82  corrupt generation file (generation_read)
 #
 
 set -euo pipefail
+
+import error
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -90,4 +102,26 @@ project_is_detached() {
   local project="${1}"
   local -r generation_file="${VIRTDEV_HOME}/projects/${project}/generation"
   [[ -f "${generation_file}" ]] && [[ "$(< "${generation_file}")" == "detached" ]]
+}
+
+project_require() {
+  local -r project="${1}"
+  local -r project_directory="${VIRTDEV_HOME}/projects/${project}"
+  if [[ ! -d "${project_directory}" ]]; then
+    error 3 <<<"Project not found: ${project}"
+  fi
+}
+
+generation_read() {
+  local -r file="${1}"
+  local content
+  content="$(< "${file}")"
+  if [[ ! "${content}" =~ ^([0-9]+|detached)$ ]]; then
+    error 82 <<MESSAGE
+Corrupted generation file: '${file}'
+Content: '${content}'
+Repair manually: the file must contain a single non-negative integer or 'detached'.
+MESSAGE
+  fi
+  printf '%s' "${content}"
 }
