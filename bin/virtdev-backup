@@ -300,6 +300,14 @@ rsync_opts=(-a --no-D --ignore-missing-args --stats --safe-links)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
 (( flags[copy-links] )) && rsync_opts+=(--copy-links)
 
+previous="$(snapshot_latest "${project}")"
+if [[ -n "${previous}" ]]; then
+  previous_tree="${VIRTDEV_HOME}/backups/${project}/${previous}/tree"
+  if [[ -d "${previous_tree}" ]]; then
+    rsync_opts+=(--link-dest="${previous_tree}")
+  fi
+fi
+
 rsync_log="$(mktemp)"
 
 printf >&2 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
