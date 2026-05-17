@@ -153,7 +153,7 @@ if [[ -f "${fw_cfg_dir}"/packages/raw ]]; then
 fi
 
 pacstrap -K "${target}" \
-    base linux linux-firmware sudo mkinitcpio efibootmgr \
+    base linux sudo mkinitcpio efibootmgr \
     base-devel git openssh \
     vim less man-db man-pages curl wget which tree unzip zip htop rsync socat \
     kitty-terminfo foot-terminfo rxvt-unicode-terminfo ghostty-terminfo \
