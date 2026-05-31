@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # exit-code constants exported to consumers (virtdev-netexec, virtdev-start, virtdev-maintain)
+#
+# passt library: constructor helpers for the passt network backend.
+#
+# passt replaces QEMU user-mode (SLIRP) networking for project and
+# maintenance virtual machines, blocking the guest-to-host loopback
+# and host-global-address translation paths while keeping WAN egress.
+#
+# Public:
+#   passt_command <array_name> <socket> [<forward_port>]
+#       Fills the named array with the passt argv (pure; no process
+#       spawned). Single source of truth for the flag set used by every
+#       caller. Returning an array (rather than a string the caller must
+#       re-split) keeps the socket path intact even if it contains
+#       whitespace.
+#       array_name   — caller-declared array to populate.
+#       socket       — path passt creates and listens on; QEMU connects.
+#       forward_port — if given, adds -t 127.0.0.1/<port>:22 to forward
+#                      host loopback port <port> to guest port 22.
+#
+#   passt_socket_clean <socket>
+#       Idempotent unlink of a stale passt socket file. passt's bind()
+#       returns EADDRINUSE on a leftover socket file; this unlink is
+#       load-bearing and must run before each passt start. The caller
+#       holds the virtdev lock, so there is no race with a concurrent
+#       start.
+#
+# The forward-port bind race is detected by the consumer via port_in_use
+# (lib/virtdev/port) — not duplicated here.
+#
+# Exit codes reserved by this library (extending the project table):
+#   83  passt binary not found in PATH
+#   84  passt failed to initialise (non-zero exit before QEMU exec)
+#   85  forward-port bind race (port taken when passt tried to bind)
+#
+# Design note: passt initialises its listening socket *before* it forks
+# to background (default mode). The instant passt's foreground invocation
+# returns 0 the socket is listening and QEMU can connect — no socket-wait
+# loop needed. The shim (virtdev-netexec) relies on this invariant.
+#
+set -euo pipefail
+
+readonly passt_missing_exit_code=83
+readonly passt_init_failure_exit_code=84
+readonly passt_port_race_exit_code=85
+
+passt_command() {
+  local -n _command="${1}"
+  local -r socket="${2}"
+  local -r forward_port="${3:-}"
+
+  _command=(
+    passt
+    --socket "${socket}"
+    --map-host-loopback none
+    --map-guest-addr none
+    --dns 9.9.9.9
+  )
+  if [[ -n "${forward_port}" ]]; then
+    _command+=(-t "127.0.0.1/${forward_port}:22")
+  fi
+}
+
+passt_socket_clean() {
+  local -r socket="${1}"
+  rm -f "${socket}"
+}

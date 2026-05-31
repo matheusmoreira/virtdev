@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
+#
+# virtdev-netexec --socket <path> [--forward <port>] -- <qemu-command...>
+#
+# Internal exec-shim: sets up passt networking, then exec's the QEMU
+# command. Designed to be run as the main process of a systemd transient
+# unit so that passt and QEMU share the same cgroup for lifecycle
+# management and future egress filtering.
+#
+# Steps:
+#   1. Verify passt is available in PATH (exit 83 if not).
+#   2. Remove any stale passt socket file (passt bind() returns
+#      EADDRINUSE on a leftover file; the unlink is load-bearing).
+#   3. Start passt in background mode. On failure, classify the error
+#      via port probe: exit 85 (port taken) or exit 84 (init failure).
+#   4. exec the QEMU command — passt and QEMU share the unit cgroup;
+#      systemd owns teardown via KillMode=control-group.
+#
+# This shim supervises nothing. Once exec succeeds, the unit's main
+# process is QEMU and ExecMainStatus reflects QEMU's exit code.
+#
+# Exit codes:
+#   64  usage error (arguments library)
+#   83  passt binary not found (from lib/virtdev/passt)
+#   84  passt failed to initialise (from lib/virtdev/passt)
+#   85  forward-port bind race (from lib/virtdev/passt)
+#
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error arguments passt port
+
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=([socket]=required [forward]=value)
+# shellcheck disable=SC2034
+declare -A spec_placeholders=([socket]=path [forward]=port)
+# shellcheck disable=SC2034
+declare -a spec_positionals=("qemu-command+")
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+# --socket is `required` (enforced by arguments_parse), but that check is
+# syntactic — --socket= would pass it — so validate non-emptiness too.
+socket="${flags[socket]:-}"
+forward_port="${flags[forward]:-}"
+
+if [[ $# -lt 1 || -z "${socket}" ]]; then
+  error 64 <<<"$(arguments_usage spec)"
+fi
+
+# Step 1: verify passt is present.
+if ! command -v passt &>/dev/null; then
+  error "${passt_missing_exit_code}" <<MESSAGE
+passt not found in PATH.
+Install it: pacman -S passt
+MESSAGE
+fi
+
+# Step 2: remove any stale socket from a previous unclean shutdown.
+passt_socket_clean "${socket}"
+
+# Step 3: start passt (default backgrounding mode).
+# passt initialises its listening socket *before* forking to background,
+# so a zero exit from the foreground invocation guarantees the socket is
+# ready for QEMU to connect.
+declare -a passt_argv=()
+passt_command passt_argv "${socket}" "${forward_port}"
+if ! "${passt_argv[@]}"; then
+  # Classify the failure: forward port already bound → 85, otherwise → 84.
+  if [[ -n "${forward_port}" ]] && port_in_use "${forward_port}"; then
+    error "${passt_port_race_exit_code}" <<MESSAGE
+Forward port ${forward_port} is bound by another process.
+passt could not bind the SSH forward port. Retry with a different port.
+MESSAGE
+  fi
+  error "${passt_init_failure_exit_code}" <<MESSAGE
+passt failed to initialise. The socket did not come up.
+Investigate the unit logs: journalctl --user -u virtdev-<project>
+MESSAGE
+fi
+
+# Step 4: exec QEMU — this replaces the shim process.
+# After exec, ExecMainStatus reflects QEMU's exit code.
+exec "$@"
