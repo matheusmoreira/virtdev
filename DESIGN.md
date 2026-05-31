@@ -23,9 +23,36 @@ Running each project in a separate KVM virtual machine raises the bar to a
 hardware-assisted hypervisor escape, which is a qualitatively different and
 much harder attack than escaping a namespace or a permission boundary.
 
-The tradeoff accepted is operational overhead: VMs cost more to create and
-manage than directories. `virtdev` exists to reduce that overhead to the point
-where the isolation is practical for day-to-day development.
+The tradeoff accepted is operational overhead: virtual machines cost more to
+create and manage than directories. `virtdev` exists to reduce that overhead to
+the point where the isolation is practical for day-to-day development.
+
+**Isolation scope:** the isolation virtdev provides is _host-and-inter-project_
+— a compromised guest should not reach the host or other project guests.
+**Exfiltration (outbound internet access) is not a goal.** Project guests
+require internet egress (package managers, Claude Code's Anthropic API calls,
+etc.), so outbound network access is intentionally unrestricted.
+
+**Phase 1 residuals (documented openly):** virtdev uses passt as its network
+backend (`start` and `maintain` paths) with both host-translation paths
+disabled (guest→host via the SLIRP gateway address and via passt's
+host-global-address mapping are blocked). However, the following paths
+remain reachable in Phase 1:
+
+1. **guest→host via the host's real LAN IP / `0.0.0.0` bindings** (including
+   the host's `sshd`, which binds `0.0.0.0:22`). This is plain NAT through
+   passt — passt cannot filter by destination. Closing it requires a host-side
+   nftables egress filter scoped to the virtual machine cgroup (a planned
+   fast-follow; the passt/cgroup architecture here is explicitly designed to
+   enable it). This applies to all protocols (TCP, UDP, ICMP) and both
+   address families (IPv4 and IPv6).
+2. **`install`-time guest→host**: the installer keeps SLIRP networking.
+   Accepted: the installer runs only official Arch Linux signed packages
+   (no AUR, no `makepkg`, no provisioning), so the threat window is very
+   short and the network exposure is similar to any OS installation.
+3. **Host-local-user access to socket files** (`passt.sock`, `monitor.sock`):
+   mitigated by mode 0700 on the per-project directory; outside the primary
+   hypervisor-escape threat model but documented for completeness.
 
 ---
 
@@ -140,6 +167,7 @@ projects/<name>/
   port           (SSH forwarding port, present while running)
   monitor.sock   (QEMU monitor socket, present while running)
   console.sock   (serial console socket, present while running)
+  passt.sock     (passt network backend socket, present while running)
 ```
 
 ### System Disk Modes
@@ -329,10 +357,9 @@ All host-to-VM connections pass
 `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`. The
 host key changes on every base reseal and every project recreate, so
 a persistent `known_hosts` entry would produce a host-key-mismatch
-warning on every legitimate operation. The connection is restricted
-to loopback (`-netdev user,hostfwd=tcp:127.0.0.1:<port>-:22`), so the
-man-in-the-middle attacks that `StrictHostKeyChecking` defends
-against do not apply.
+warning on every legitimate operation. The SSH forward is bound to
+loopback only (passt `-t 127.0.0.1/<port>:22`), so the man-in-the-middle
+attacks that `StrictHostKeyChecking` defends against do not apply.
 
 **Serial console autologin:** the serial console (`console.sock`)
 auto-logs in as `dev` via a systemd drop-in on `serial-getty@ttyS0`.
@@ -362,7 +389,11 @@ QEMU flags of note:
 - `-enable-kvm -cpu host` — hardware-assisted virtualisation
 - `-machine q35` — modern PCIe machine type
 - `-drive if=pflash ...` — OVMF firmware; OVMF_CODE read-only, per-project NVRAM copy writable
-- `-netdev user,hostfwd=tcp:127.0.0.1:<port>-:22` — SSH port forwarding, loopback only
+- `-netdev stream,id=net0,server=off,addr.type=unix,addr.path=<passt.sock>` — connects QEMU to the
+  passt network backend via a UNIX socket. passt is started by `virtdev-netexec` (the exec-shim)
+  before QEMU, with host-translation paths disabled (`--map-host-loopback none`,
+  `--map-guest-addr none`) and a loopback-only SSH forward (`-t 127.0.0.1/<port>:22`).
+  `virtdev-install` keeps the original `-netdev user` (SLIRP) backend.
 - `-fw_cfg name=opt/virtdev/project,string=<name>` — injects the project name into the guest via QEMU firmware configuration; used for hostname setting
 - `-fw_cfg name=opt/virtdev/ssh_key,file=<path>` — SSH public key (install time)
 - `-fw_cfg name=opt/virtdev/timezone,string=<tz>` — timezone (install time)
@@ -547,7 +578,8 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `trigger` | run user-supplied trigger scripts at lifecycle points (`trigger_fire`); discovers system and per-project triggers, captures stdout via namerefs | 80 |
 | `port` | SSH forwarding port file reading and validation (`port_read`, `port_read_lenient`) | 81 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
-| `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`, `project_is_detached`) | none (caller-supplied) |
+| `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`, `project_is_detached`, `generation_read`) | 3, 82 |
+| `passt` | passt network backend constructor helpers (`passt_command`, `passt_port_probe`, `passt_socket_clean`); single source of truth for passt flags | 83, 84, 85 |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
 | `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array); lazy-inits on first `terminal_write` call using the color mode from `arguments_parse` | none |
 
@@ -675,6 +707,11 @@ ${VIRTDEV_HOME}/
     system.qcow2
     home.qcow2
     nvram
+  projects/maintenance/  transient maintenance virtual machine runtime directory (mode 0700)
+    port                 hardcoded port 2222
+    monitor.sock         QEMU monitor socket (present while maintenance virtual machine is running)
+    console.sock         serial console socket (present while maintenance virtual machine is running)
+    passt.sock           passt network backend socket (present while maintenance virtual machine is running)
   projects/
     <name>/
       system.qcow2      delta over system/system.qcow2 (or absent in ro mode)
@@ -684,6 +721,7 @@ ${VIRTDEV_HOME}/
       port              SSH forwarding port (present while running)
       monitor.sock      QEMU monitor socket (present while running)
       console.sock      serial console socket (present while running)
+      passt.sock        passt network backend socket (present while running)
       manifest       optional; user-curated manifest for virtdev-backup
                         (falls back to
                         ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<name>/manifest
@@ -827,3 +865,20 @@ there is no silent shadowing when both files exist.
   in manifests. Per `DESIGN.md`'s threat model the host is trusted, so
   encryption adds complexity without matching a real adversary. The
   manifest is literal (`--files-from`) to keep the contract auditable.
+
+- **Network isolation Phase 1 residuals.** The passt backend (`start` and
+  `maintain` paths) blocks guest→host via passt's two translation shortcuts
+  (loopback-via-gateway and host-global-address). The following reachability
+  paths remain open in Phase 1:
+
+  - **Guest→host via the host's real LAN IP or `0.0.0.0`-bound services**
+    (including `sshd`, which binds `0.0.0.0:22`). This is ordinary NAT;
+    passt cannot filter by destination address. Closing this requires a
+    host-side nftables egress filter scoped to the virtual machine cgroup.
+    Applies to all protocols (TCP, UDP, ICMP) and both IPv4 and IPv6.
+  - **`install`-time guest→host**: `virtdev-install` keeps the original
+    `-netdev user` SLIRP backend (accepted: short window, official signed
+    repositories only, no untrusted code running during install).
+  - passt crashing **mid-session**: the guest loses networking; the
+    systemd unit continues (QEMU is the main process). No health
+    supervision in Phase 1 — notice and restart the virtual machine.

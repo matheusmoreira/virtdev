@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # virtdev_bin_directory and passt_* provided by imported libraries
 #
 # virtdev-maintain
 #
@@ -80,7 +81,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm terminal port
+import error lock arguments ssh project confirm terminal port passt
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -105,8 +106,6 @@ fi
 
 readonly maintenance_port=2222
 readonly unit=virtdev-maintenance
-
-# shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
@@ -155,8 +154,9 @@ maintenance_boot() {
     -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=mapped-xattr,readonly=on)
 
   mkdir -p "${maintenance_project}"
+  chmod 0700 "${maintenance_project}"
   printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
-  rm -f "${monitor_sock}" "${console_sock}"
+  rm -f "${monitor_sock}" "${console_sock}" "${passt_sock}"
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
   systemd-run \
@@ -164,26 +164,30 @@ maintenance_boot() {
       --unit="${unit}" \
       --description='virtdev base system maintenance virtual machine' \
       -- \
-      qemu-system-x86_64 \
-          -enable-kvm \
-          -cpu host \
-          -machine q35 \
-          -m "${VIRTDEV_VM_MEMORY}" \
-          -smp "${VIRTDEV_VM_CPUS}" \
-          -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
-          -drive if=pflash,format=raw,file="${nvram}" \
-          -drive file="${system_disk}",if=virtio,format=qcow2 \
-          -drive file="${home_disk}",if=virtio,format=qcow2 \
-          -netdev user,id=net0,hostfwd=tcp:127.0.0.1:"${maintenance_port}"-:22 \
-          -device virtio-net-pci,netdev=net0 \
-          -device virtio-rng-pci \
-          -display none \
-          -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
-          -monitor chardev:monitor \
-          -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
-          -serial chardev:serial \
-          "${cache_args[@]}" \
-          -fw_cfg name=opt/virtdev/project,string=maintenance
+      "${virtdev_bin_directory}/virtdev-netexec" \
+          --socket "${passt_sock}" \
+          --forward "${maintenance_port}" \
+          -- \
+          qemu-system-x86_64 \
+              -enable-kvm \
+              -cpu host \
+              -machine q35 \
+              -m "${VIRTDEV_VM_MEMORY}" \
+              -smp "${VIRTDEV_VM_CPUS}" \
+              -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+              -drive if=pflash,format=raw,file="${nvram}" \
+              -drive file="${system_disk}",if=virtio,format=qcow2 \
+              -drive file="${home_disk}",if=virtio,format=qcow2 \
+              -netdev stream,id=net0,server=off,addr.type=unix,addr.path="${passt_sock}" \
+              -device virtio-net-pci,netdev=net0 \
+              -device virtio-rng-pci \
+              -display none \
+              -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
+              -monitor chardev:monitor \
+              -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
+              -serial chardev:serial \
+              "${cache_args[@]}" \
+              -fw_cfg name=opt/virtdev/project,string=maintenance
 }
 
 maintenance_wait_ssh() {
@@ -203,7 +207,7 @@ maintenance_wait_exit() {
 
 maintenance_cleanup() {
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
-  rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}"
+  rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}" "${passt_sock}"
   rmdir "${maintenance_project}" 2>/dev/null || true
 }
 
@@ -328,6 +332,7 @@ trap - EXIT
 
 monitor_sock="${maintenance_project}/monitor.sock"
 console_sock="${maintenance_project}/console.sock"
+passt_sock="${maintenance_project}/passt.sock"
 
 # ── Boot 1: interactive maintenance session ─────────────────────────
 
@@ -342,26 +347,81 @@ Maintenance images preserved: '${maintenance_directory}'
 MESSAGE
 fi
 
-printf >&2 'Waiting for SSH on port %d with timeout %ds...' \
-       "${maintenance_port}" "${VIRTDEV_WAIT_TIMEOUT}"
-
-if ! maintenance_wait_ssh; then
-  printf >&2 ' failed.\n'
-
-  # Distinguish a port-bind race from a generic boot failure.
-  unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
-  if [[ "${unit_state}" != active && "${unit_state}" != activating ]] \
-     && [[ -n "$(ss -tlnH "sport = :${maintenance_port}" 2>/dev/null)" ]]; then
-    maintenance_cleanup
-    error 16 <<MESSAGE
+# Early activation check: briefly poll the unit state so that a passt
+# failure (missing, init error, port race) fails fast with a targeted
+# message instead of falling through to the full 120s SSH wait and a
+# misleading "SSH did not become available" report.
+#
+# Mirrors virtdev-start's post-launch poll. No new code arm is needed
+# in the later reseal 'case "${qemu_exit}"': once the shim exec's QEMU,
+# qemu_exit is QEMU's (0/143/…) and can never be 83/84/85.
+activate_deadline=$(( SECONDS + 5 ))
+while true; do
+  activate_state="$(systemctl --user show "${unit}" \
+      --property=ActiveState --value 2>/dev/null || true)"
+  case "${activate_state}" in
+    active)
+      break
+      ;;
+    failed|inactive)
+      activate_exit="$(systemctl --user show "${unit}" \
+          --property=ExecMainStatus --value 2>/dev/null || true)"
+      activate_exit="${activate_exit:-unknown}"
+      case "${activate_exit}" in
+        "${passt_port_race_exit_code}")
+          maintenance_cleanup
+          error 16 <<MESSAGE
 Port ${maintenance_port} is bound by another process.
-Between virtdev-maintain's pre-flight port check and QEMU's bind()
+Between virtdev-maintain's pre-flight port check and passt's bind()
 call, another process took the port. The sealed base images are
 intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
 Remove manually to retry: rm -rf '${maintenance_directory}'
 MESSAGE
-  fi
+          ;;
+        "${passt_missing_exit_code}")
+          maintenance_cleanup
+          error 21 <<MESSAGE
+passt is not installed: ${unit} exit status ${activate_exit}.
+Install passt and retry: pacman -S passt
+    virtdev-maintain
+MESSAGE
+          ;;
+        "${passt_init_failure_exit_code}")
+          maintenance_cleanup
+          error 22 <<MESSAGE
+passt failed to initialise: ${unit} exit status ${activate_exit}.
+The socket did not come up before the virtual machine was launched.
+Investigate:
+    systemctl --user status ${unit}
+    journalctl --user -u ${unit}
+MESSAGE
+          ;;
+        *)
+          # Some other early exit (bad qcow2, KVM failure, etc.).
+          # Fall through to the SSH wait which will detect the unit is
+          # not active and produce its own diagnostic.
+          break
+          ;;
+      esac
+      ;;
+    *)
+      if (( SECONDS >= activate_deadline )); then
+        # Deadline expired; unit is still in a non-terminal transient
+        # state. Continue to the SSH wait — it will time out with its
+        # own message if the unit never becomes active.
+        break
+      fi
+      sleep 0.1
+      ;;
+  esac
+done
+
+printf >&2 'Waiting for SSH on port %d with timeout %ds...' \
+       "${maintenance_port}" "${VIRTDEV_WAIT_TIMEOUT}"
+
+if ! maintenance_wait_ssh; then
+  printf >&2 ' failed.\n'
 
   systemctl --user stop "${unit}" 2>/dev/null || true
 

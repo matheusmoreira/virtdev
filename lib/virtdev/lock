@@ -40,6 +40,9 @@ lock_acquire_for_maintain() {
 lock_open_and_flock() {
   local -r lock_file="${VIRTDEV_HOME}/lock"
   mkdir -p "${VIRTDEV_HOME}"
+  # Best-effort: a pre-existing VIRTDEV_HOME may be owned by another user
+  # (shared storage), so don't abort every command if the chmod fails.
+  chmod 0700 "${VIRTDEV_HOME}" 2>/dev/null || true
   exec 9>>"${lock_file}"
   if flock -n 9; then
     printf '%d\n' "$$" > "${lock_file}"

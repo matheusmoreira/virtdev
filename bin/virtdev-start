@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project terminal port
+import error validate lock arguments project terminal port passt
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -68,6 +68,11 @@ Project not found: '${project_directory}'
 Create project virtual machine first: virtdev-create '${project}'
 MESSAGE
 fi
+
+# Harden the per-project directory so that socket files (monitor, console,
+# passt) are not reachable by other local users. Pre-existing directories
+# (created before this hardening) are updated on every start.
+chmod 0700 "${project_directory}"
 
 for file in system.qcow2 home.qcow2 nvram; do
   if [[ ! -f "${project_directory}/${file}" ]]; then
@@ -169,6 +174,7 @@ home_disk="${project_directory}"/home.qcow2
 nvram="${project_directory}"/nvram
 monitor_sock="${project_directory}"/monitor.sock
 console_sock="${project_directory}"/console.sock
+passt_sock="${project_directory}"/passt.sock
 
 # Cleanup-on-failure: every error path between here and the wait-loop
 # success marker must leave the host in the same shape it found it.
@@ -187,14 +193,14 @@ cleanup_failed_start() {
   if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
     systemctl --user stop "${unit}" 2>/dev/null || true
   fi
-  rm -f "${port_file}" "${monitor_sock}" "${console_sock}"
+  rm -f "${port_file}" "${monitor_sock}" "${console_sock}" "${passt_sock}"
 }
 trap cleanup_failed_start EXIT
 
 printf '%d\n' "${port}" > "${port_file}"
 
 # Remove stale sockets from a previous unclean shutdown
-rm -f "${monitor_sock}" "${console_sock}"
+rm -f "${monitor_sock}" "${console_sock}" "${passt_sock}"
 
 # Clear any residual failed state from a previous start attempt. Without
 # --collect (see below), a unit that exited with error persists as
@@ -222,25 +228,29 @@ systemd-run \
     --description="virtdev project virtual machine: ${project}" \
     --property="ExecStop=${virtdev_bin_directory}/virtdev-stop --no-escalate ${project}" \
     -- \
-    qemu-system-x86_64 \
-        -enable-kvm \
-        -cpu host \
-        -machine q35 \
-        -m "${VIRTDEV_VM_MEMORY}" \
-        -smp "${VIRTDEV_VM_CPUS}" \
-        -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
-        -drive if=pflash,format=raw,file="${nvram}" \
-        -drive file="${system_disk}",if=virtio,format=qcow2 \
-        -drive file="${home_disk}",if=virtio,format=qcow2 \
-        -netdev user,id=net0,hostfwd=tcp:127.0.0.1:"${port}"-:22 \
-        -device virtio-net-pci,netdev=net0 \
-        -device virtio-rng-pci \
-        -display none \
-        -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
-        -monitor chardev:monitor \
-        -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
-        -serial chardev:serial \
-        -fw_cfg name=opt/virtdev/project,string="${project}"
+    "${virtdev_bin_directory}/virtdev-netexec" \
+        --socket "${passt_sock}" \
+        --forward "${port}" \
+        -- \
+        qemu-system-x86_64 \
+            -enable-kvm \
+            -cpu host \
+            -machine q35 \
+            -m "${VIRTDEV_VM_MEMORY}" \
+            -smp "${VIRTDEV_VM_CPUS}" \
+            -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+            -drive if=pflash,format=raw,file="${nvram}" \
+            -drive file="${system_disk}",if=virtio,format=qcow2 \
+            -drive file="${home_disk}",if=virtio,format=qcow2 \
+            -netdev stream,id=net0,server=off,addr.type=unix,addr.path="${passt_sock}" \
+            -device virtio-net-pci,netdev=net0 \
+            -device virtio-rng-pci \
+            -display none \
+            -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
+            -monitor chardev:monitor \
+            -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
+            -serial chardev:serial \
+            -fw_cfg name=opt/virtdev/project,string="${project}"
 
 # Wait for systemd to confirm the transient unit is active before the
 # lock is released (via script exit). systemd-run returns when the
@@ -275,37 +285,53 @@ while true; do
       exit_status="$(systemctl --user show "${unit}" \
           --property=ExecMainStatus --value 2>/dev/null || true)"
       exit_status="${exit_status:-unknown}"
-      # Distinguish a port-bind race from a generic QEMU crash. The
-      # pre-flight port_in_use check above is a TOCTOU: a non-virtdev
-      # process can bind the chosen port between our check and qemu's
-      # bind() call. From systemd's perspective this looks identical
-      # to any other early QEMU exit, but the user-visible cause and
-      # remediation are very different. Re-check the port now: if a
-      # listener is on it, qemu's exit was almost certainly because
-      # it could not bind. (TIME_WAIT sockets do not match -tln, so
-      # this does not false-positive on QEMU's own brief lifetime.)
-      if port_in_use "${port}"; then
-        if (( explicit_port )); then
-          error 17 <<MESSAGE
+      # Classify the failure by the shim's exit code first. When the
+      # shim exits before exec'ing QEMU, ExecMainStatus is the shim's
+      # code (83/84/85); once the shim exec's QEMU the status is QEMU's
+      # own (0/143/…) and can never be 83/84/85.
+      #
+      # passt now binds the forward port (not QEMU), so the legacy
+      # post-hoc qemu port_in_use re-probe is removed. Exit code 85
+      # from the shim is the authoritative bind-race signal.
+      case "${exit_status}" in
+        "${passt_port_race_exit_code}")
+          if (( explicit_port )); then
+            error 17 <<MESSAGE
 Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
-Between virtdev-start's pre-flight port check and qemu's bind() call,
+Between virtdev-start's pre-flight port check and passt's bind() call,
 a non-virtdev process took the port. The explicit port cannot be
 retried until that process releases it.
 Retry with a different port, or omit the port arg to auto-assign:
     virtdev-start ${project} <other-port>
     virtdev-start ${project}
 MESSAGE
-        else
-          error 17 <<MESSAGE
+          else
+            error 17 <<MESSAGE
 Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
 Auto-assignment selected this port, but a non-virtdev process took
-it between the port check and qemu's bind() call. Retry —
+it between the port check and passt's bind() call. Retry —
 auto-assignment will pick the next free port:
     virtdev-start ${project}
 MESSAGE
-        fi
-      fi
-      error 12 <<MESSAGE
+          fi
+          ;;
+        "${passt_missing_exit_code}")
+          error 18 <<MESSAGE
+passt is not installed: ${unit} exit status ${exit_status}.
+Install passt and retry: pacman -S passt
+    virtdev-start ${project}
+MESSAGE
+          ;;
+        "${passt_init_failure_exit_code}")
+          error 19 <<MESSAGE
+passt failed to initialise: ${unit} exit status ${exit_status}.
+The socket did not come up before QEMU was launched. Investigate:
+    systemctl --user status ${unit}
+    journalctl --user -u ${unit}
+MESSAGE
+          ;;
+        *)
+          error 12 <<MESSAGE
 Unit exited before becoming active: ${unit}
 ActiveState: ${state}
 QEMU exit status: ${exit_status}
@@ -313,6 +339,8 @@ QEMU likely crashed at boot. Investigate:
     systemctl --user status ${unit}
     journalctl --user -u ${unit}
 MESSAGE
+          ;;
+      esac
       ;;
     *)
       if (( SECONDS >= deadline )); then

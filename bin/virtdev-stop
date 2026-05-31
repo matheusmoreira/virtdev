@@ -83,7 +83,8 @@ stop_finalize() {
   fi
   rm -f "${project_directory}"/port \
        "${project_directory}"/monitor.sock \
-       "${project_directory}"/console.sock
+       "${project_directory}"/console.sock \
+       "${project_directory}"/passt.sock
   printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
 }
 

@@ -83,6 +83,7 @@ fi
 # partial directory so the user can retry without manual cleanup.
 
 mkdir -p "${project_directory}"
+chmod 0700 "${project_directory}"
 
 create_succeeded=0
 cleanup_partial_project() {

@@ -2,9 +2,16 @@
 
 Per-project KVM/QEMU virtual machines for isolated development.
 
-Each project gets its own Arch Linux VM backed by a thin qcow2 delta
-over a shared sealed base. The isolation boundary is a hardware-assisted
+Each project gets its own Arch Linux virtual machine backed by a thin qcow2
+delta over a shared sealed base. The isolation boundary is a hardware-assisted
 hypervisor, not a namespace or permission system.
+
+**Isolation scope:** guest→host via the SLIRP gateway address and passt's
+host-global-address mapping are blocked for project and maintenance virtual
+machines. Guest→host via the host's real LAN IP (including `0.0.0.0`-bound
+services such as `sshd`) remains reachable in Phase 1 — closing that path
+requires a host-side nftables egress filter (a planned fast-follow).
+Outbound internet access is unrestricted (package managers, Claude Code, etc.).
 
 ## Getting started
 
@@ -12,7 +19,7 @@ hypervisor, not a namespace or permission system.
 
 - Arch Linux host, bash >= 5.2
 - KVM-capable CPU, QEMU (`qemu-system-x86`), OVMF (`edk2-ovmf`)
-- OpenSSH (`openssh`), socat, rsync, archiso
+- OpenSSH (`openssh`), passt, socat, rsync, archiso
 
 ### Install
 
@@ -365,7 +372,7 @@ ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
   projects/<name>/
     system.qcow2, home.qcow2       delta disks
     nvram, generation               UEFI state, base generation
-    port, monitor.sock, console.sock  runtime (while running)
+    port, monitor.sock, console.sock, passt.sock  runtime (while running)
     manifest                     optional project-local manifest
   backups/<project>/<date>/<time>/
     project, manifest, generation   metadata
