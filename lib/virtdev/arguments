@@ -163,9 +163,11 @@ arguments_parse() {
         continue
         ;;
       --)
+        # Consume the rest as positional, then break (not return) so the
+        # missing-required-flag check after the loop still runs.
         shift
         _arguments_positional+=("$@")
-        return 0
+        break
         ;;
       --*=*)
         flag_name="${arg%%=*}"
