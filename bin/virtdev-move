@@ -115,9 +115,15 @@ if [[ -d "${source_backups}" ]]; then
 fi
 
 if [[ -d "${target_backups}" ]]; then
+  # The project marker lives at <date>/<time>/project (depth 3) and is
+  # a regular file. Bound the search to that exact shape: an unbounded
+  # `find -name project` also matches arbitrary backed-up guest content
+  # named 'project' under <date>/<time>/tree/..., which would then be
+  # clobbered with the new project name (and a 'project' *directory*
+  # would make the redirect fail mid-critical-section).
   while IFS= read -r -d '' marker; do
     printf '%s\n' "${target_name}" > "${marker}"
-  done < <(find "${target_backups}" -name project -print0)
+  done < <(find "${target_backups}" -mindepth 3 -maxdepth 3 -type f -name project -print0)
   printf >&2 'Backup snapshots moved and markers updated.\n'
 fi
 
