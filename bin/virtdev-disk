@@ -40,6 +40,13 @@ project_directory="${VIRTDEV_HOME}/projects/${project}"
 
 project_require "${project}"
 
+if ! command -v qemu-img &>/dev/null; then
+  error 5 <<MESSAGE
+qemu-img not found
+Install it with: pacman -S qemu-img
+MESSAGE
+fi
+
 system_disk="${project_directory}/system.qcow2"
 home_disk="${project_directory}/home.qcow2"
 
@@ -50,23 +57,27 @@ disk_info() {
     printf >&2 '%s: not found\n' "${label}"
     return
   fi
-  local actual virtual backing info_json
+  local actual virtual backing info_text bytes backing_path
   actual="$(du -sh "${path}" 2>/dev/null | cut -f1)"
-  info_json="$(qemu-img info --output=json "${path}" 2>/dev/null || true)"
-  virtual="$(printf '%s' "${info_json}" \
-    | grep -o '"virtual-size": [0-9]*' \
-    | grep -o '[0-9]*')"
-  if [[ -n "${virtual}" ]]; then
-    virtual="$(numfmt --to=iec-i --suffix=B "${virtual}")"
+  # Parse qemu-img's human output, NOT --output=json: modern qemu-img
+  # nests a children->file node that also carries "virtual-size", so a
+  # flat grep over the JSON matched twice and printed the wrong
+  # (underlying host-file) size. The human "virtual size:" and
+  # "backing file:" lines are top-level and unambiguous.
+  info_text="$(qemu-img info "${path}" 2>/dev/null || true)"
+  bytes="$(printf '%s\n' "${info_text}" \
+    | sed -n 's/^virtual size:.*(\([0-9]\{1,\}\) bytes).*/\1/p')"
+  if [[ -n "${bytes}" ]]; then
+    virtual="$(numfmt --to=iec-i --suffix=B "${bytes}")"
   else
     virtual="?"
   fi
   backing=""
-  if printf '%s' "${info_json}" | grep -q '"backing-filename"'; then
-    backing="$(printf '%s' "${info_json}" \
-      | grep -o '"backing-filename": "[^"]*"' \
-      | sed 's/.*": "//;s/"$//')"
-    backing=" (backing: $(basename "${backing}"))"
+  backing_path="$(printf '%s\n' "${info_text}" | sed -n 's/^backing file: //p')"
+  if [[ -n "${backing_path}" ]]; then
+    # Strip any " (actual path: ...)" suffix qemu-img appends.
+    backing_path="${backing_path%% (actual path:*}"
+    backing=" (backing: $(basename "${backing_path}"))"
   fi
   printf '  %-8s %6s / %-10s %s%s\n' "${label}" "${actual}" "${virtual}" "$(basename "${path}")" "${backing}"
 }
