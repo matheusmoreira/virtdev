@@ -41,6 +41,11 @@ if [[ ${#projects[@]} -eq 0 ]]; then
   exit 0
 fi
 
+# Color decision keyed on stdout (the table's destination), not stderr:
+# `virtdev list | grep` or `virtdev list > file` must not embed ANSI
+# escapes in the machine-readable output.
+terminal_init "" 1
+
 system_generation_file="${VIRTDEV_HOME}/system/generation"
 if [[ -f "${system_generation_file}" ]]; then
   base_generation="$(generation_read_lenient "${system_generation_file}")"

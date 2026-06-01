@@ -6,19 +6,25 @@
 #
 # Public functions:
 #
-#   terminal_init [color_mode]
+#   terminal_init [color_mode] [probe_fd]
 #       Populates the terminal associative array with escape
 #       sequences from terminfo. Called automatically on the
 #       first terminal_write call if not called explicitly.
 #       color_mode values:
 #
-#           auto    (default) enable if stderr is a tty,
+#           auto    (default) enable if probe_fd is a tty,
 #                   NO_COLOR is unset, and TERM is not dumb
 #           yes     always enable (overrides NO_COLOR)
 #           no      never enable
 #
 #       With no argument, reads the color mode set by
 #       arguments_parse's universal --color flag, or auto.
+#
+#       probe_fd is the file descriptor auto-mode tests for a tty
+#       (default 2, stderr). Commands that send colored output to
+#       stdout (virtdev-list, virtdev-disk) must pass 1 so a piped
+#       or redirected stdout disables color and machine-readable
+#       output stays escape-free.
 #
 #   terminal_write <arg>...
 #       Streams a mix of attributes and text to stdout.
@@ -63,6 +69,7 @@ declare -g _terminal_initialized=0
 terminal_init() {
   _terminal_initialized=1
   local color_mode="${1:-${_virtdev_color_mode:-auto}}"
+  local -r probe_fd="${2:-2}"
   local enable=0
 
   case "${color_mode}" in
@@ -73,7 +80,7 @@ terminal_init() {
       enable=0
       ;;
     auto|'')
-      if [[ -t 2 ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
+      if [[ -t "${probe_fd}" ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-dumb}" != "dumb" ]]; then
         enable=1
       fi
       ;;

@@ -82,6 +82,9 @@ disk_info() {
   printf '  %-8s %6s / %-10s %s%s\n' "${label}" "${actual}" "${virtual}" "$(basename "${path}")" "${backing}"
 }
 
+# Color keyed on stdout, this command's output destination.
+terminal_init "" 1
+
 printf '%s\n' "$(terminal_write bold "${project}" reset)"
 
 if project_is_detached "${project}"; then
