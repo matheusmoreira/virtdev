@@ -141,14 +141,12 @@ if (( flags[list] )); then
     for t in "${time_dirs[@]}"; do
       snapshot="${backups_project_dir}/${d}/${t}"
       size="$(du -sh "${snapshot}" 2>/dev/null | cut -f1)"
-      # Display the snapshot's recorded base generation.
-      # Non-integer values are shown as '<corrupt>'.
+      # Display the snapshot's recorded base generation ('-' if absent,
+      # '<corrupt>' if unreadable). Shared lenient reader; snapshot
+      # generations are always integers in practice.
       generation='-'
       if [[ -s "${snapshot}/generation" ]]; then
-        generation="$(< "${snapshot}/generation")"
-        if ! [[ "${generation}" =~ ^[0-9]+$ ]]; then
-          generation='<corrupt>'
-        fi
+        generation="$(generation_read_lenient "${snapshot}/generation")"
       fi
       time_colons="${t//-/:}"
       snap_epoch=$(date -u -d "${d} ${time_colons} UTC" +%s 2>/dev/null || echo 0)
@@ -313,11 +311,10 @@ rsync_log="$(mktemp)"
 printf >&2 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
 
 # Force LC_ALL=C so rsync's --stats output is in English. The
-# zero-file guard and the partial-transfer count both parse the
+# partial-transfer count (the exit 23/24 path below) parses the
 # 'Number of regular files transferred:' line; under a non-English
-# locale rsync would emit a translated label, the awk match would
-# fail silently, files_transferred would default to 0, and a
-# successful backup would be wrongly rejected by error 11.
+# locale rsync would emit a translated label and the awk match would
+# fail silently.
 if ! LC_ALL=C rsync "${rsync_opts[@]}" \
     --files-from=<(grep -Ev '^\s*(#|$)' "${partial}/manifest") \
     -e "${ssh_command}" \
@@ -365,22 +362,26 @@ MESSAGE
   esac
 fi
 
-# Refuse a snapshot that received zero files. The manifest may
-# reference paths that all happen to be absent on the guest (typo,
-# wrong project, recently deleted) — with --ignore-missing-args,
-# rsync silently skips them and exits 0. Without this check the
-# resulting snapshot would be promoted to final/ and the user would
-# only discover the empty payload at restore time, possibly after a
-# destroy-recreate cycle had already removed the source data.
-# Mirrors the equivalent guard in virtdev-restore.
-files_transferred="$(awk -F: '/^Number of regular files transferred:/ {
-  gsub(/[ ,]/, "", $2); print $2
-}' "${rsync_log}")"
-files_transferred="${files_transferred:-0}"
+# Refuse a snapshot whose tree captured nothing. The manifest may
+# reference paths that are all absent on the guest (typo, wrong
+# project, recently deleted) — with --ignore-missing-args rsync
+# silently skips them and exits 0, leaving an empty tree; without
+# this guard the empty snapshot would be promoted to final/ and the
+# user would only discover it at restore time, possibly after a
+# destroy-recreate had already removed the source data.
+#
+# Count the tree's actual contents, NOT rsync's "files transferred"
+# counter: with --link-dest an unchanged guest is hardlinked from the
+# previous snapshot, so rsync reports zero transferred while the tree
+# is fully populated. That idempotent re-run is the common steady
+# state (and virtdev-recreate's first step), so counting transfers
+# would wrongly reject — and the EXIT trap would delete — a valid
+# snapshot. Mirrors the equivalent guard in virtdev-restore.
+files_captured="$(find "${partial}/tree" \( -type f -o -type l \) -printf 'x' | wc -c)"
 
-if (( files_transferred == 0 )); then
+if (( files_captured == 0 )); then
   error 11 <<MESSAGE
-Zero files transferred during backup of ${project}.
+No files captured during backup of ${project}.
 Every manifest entry was skipped — most commonly because the
 referenced paths do not exist on the guest. The partial snapshot
 has been removed.
@@ -391,5 +392,5 @@ fi
 mv "${partial}" "${final}"
 backup_succeeded=1
 
-printf >&2 '%s\n' "$(terminal_write fg=green "Backed up ${files_transferred} files." reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green "Backed up ${files_captured} files." reset)"
 printf '%s\n' "${final}"
