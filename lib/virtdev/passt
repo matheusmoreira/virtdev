@@ -29,6 +29,9 @@
 # The forward-port bind race is detected by the consumer via port_in_use
 # (lib/virtdev/port) — not duplicated here.
 #
+# Environment:
+#   VIRTDEV_DNS   DNS server advertised to the guest (default 9.9.9.9).
+#
 # Exit codes reserved by this library (extending the project table):
 #   83  passt binary not found in PATH
 #   84  passt failed to initialise (non-zero exit before QEMU exec)
@@ -41,6 +44,8 @@
 #
 set -euo pipefail
 
+: "${VIRTDEV_DNS:="9.9.9.9"}"
+
 readonly passt_missing_exit_code=83
 readonly passt_init_failure_exit_code=84
 readonly passt_port_race_exit_code=85
@@ -50,12 +55,17 @@ passt_command() {
   local -r socket="${2}"
   local -r forward_port="${3:-}"
 
+  # --dns is defense-bearing, not cosmetic: by default passt advertises
+  # the host's own resolver address (e.g. systemd-resolved at
+  # 127.0.0.53) to the guest over DHCP. Pinning VIRTDEV_DNS overrides
+  # that host-address advertisement. Configurable via VIRTDEV_DNS so the
+  # runtime path honors the same knob virtdev-install does.
   _command=(
     passt
     --socket "${socket}"
     --map-host-loopback none
     --map-guest-addr none
-    --dns 9.9.9.9
+    --dns "${VIRTDEV_DNS}"
   )
   if [[ -n "${forward_port}" ]]; then
     _command+=(-t "127.0.0.1/${forward_port}:22")
