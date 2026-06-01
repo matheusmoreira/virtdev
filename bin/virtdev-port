@@ -48,11 +48,7 @@ Start it with: virtdev-start ${project}
 MESSAGE
 fi
 
-if ! port="$(port_read "${project}")"; then
-  error 4 <<MESSAGE
-Project has no port assigned: ${project}
-Start the virtual machine first: virtdev-start ${project}
-MESSAGE
-fi
+port=""
+port_require port "${project}" 4
 
 printf '%s\n' "${port}"

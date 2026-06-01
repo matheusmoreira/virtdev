@@ -3,13 +3,18 @@
 # port library: SSH forwarding port file reading and validation.
 #
 # Public:
-#   port_read <project>          read and validate the port file;
-#                                prints the port to stdout.
-#                                Returns 1 if the port file does not exist.
-#   port_read_lenient <project>  like port_read but prints "?" and returns 0
-#                                when the file is missing or corrupt.
-#                                For display-oriented commands (list).
-#   port_in_use <port>           returns 0 if the given port is bound.
+#   port_require <varname> <project> <missing-code>
+#                                Read and validate the port file and
+#                                assign the port to the caller's
+#                                <varname>. Errors with <missing-code>
+#                                if the file is absent, or 81 if it is
+#                                present but corrupt. Runs in the
+#                                caller's shell so the exit code
+#                                propagates — do NOT wrap in $().
+#   port_read_lenient <project>  Print the validated port, or "?" when
+#                                the file is missing or corrupt. For
+#                                display-oriented commands (list).
+#   port_in_use <port>           Returns 0 if the given port is bound.
 #
 # Exit codes:
 #   81  corrupt port file (not a valid integer)
@@ -18,34 +23,51 @@
 # removed by virtdev-stop. Corruption requires filesystem-level issues
 # or external tampering.
 #
+# Why port_require uses a nameref instead of `port="$(port_read ...)"`:
+# a port_read that called error() on a corrupt file would only exit the
+# command-substitution subshell, and the caller's `if !` would then
+# report its own "no port" code (4/13/15) with a contradictory message
+# — never the reserved 81. port_require runs in the caller's shell, so
+# its error() terminates the process with the correct code.
+#
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 import error
 
 readonly port_corrupt_exit_code=81
 
-port_read() {
-  local -r project="${1}"
-  local -r port_file="${VIRTDEV_HOME}/projects/${project}/port"
-
-  if [[ ! -f "${port_file}" ]]; then
-    return 1
-  fi
-
+# Internal. Print the port and return 0; return 1 if the port file is
+# missing, or 81 (port_corrupt_exit_code) if it exists but is not a
+# valid integer. Never exits — callers map the status to behavior.
+_port_value_or_status() {
+  local -r port_file="${VIRTDEV_HOME}/projects/${1}/port"
+  [[ -f "${port_file}" ]] || return 1
   local port
   port="$(< "${port_file}")"
-
-  if [[ ! "${port}" =~ ^[0-9]+$ ]]; then
-    error "${port_corrupt_exit_code}" <<<"Corrupt port file: ${port_file}"
-  fi
-
+  [[ "${port}" =~ ^[0-9]+$ ]] || return "${port_corrupt_exit_code}"
   printf '%s' "${port}"
 }
 
+port_require() {
+  local -r _port_varname="${1}" _port_project="${2}" _port_missing_code="${3}"
+  local _port_value _port_status=0
+  _port_value="$(_port_value_or_status "${_port_project}")" || _port_status=$?
+  if (( _port_status == 0 )); then
+    printf -v "${_port_varname}" '%s' "${_port_value}"
+  elif (( _port_status == port_corrupt_exit_code )); then
+    error "${port_corrupt_exit_code}" \
+      <<<"Corrupt port file: ${VIRTDEV_HOME}/projects/${_port_project}/port"
+  else
+    error "${_port_missing_code}" <<MESSAGE
+Project has no port assigned: ${_port_project}
+Start the virtual machine first: virtdev-start ${_port_project}
+MESSAGE
+  fi
+}
+
 port_read_lenient() {
-  local -r project="${1}"
   local result
-  if result="$(port_read "${project}" 2>/dev/null)"; then
+  if result="$(_port_value_or_status "${1}")"; then
     printf '%s' "${result}"
   else
     printf '%s' '?'

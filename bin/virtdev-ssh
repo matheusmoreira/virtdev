@@ -71,12 +71,8 @@ validate_project_name "${project}"
 
 project_require "${project}"
 
-if ! port="$(port_read "${project}")"; then
-  error 4 <<MESSAGE
-Project has no port assigned: ${project}
-Start the virtual machine first: virtdev-start ${project}
-MESSAGE
-fi
+port=""
+port_require port "${project}" 4
 
 if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
   error 5 <<MESSAGE
