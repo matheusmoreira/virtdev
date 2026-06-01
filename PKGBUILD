@@ -12,6 +12,7 @@ depends=(
   'qemu-system-x86'
   'edk2-ovmf'
   'openssh'
+  'passt'
   'socat'
 )
 optdepends=(

@@ -11,6 +11,7 @@ pkgbase = virtdev-git
 	depends = qemu-system-x86
 	depends = edk2-ovmf
 	depends = openssh
+	depends = passt
 	depends = socat
 	optdepends = archiso: required for building the installation ISO (virtdev-iso)
 	optdepends = rsync: required for backup, restore, transfer, and recreate
