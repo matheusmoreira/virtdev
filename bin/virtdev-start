@@ -226,7 +226,7 @@ systemd-run \
     --user \
     --unit="${unit}" \
     --description="virtdev project virtual machine: ${project}" \
-    --property="ExecStop=${virtdev_bin_directory}/virtdev-stop --no-escalate ${project}" \
+    --property="ExecStop=${virtdev_bin_directory}/virtdev-stop --acpi-only ${project}" \
     -- \
     "${virtdev_bin_directory}/virtdev-netexec" \
         --socket "${passt_sock}" \
