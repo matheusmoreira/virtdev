@@ -6,7 +6,8 @@
 #   ssh_rsync_command <varname> <key-path> <port>
 #       Builds an rsync-compatible SSH command string and assigns it
 #       to the caller's variable named by <varname>. The command
-#       includes key, port, and host-key/logging options.
+#       includes key, port, host-key/logging options, and isolation
+#       from the user's ~/.ssh/config and agent (untrusted guest).
 #
 #   ssh_poll_until_ready <key-path> <port> <unit> <timeout>
 #       Polls SSH on 127.0.0.1:<port> every 2s until a connection
@@ -35,8 +36,14 @@ readonly ssh_key_permissions_exit_code=78
 
 ssh_rsync_command() {
   local -r varname="${1}" key="${2}" port="${3}"
+  # -F /dev/null: ignore the user's ~/.ssh/config. These rsync transports
+  # connect to an UNTRUSTED guest; a host-side 'Host *' stanza
+  # (ForwardAgent, ProxyCommand, ControlMaster, LocalForward) must not
+  # leak in — the same isolation ssh_poll_until_ready and virtdev-ssh
+  # already enforce. IdentitiesOnly=yes offers only the given key (not
+  # agent identities); BatchMode=yes never blocks on a prompt mid-rsync.
   printf -v "${varname}" \
-      'ssh -i %q -p %q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
+      'ssh -F /dev/null -i %q -p %q -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
       "${key}" "${port}"
 }
 
