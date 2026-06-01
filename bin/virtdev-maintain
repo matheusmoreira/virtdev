@@ -686,7 +686,12 @@ printf >&2 '%s\n' "$(terminal_write fg=green "Base system resealed: ${system_dir
 
 outdated_count=0
 while IFS= read -r p; do
-  project_is_outdated "${p}" && (( ++outdated_count ))
+  outdated_status=0
+  project_is_outdated "${p}" || outdated_status=$?
+  case "${outdated_status}" in
+    0) (( ++outdated_count )) ;;
+    2) printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: ${p} has a corrupt generation file; cannot assess" reset)" ;;
+  esac
 done < <(project_list)
 
 if (( outdated_count > 0 )); then

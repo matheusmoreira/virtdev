@@ -33,5 +33,11 @@ if [[ $# -ne 0 ]]; then
 fi
 
 while IFS= read -r p; do
-  project_is_outdated "${p}" && printf '%s\n' "${p}"
+  status=0
+  project_is_outdated "${p}" || status=$?
+  case "${status}" in
+    0) printf '%s\n' "${p}" ;;                  # outdated
+    1) : ;;                                      # current or detached
+    *) printf >&2 'warning: %s has a corrupt generation file; skipping\n' "${p}" ;;
+  esac
 done < <(project_list)

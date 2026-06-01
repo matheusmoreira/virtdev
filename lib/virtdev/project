@@ -24,6 +24,9 @@
 #       Returns 0 if the project's generation does not match the
 #       sealed base generation. Returns 1 (not outdated) when either
 #       generation file is missing or the project is detached.
+#       Returns 2 if a generation file is corrupt — callers iterating
+#       over projects must warn and skip, never treat 2 as outdated
+#       (that would feed corruption into a destroy/recreate pipeline).
 #
 #   project_is_detached <project>
 #       Returns 0 if the project's generation file contains the
@@ -36,6 +39,11 @@
 #       Reads and validates a generation file. Prints the content
 #       (an integer or 'detached') to stdout. Errors with code 82
 #       if the file content is invalid.
+#
+#   generation_read_lenient <file>
+#       Like generation_read but prints '<corrupt>' and returns 0
+#       instead of erroring on invalid content. For display-oriented
+#       commands. Guard with [[ -s <file> ]] for the missing case.
 #
 # Exit codes:
 #   3   project not found (project_require)
@@ -93,8 +101,15 @@ project_is_outdated() {
   [[ -f "${base_file}" ]] || return 1
   [[ -f "${project_file}" ]] || return 1
   local base_gen project_gen
-  base_gen="$(generation_read "${base_file}")"
-  project_gen="$(generation_read "${project_file}")"
+  # generation_read panics (exit 82) on corruption, but here it runs
+  # inside a command substitution, so that exit would be swallowed and
+  # the variable left empty — silently reading as "outdated". Capture
+  # it explicitly as return 2 ("corrupt, cannot decide") so callers
+  # iterating over projects warn and skip instead of destroying a
+  # project off an unreadable generation file. 2>/dev/null suppresses
+  # the per-file panic message; the caller emits one naming the project.
+  base_gen="$(generation_read "${base_file}" 2>/dev/null)" || return 2
+  project_gen="$(generation_read "${project_file}" 2>/dev/null)" || return 2
   [[ "${project_gen}" != "${base_gen}" ]]
 }
 
@@ -124,4 +139,14 @@ Repair manually: the file must contain a single non-negative integer or 'detache
 MESSAGE
   fi
   printf '%s' "${content}"
+}
+
+generation_read_lenient() {
+  local -r file="${1}"
+  local result
+  if result="$(generation_read "${file}" 2>/dev/null)"; then
+    printf '%s' "${result}"
+  else
+    printf '%s' '<corrupt>'
+  fi
 }

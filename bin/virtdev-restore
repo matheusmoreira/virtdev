@@ -183,14 +183,11 @@ fi
 project_generation="$(generation_read "${project_generation_file}")"
 
 # Read the snapshot's recorded base generation for display.
-# Empty/absent is displayed as '-'. Corrupt content is non-fatal here
-# (display-only) so we validate inline rather than via generation_read.
+# Empty/absent is displayed as '-'; corrupt content is non-fatal here
+# (display-only), via the shared lenient reader.
 snapshot_generation='-'
 if [[ -s "${snapshot}/generation" ]]; then
-  snapshot_generation="$(< "${snapshot}/generation")"
-  if [[ ! "${snapshot_generation}" =~ ^[0-9]+$ ]]; then
-    snapshot_generation='<corrupt>'
-  fi
+  snapshot_generation="$(generation_read_lenient "${snapshot}/generation")"
 fi
 
 # Display the generation transition. Mismatch is the EXPECTED case in

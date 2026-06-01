@@ -208,7 +208,16 @@ declare -a outdated_blocked=()
 declare -a included_after_skip=()
 
 for p in "${included[@]}"; do
-  if project_is_outdated "${p}" && ! project_is_running "${p}"; then
+  outdated_status=0
+  project_is_outdated "${p}" || outdated_status=$?
+  if (( outdated_status == 2 )); then
+    # Corrupt generation file: cannot assess, and must never be fed
+    # into the backup/recreate pipeline. Exclude with a reason instead
+    # of falling through to the else branch (which would treat it as a
+    # normal rebuild candidate and recreate off the corrupt file).
+    excluded+=("${p}")
+    excluded_reasons["${p}"]="corrupt generation file"
+  elif (( outdated_status == 0 )) && ! project_is_running "${p}"; then
     if (( flags[skip-outdated] )); then
       skipped_outdated+=("${p}")
       excluded+=("${p}")
