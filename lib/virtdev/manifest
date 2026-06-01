@@ -11,8 +11,11 @@
 #       Returns 1 if no manifest is found at either location.
 #
 #   manifest_has_entries <path>
-#       Returns 0 if the file at <path> has at least one non-blank
-#       non-comment line. Returns 1 otherwise.
+#       Returns 0 if the file at <path> has at least one real entry:
+#       a line starting at column 0 with a non-'#' character. Leading
+#       whitespace does not count — virtdev-backup rejects indented
+#       lines as malformed, so counting them here would report "has
+#       entries" and then "manifest has malformed paths".
 #
 # No reserved exit codes. These functions return status codes only;
 # callers are responsible for error messages.
@@ -38,5 +41,5 @@ manifest_resolve() {
 }
 
 manifest_has_entries() {
-  grep -Eq '^\s*[^#[:space:]]' "${1}"
+  grep -Eq '^[^#[:space:]]' "${1}" 2>/dev/null
 }
