@@ -13,6 +13,14 @@ import error
 validate_project_name() {
   local -r name="${1}"
 
+  # Pin the C locale for this function. Under a UTF-8 locale the
+  # a-z/A-Z ranges in [[ =~ ]] match accented letters (e.g. 'café'
+  # would pass and then flow into the systemd unit name, the guest
+  # hostname, and filesystem paths), and ${#...} counts characters
+  # while sun_path is a byte limit. LC_ALL=C makes the allowlist
+  # strictly ASCII and the length checks byte-exact in one stroke.
+  local LC_ALL=C
+
   if [[ ! "${name}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
     error 2 <<MESSAGE
 Invalid project name: '${name}'
@@ -21,9 +29,9 @@ MESSAGE
   fi
 
   # The longest socket path is ${VIRTDEV_HOME}/projects/<name>/console.sock.
-  # Unix domain socket paths are limited to 108 bytes (sun_path).
+  # sun_path is 108 bytes including the trailing NUL, so 107 are usable.
   local -r socket_overhead=23  # /projects//console.sock
-  local -r sun_path_limit=107
+  local -r sun_path_limit=107  # 108-byte sun_path minus the NUL terminator
   local -r max_length=$(( sun_path_limit - ${#VIRTDEV_HOME} - socket_overhead ))
 
   if (( max_length < 1 )); then
