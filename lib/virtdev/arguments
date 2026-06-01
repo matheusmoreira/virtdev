@@ -242,6 +242,13 @@ arguments_parse() {
         # because value/required needs shift 2 (cluster + value arg)
         # while bool needs shift 1 (cluster only).
         local _arguments_cluster="${arg#-}"
+        if [[ -z "${_arguments_cluster}" ]]; then
+          # A bare '-' has no cluster characters, so the loop below would
+          # run zero iterations and never shift it off argv — spinning
+          # the outer `while (( $# ))` forever. Reject it the same way
+          # the no-short-flags path rejects an unrecognized flag.
+          error "${arguments_usage_exit_code}" <<<"unknown flag: ${arg}"
+        fi
         local _arguments_ci _arguments_cc
         for (( _arguments_ci=0; _arguments_ci < ${#_arguments_cluster}; _arguments_ci++ )); do
           _arguments_cc="${_arguments_cluster:_arguments_ci:1}"
