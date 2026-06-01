@@ -7,6 +7,7 @@
 #                                 holder is also maintain)
 # Exit codes:
 #   75  lock contention (EX_TEMPFAIL — retry possible)
+#   76  lock setup failure (cannot create/open the lock file)
 #
 # The lock is held via fd 9 for the entire lifetime of the calling
 # process and released automatically when the process exits (fd 9
@@ -19,6 +20,7 @@ set -euo pipefail
 import error
 
 readonly lock_contention_exit_code=75
+readonly lock_setup_exit_code=76
 
 # lock_file is deliberately NOT declared as a top-level readonly:
 # its value derives from VIRTDEV_HOME, and a top-level binding would
@@ -30,25 +32,52 @@ readonly lock_contention_exit_code=75
 # ${VIRTDEV_HOME} fresh each time.
 
 lock_acquire() {
-  lock_open_and_flock || lock_die_for_other
+  local -r lock_file="${VIRTDEV_HOME}/lock"
+  lock_open "${lock_file}"
+  if ! flock -n 9; then
+    lock_die_for_other
+  fi
+  printf '%d\n' "$$" > "${lock_file}"
 }
 
 lock_acquire_for_maintain() {
-  lock_open_and_flock || lock_die_for_maintain
+  local -r lock_file="${VIRTDEV_HOME}/lock"
+  lock_open "${lock_file}"
+  if ! flock -n 9; then
+    lock_die_for_maintain
+  fi
+  printf '%d\n' "$$" > "${lock_file}"
 }
 
-lock_open_and_flock() {
-  local -r lock_file="${VIRTDEV_HOME}/lock"
-  mkdir -p "${VIRTDEV_HOME}"
-  # Best-effort: a pre-existing VIRTDEV_HOME may be owned by another user
-  # (shared storage), so don't abort every command if the chmod fails.
-  chmod 0700 "${VIRTDEV_HOME}" 2>/dev/null || true
-  exec 9>>"${lock_file}"
-  if flock -n 9; then
-    printf '%d\n' "$$" > "${lock_file}"
-    return 0
+# lock_open <lock-file>
+#   Create VIRTDEV_HOME (mode 0700) and open the lock file on fd 9.
+#   A failure here is a STRUCTURAL problem (path is a directory,
+#   unwritable, read-only filesystem, ENOSPC) — fatal with the
+#   distinct, non-retryable code 76. Previously open and flock shared
+#   one code path, so a failed open fell through to `flock -n 9`
+#   (EBADF) and was misreported as retryable lock contention (75).
+lock_open() {
+  local -r lock_file="${1}"
+  # shellcheck disable=SC2174  # VIRTDEV_HOME is the deepest component, so -m applies to it
+  if ! mkdir -p -m 0700 "${VIRTDEV_HOME}" 2>/dev/null; then
+    error "${lock_setup_exit_code}" <<MESSAGE
+Cannot create virtdev home directory: '${VIRTDEV_HOME}'
+Check that its parent directory is writable.
+MESSAGE
   fi
-  return 1
+  # Best-effort harden a pre-existing VIRTDEV_HOME (may be owned by
+  # another user on shared storage); don't abort if the chmod fails.
+  chmod 0700 "${VIRTDEV_HOME}" 2>/dev/null || true
+  # Probe openability with a catchable redirection before the fd-9
+  # `exec`: an exec redirection error would exit the shell outright,
+  # bypassing this diagnostic.
+  if ! { : >> "${lock_file}"; } 2>/dev/null; then
+    error "${lock_setup_exit_code}" <<MESSAGE
+Cannot open lock file: '${lock_file}'
+Check that '${VIRTDEV_HOME}' is writable and on a normal filesystem.
+MESSAGE
+  fi
+  exec 9>>"${lock_file}"
 }
 
 lock_holder_pid_and_cmdline() {
