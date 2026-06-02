@@ -200,7 +200,8 @@ fi
 if ! manifest_has_entries "${manifest_path}"; then
   error 9 <<MESSAGE
 Backup manifest has no paths: ${manifest_path}
-All lines are blank or comments. Add at least one path.
+Every line is blank, a comment, or indented. Add at least one path
+starting at column 0 (leading whitespace is rejected as malformed).
 MESSAGE
 fi
 

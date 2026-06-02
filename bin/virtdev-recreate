@@ -130,9 +130,9 @@ MESSAGE
   manifest_path="$(manifest_resolve "${project}")"
   if ! manifest_has_entries "${manifest_path}"; then
     error 8 <<MESSAGE
-Backup manifest is empty (no non-blank, non-comment lines):
+Backup manifest is empty (no unindented, non-blank, non-comment lines):
     ${manifest_path}
-Add at least one path. Or skip the backup with:
+Add at least one path starting at column 0. Or skip the backup with:
     virtdev-recreate --no-backup ${project}
 MESSAGE
   fi
