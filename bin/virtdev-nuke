@@ -19,7 +19,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments snapshot confirm terminal
+import error lock arguments snapshot confirm terminal project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -69,7 +69,7 @@ projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
   while IFS= read -r project; do
     [[ "${project}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
-    if systemctl --user --quiet is-active virtdev-"${project}" 2>/dev/null; then
+    if project_is_running "${project}"; then
       error 4 <<MESSAGE
 Project virtual machine is running: ${project}
 Stop it with: virtdev-stop ${project}

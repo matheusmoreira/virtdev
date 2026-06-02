@@ -42,7 +42,7 @@ validate_project_name "${project}"
 
 project_require "${project}"
 
-if systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+if project_is_running "${project}"; then
   printf 'running\n'
 else
   printf 'stopped\n'

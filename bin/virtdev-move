@@ -29,7 +29,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal
+import error validate lock arguments terminal project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -84,8 +84,7 @@ if (( ! recovering )); then
     error 4 <<<"Project already exists: ${target_name}"
   fi
 
-  unit="virtdev-${source_name}"
-  if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+  if project_is_running "${source_name}"; then
     error 5 <<<"Project virtual machine is running: ${source_name}"
   fi
 fi

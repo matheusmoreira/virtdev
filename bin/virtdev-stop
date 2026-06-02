@@ -113,7 +113,7 @@ stop_finalize() {
 
 project_require "${project}"
 
-if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+if ! project_is_running "${project}"; then
   error 4 <<<"Project virtual machine is not running: ${project}"
 fi
 

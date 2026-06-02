@@ -66,7 +66,7 @@ project_require "${project}"
 port=""
 port_require port "${project}" 4
 
-if ! systemctl --user --quiet is-active "virtdev-${project}" 2>/dev/null; then
+if ! project_is_running "${project}"; then
   error 5 <<MESSAGE
 Virtual machine is not running: ${project}
 Run it with: virtdev-start ${project}

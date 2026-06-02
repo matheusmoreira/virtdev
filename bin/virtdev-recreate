@@ -98,7 +98,7 @@ project_require "${project}"
 # requires it active unless --no-backup) and the do_stop decision
 # (skip stop when the VM is already down).
 unit_active=0
-if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+if project_is_running "${project}"; then
   unit_active=1
 fi
 

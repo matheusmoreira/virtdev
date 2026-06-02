@@ -38,7 +38,7 @@ project_require "${project}"
 
 unit="virtdev-${project}"
 
-if ! systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
+if ! project_is_running "${project}"; then
   error 4 <<MESSAGE
 Virtual machine is not running: ${project}
 Start it with: virtdev-start ${project}
