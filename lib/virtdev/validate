@@ -44,14 +44,19 @@ MESSAGE
   # The project name also becomes the guest hostname (via fw_cfg), and
   # the kernel truncates hostnames at 64 bytes (HOST_NAME_MAX). Cap here
   # so a long name cannot yield a guest hostname that silently diverges
-  # from the project name.
-  (( max_length > 64 )) && max_length=64
+  # from the project name. Track which limit actually binds so the
+  # rejection message names the real cause, not always sun_path.
+  local limit_reason="Unix domain socket paths are limited to 108 bytes (sun_path)."
+  if (( max_length > 64 )); then
+    max_length=64
+    limit_reason="Project names become the guest hostname, capped at 64 bytes (HOST_NAME_MAX)."
+  fi
 
   if (( ${#name} > max_length )); then
     error 2 <<MESSAGE
 Project name too long: '${name}' (${#name} characters)
 Maximum ${max_length} characters with current VIRTDEV_HOME.
-Unix domain socket paths are limited to 108 bytes (sun_path).
+${limit_reason}
 MESSAGE
   fi
 }
