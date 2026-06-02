@@ -330,6 +330,15 @@ The socket did not come up before QEMU was launched. Investigate:
     journalctl --user -u ${unit}
 MESSAGE
           ;;
+        "${passt_qemu_missing_exit_code}")
+          error 20 <<MESSAGE
+QEMU command not found: ${unit} exit status ${exit_status}.
+The netexec shim pre-flighted the QEMU binary and could not find it,
+so passt was never started. Install QEMU and retry:
+    pacman -S qemu-base
+    virtdev-start ${project}
+MESSAGE
+          ;;
         *)
           error 12 <<MESSAGE
 Unit exited before becoming active: ${unit}

@@ -424,6 +424,16 @@ Investigate:
     journalctl --user -u ${unit}
 MESSAGE
           ;;
+        "${passt_qemu_missing_exit_code}")
+          maintenance_cleanup
+          error 23 <<MESSAGE
+QEMU command not found: ${unit} exit status ${activate_exit}.
+The netexec shim pre-flighted the QEMU binary and could not find it,
+so passt was never started. Install QEMU and retry:
+    pacman -S qemu-base
+    virtdev-maintain
+MESSAGE
+          ;;
         *)
           # Some other early exit (bad qcow2, KVM failure, etc.).
           # Fall through to the SSH wait which will detect the unit is

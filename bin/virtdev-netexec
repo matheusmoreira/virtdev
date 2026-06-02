@@ -9,6 +9,8 @@
 # management and future egress filtering.
 #
 # Steps:
+#   0. Pre-flight the QEMU command (exit 86 if missing or not
+#      executable), before passt starts so passt is never orphaned.
 #   1. Verify passt is available in PATH (exit 83 if not).
 #   2. Remove any stale passt socket file (passt bind() returns
 #      EADDRINUSE on a leftover file; the unlink is load-bearing).
