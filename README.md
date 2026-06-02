@@ -358,7 +358,12 @@ journalctl --user -u virtdev-myproject
 ```
 
 Each virtual machine's hostname is set to the project name at boot
-(via QEMU `fw_cfg`), so the guest prompt shows `dev@myproject`.
+(via QEMU `fw_cfg`), so the guest prompt shows `dev@myproject`. Project
+names are restricted to `[a-zA-Z0-9_-]` and capped at the tighter of two
+byte limits: the guest's 64-byte `HOST_NAME_MAX` (the name becomes the
+hostname) and the room left for the per-project Unix socket paths under
+`VIRTDEV_HOME` within the 108-byte `sun_path`. With the default
+`VIRTDEV_HOME` the socket-path budget is the tighter of the two.
 
 ### Concurrency
 

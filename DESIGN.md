@@ -397,7 +397,7 @@ QEMU flags of note:
   before QEMU, with host-translation paths disabled (`--map-host-loopback none`,
   `--map-guest-addr none`) and a loopback-only SSH forward (`-t 127.0.0.1/<port>:22`).
   `virtdev-install` keeps the original `-netdev user` (SLIRP) backend.
-- `-fw_cfg name=opt/virtdev/project,string=<name>` — injects the project name into the guest via QEMU firmware configuration; used for hostname setting
+- `-fw_cfg name=opt/virtdev/project,string=<name>` — injects the project name into the guest via QEMU firmware configuration; used for hostname setting. Because the name becomes the guest hostname *and* is embedded in the per-project socket paths, `validate_project_name` caps its length at the tighter of the guest's 64-byte `HOST_NAME_MAX` and the room left under `VIRTDEV_HOME` within the 108-byte `sun_path` (so a longer `VIRTDEV_HOME` allows shorter names)
 - `-fw_cfg name=opt/virtdev/ssh_key,file=<path>` — SSH public key (install time)
 - `-fw_cfg name=opt/virtdev/timezone,string=<tz>` — timezone (install time)
 - `-fw_cfg name=opt/virtdev/locale,string=<locale>` — locale (install time)
