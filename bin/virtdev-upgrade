@@ -375,6 +375,7 @@ fi
 printf '\n%s\n' "$(terminal_write bold "[Phase 3/${total_phases}] Rebuilding project virtual machines..." reset)" >&2
 
 declare -a succeeded=()
+declare -a unprovisioned=()
 declare -a failed=()
 declare -A fail_reasons=()
 declare -A fail_codes=()
@@ -388,17 +389,23 @@ for p in "${included[@]}"; do
     succeeded+=("${p}")
   else
     exit_code=$?
-    failed+=("${p}")
-    fail_codes["${p}"]="${exit_code}"
-    case "${exit_code}" in
-      22) fail_reasons["${p}"]="destroy"    ;;
-      23) fail_reasons["${p}"]="create"     ;;
-      24) fail_reasons["${p}"]="start"      ;;
-      25) fail_reasons["${p}"]="wait"       ;;
-      26) fail_reasons["${p}"]="provision"  ;;
-      27) fail_reasons["${p}"]="restore"    ;;
-      *)  fail_reasons["${p}"]="unknown"    ;;
-    esac
+    if (( exit_code == 26 )); then
+      # recreate succeeded but the provision script failed: the VM is up
+      # on the new base, just unprovisioned. Surface it distinctly — not
+      # a clean success, not a hard failure.
+      unprovisioned+=("${p}")
+    else
+      failed+=("${p}")
+      fail_codes["${p}"]="${exit_code}"
+      case "${exit_code}" in
+        22) fail_reasons["${p}"]="destroy"    ;;
+        23) fail_reasons["${p}"]="create"     ;;
+        24) fail_reasons["${p}"]="start"      ;;
+        25) fail_reasons["${p}"]="wait"       ;;
+        27) fail_reasons["${p}"]="restore"    ;;
+        *)  fail_reasons["${p}"]="unknown"    ;;
+      esac
+    fi
   fi
 done
 
@@ -408,9 +415,9 @@ new_generation="$(generation_read "${system_generation_file}")"
 
 printf '\n%s\n\n' "$(terminal_write bold "[Phase 4/${total_phases}] Summary" reset)" >&2
 
-if [[ ${#failed[@]} -eq 0 ]]; then
+if (( ${#failed[@]} == 0 && ${#unprovisioned[@]} == 0 )); then
   printf >&2 '%s\n' "$(terminal_write fg=green bold 'Upgrade complete.' reset)"
-elif [[ ${#succeeded[@]} -gt 0 ]]; then
+elif (( ${#succeeded[@]} > 0 || ${#unprovisioned[@]} > 0 )); then
   printf >&2 '%s\n' "$(terminal_write fg=yellow bold 'Upgrade incomplete.' reset)"
 else
   printf >&2 '%s\n' "$(terminal_write fg=red bold 'Upgrade failed.' reset)"
@@ -421,6 +428,14 @@ if [[ ${#succeeded[@]} -gt 0 ]]; then
   for p in "${succeeded[@]}"; do
     printf >&2 '    %s\n' "${p}"
   done
+fi
+
+if [[ ${#unprovisioned[@]} -gt 0 ]]; then
+  printf >&2 '\n%s\n' "$(terminal_write fg=yellow "Upgraded but unprovisioned: ${#unprovisioned[@]}" reset)"
+  for p in "${unprovisioned[@]}"; do
+    printf >&2 '    %s\n' "${p}"
+  done
+  printf >&2 '\nThese VMs are up on the new base; re-run their provisioning.\n'
 fi
 
 if [[ ${#failed[@]} -gt 0 ]]; then
@@ -451,4 +466,8 @@ printf >&2 '\nBase generation: %s → %s\n' "${base_generation}" "${new_generati
 
 if [[ ${#failed[@]} -gt 0 ]]; then
   exit 40
+fi
+
+if [[ ${#unprovisioned[@]} -gt 0 ]]; then
+  exit 41
 fi

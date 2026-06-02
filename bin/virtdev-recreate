@@ -42,8 +42,13 @@
 #
 # Failure semantics: fail-fast at any non-zero subcommand exit. The
 # exit code identifies which step failed (20 backup, 21 stop, 22
-# destroy, 23 create, 24 start, 25 wait, 26 provision, 27 restore);
-# the message names the recovery command for that boundary.
+# destroy, 23 create, 24 start, 25 wait, 27 restore); the message names
+# the recovery command for that boundary.
+#
+# Provision is the exception: the VM is already up, so a failed
+# provision script is non-fatal — recreate finishes and exits 26
+# ("recreated but unprovisioned") instead of aborting. virtdev-upgrade
+# treats 26 as a distinct unprovisioned outcome, not a hard failure.
 #
 # Configuration via environment variables:
 #
@@ -415,3 +420,9 @@ elif (( do_restore )); then
 else
   printf >&2 '%s\n' "$(terminal_write fg=green "Project recreated: ${project}" reset " (restore skipped)")"
 fi
+
+# Provision failure is non-fatal to the recreate (the VM is up), but
+# exit 26 so a scripted caller — notably virtdev-upgrade — can surface
+# "recreated but unprovisioned" rather than count it as a clean success.
+(( provision_failed )) && exit 26
+exit 0
