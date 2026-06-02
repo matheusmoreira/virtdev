@@ -30,7 +30,13 @@ target=/mnt
 progress=/dev/virtio-ports/org.virtdev.install
 
 progress_report() {
+  # Best-effort side-channel: never let a missing/unwritable progress
+  # device abort the install under `set -e`. As a bare statement, a
+  # non-zero return here would kill the installer; a missing channel can
+  # only cause a false "failure" (the host sees no `complete`), never a
+  # false success, so failing closed with return 0 is safe.
   [[ -e "${progress}" ]] && printf '%s\n' "${1}" > "${progress}"
+  return 0
 }
 
 # shellcheck disable=SC2034  # read inside the EXIT trap string
@@ -255,6 +261,15 @@ printf 'virtdev\n' > "${target}"/etc/hostname
 
 cp /root/virtdev/virtdev-hostname.service "${target}"/etc/systemd/system/
 
+# Force qemu_fw_cfg to load via systemd-modules-load.service so the
+# hostname unit's `After=systemd-modules-load.service` ordering and its
+# ConditionPathExists on the fw_cfg sysfs path are satisfied
+# deterministically. Otherwise the module is only udev-coldplug-loaded,
+# which can race the early sysinit.target unit and silently skip
+# hostname injection (guest stays named 'virtdev').
+install -d "${target}"/etc/modules-load.d
+printf 'qemu_fw_cfg\n' > "${target}"/etc/modules-load.d/virtdev.conf
+
 printf 'virtdev: hostname configured\n'
 
 # ---------------------------------------------------------------------------
@@ -324,6 +339,14 @@ progress_report network:dns
 if [[ -f "${fw_cfg_dir}"/dns/raw ]]; then
   dns="$(< "${fw_cfg_dir}"/dns/raw)"
 else
+  dns=9.9.9.9
+fi
+
+# Validate before baking into the sealed base's resolved.conf: this is
+# the one fw_cfg value written into the base unchecked, and an embedded
+# newline would inject arbitrary [Resolve] directives that every derived
+# guest inherits. Validate-or-fall-back, matching keymap/locale/timezone.
+if [[ ! "${dns}" =~ ^[0-9a-fA-F.:]+$ ]]; then
   dns=9.9.9.9
 fi
 
