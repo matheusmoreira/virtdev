@@ -41,6 +41,7 @@
 #   20  backup phase failure
 #   30  maintain phase failure
 #   40  one or more project rebuilds failed
+#   41  one or more projects rebuilt but unprovisioned
 #
 # Configuration via environment variables:
 #
@@ -435,7 +436,7 @@ if [[ ${#unprovisioned[@]} -gt 0 ]]; then
   for p in "${unprovisioned[@]}"; do
     printf >&2 '    %s\n' "${p}"
   done
-  printf >&2 '\nThese VMs are up on the new base; re-run their provisioning.\n'
+  printf >&2 '\nThese virtual machines are up on the new base; re-run their provisioning.\n'
 fi
 
 if [[ ${#failed[@]} -gt 0 ]]; then
