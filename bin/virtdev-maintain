@@ -195,13 +195,24 @@ maintenance_wait_ssh() {
 }
 
 maintenance_wait_exit() {
+  # Wait for a TERMINAL state (inactive/failed), not merely "no longer
+  # active": ExecMainStatus is final only once QEMU has actually exited,
+  # so breaking on the transient 'deactivating' state could read a stale
+  # 0 and let an unclean shutdown (SIGTERM → exit 143) pass as clean.
+  # Bounded so a wedged guest cannot hang maintain with the lock held.
+  local -r timeout="${VIRTDEV_STOP_TIMEOUT:-60}"
+  local -r deadline=$(( SECONDS + timeout ))
   while true; do
     local unit_state
     unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
     case "${unit_state}" in
-      active|activating) sleep 2 ;;
-      *) break ;;
+      inactive|failed) return 0 ;;
     esac
+    if (( SECONDS >= deadline )); then
+      printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: maintenance virtual machine did not reach a terminal state within ${timeout}s" reset)"
+      return 0
+    fi
+    sleep 0.2
   done
 }
 
@@ -625,7 +636,7 @@ if [[ -n "${inventory_before}" ]]; then
 fi
 
 if (( ! flags[yes] )); then
-  if ! confirm_proceed 'Reseal the base system? [y/N] '; then
+  if ! confirm_word reseal "Reseal the base system? Every project inherits it. Type 'reseal' to confirm: "; then
     error 12 <<MESSAGE
 Reseal cancelled.
 The sealed base images are intact: '${system_directory}'
@@ -675,7 +686,19 @@ printf >&2 'Marking maintenance images read-only before exchange...\n'
 chmod 444 "${maintenance_directory}"/*
 
 printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
-"${virtdev_bin_directory}/virtdev-exchange" "${system_directory}" "${maintenance_directory}"
+# Guard the commit explicitly rather than relying on `set -e`: a bare
+# failure here (EXDEV across mounts, or EINVAL/ENOSYS where the
+# filesystem lacks RENAME_EXCHANGE) would abort with an opaque C errno
+# and skip the cleanup below, leaving maintenance/ with the incremented,
+# mode-444 generation. The sealed base stays intact either way.
+if ! "${virtdev_bin_directory}/virtdev-exchange" "${system_directory}" "${maintenance_directory}"; then
+  error 19 <<MESSAGE
+Failed to swap the new images into place (virtdev-exchange).
+This needs renameat2(RENAME_EXCHANGE); system/ and maintenance/ must be
+on the same filesystem and it must support it (ext4/btrfs/xfs). The
+sealed base is unchanged. Staged images preserved: '${maintenance_directory}'
+MESSAGE
+fi
 
 if ! rm -rf "${maintenance_directory}"; then
   printf >&2 'warning: could not remove %s; will be cleaned up on next virtdev-maintain run\n' \
