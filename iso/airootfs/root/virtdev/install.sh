@@ -347,6 +347,7 @@ fi
 # newline would inject arbitrary [Resolve] directives that every derived
 # guest inherits. Validate-or-fall-back, matching keymap/locale/timezone.
 if [[ ! "${dns}" =~ ^[0-9a-fA-F.:]+$ ]]; then
+  printf >&2 'warning: invalid VIRTDEV_DNS %q; falling back to 9.9.9.9\n' "${dns}"
   dns=9.9.9.9
 fi
 
