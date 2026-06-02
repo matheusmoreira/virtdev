@@ -422,6 +422,22 @@ cannot cause `virtdev-stop` to hang waiting for QEMU to close the socket.
 `VIRTDEV_STOP_TIMEOUT` bounds the is-active polling loop, and SIGTERM is
 always reachable.
 
+The paragraph above is the foreground `virtdev-stop` path. A virtual machine
+can also stop without a foreground `virtdev-stop` — a guest-initiated
+`poweroff`, or an external `systemctl --user stop virtdev-<project>`. In that
+case systemd runs the unit's `ExecStop` hook, which is
+`virtdev-stop --acpi-only <project>`: a lock-free, guard-free mode that sends
+one best-effort ACPI `system_powerdown` and exits 0 without touching the port
+file or sockets. It runs lock-free because the hook may fire while a foreground
+`virtdev-stop` already holds the lock, and guard-free because systemd runs
+`ExecStop` once the unit is already `deactivating`, where an is-active guard
+would always fail. Escalation on this path is driven by systemd's own
+`TimeoutStopSec` (`DefaultTimeoutStopSec`, ~90s) rather than
+`VIRTDEV_STOP_TIMEOUT`, because the transient unit is created without an
+explicit `TimeoutStopSec`. Port and socket cleanup is deferred to the next
+`virtdev-start` sweep or a later foreground `virtdev-stop` (see Port
+Allocation).
+
 The transient unit is **not** launched with `--collect`. Leaving the default
 `CollectMode=inactive` in place means that a failed unit persists until
 `systemctl reset-failed` is called, so `virtdev-stop` can reliably query
@@ -603,14 +619,23 @@ constants only, header comment format) are documented in
 
 ## Port Allocation
 
-SSH forwarding ports are assigned at VM start time and recorded in
-`projects/<name>/port` while the VM is running. The port file is removed on
-clean shutdown by `virtdev-stop`, and on failed activation by
-`virtdev-start`'s cleanup-on-failure trap (which also stops the
-unit if it's still active). The presence of the port file is
-virtdev's signal that the VM is running — it must never linger past
-a stopped or failed unit. Auto-assignment finds the lowest port >=
-2222 not currently bound on the host. Explicit port assignment is
+SSH forwarding ports are assigned at virtual-machine start time and recorded
+in `projects/<name>/port` while the unit is running. A foreground
+`virtdev-stop` removes the port file (and the per-project sockets) once the
+unit reaches a terminal state, and `virtdev-start`'s cleanup-on-failure trap
+removes it on failed activation. A guest-initiated `poweroff` or an external
+`systemctl --user stop`, however, stops the unit through the `ExecStop`
+`--acpi-only` hook, which deliberately skips that cleanup (see Stopping a VM),
+so the port file can linger past an inactive unit until it is swept.
+
+The port file is therefore the running signal only *while the unit is
+active*: every consumer (`virtdev-ssh`, `virtdev-port`, `virtdev-list`) checks
+the systemd unit's active state first and reads the port only once that
+confirms the virtual machine is running. A port file left behind by the
+deferred-cleanup path is harmless stale state — the next `virtdev-start`
+overwrites it and sweeps stale sockets, and a foreground `virtdev-stop`
+removes it. Auto-assignment finds the lowest port >= 2222 not currently bound
+on the host. Explicit port assignment is
 supported via `virtdev-start <project> <port>`; `virtdev-start`
 verifies the port is free before launching QEMU.
 

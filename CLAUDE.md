@@ -394,7 +394,8 @@ glob in `PKGBUILD` picks it up automatically.
   to connect. The keystone invariant: passt creates the socket *before*
   forking to background, so a zero exit from passt means QEMU can connect
   immediately. The unit's `ExecMainStatus` is the shim's exit code when
-  passt fails before exec (83/84/85); after exec it is QEMU's code.
+  it fails before exec (83/84/85, or 86 when the QEMU pre-flight finds
+  no binary); after exec it is QEMU's code.
   `virtdev-install` is unchanged (keeps SLIRP). `passt` is a required
   dependency; see `PKGBUILD` `depends` and `README.md` Requirements.
 - **passt.sock cleanup.** `passt.sock` lives next to `monitor.sock` and
@@ -407,7 +408,7 @@ glob in `PKGBUILD` picks it up automatically.
   `EADDRINUSE` on a leftover socket file.
 - **Per-project directory permissions (mode 0700).** `virtdev-create`
   and `virtdev-maintain` create project directories with mode 0700.
-  `lib/virtdev/lock` (`lock_open_and_flock`) runs `chmod 0700
+  `lib/virtdev/lock` (`lock_open`) runs `chmod 0700
   ${VIRTDEV_HOME}` on every lock acquisition to harden pre-existing
   installs. This protects the socket files (`passt.sock`, `monitor.sock`)
   from other local users.
