@@ -629,10 +629,11 @@ removes it on failed activation. A guest-initiated `poweroff` or an external
 so the port file can linger past an inactive unit until it is swept.
 
 The port file is therefore the running signal only *while the unit is
-active*: every consumer (`virtdev-ssh`, `virtdev-port`, `virtdev-list`) checks
-the systemd unit's active state first and reads the port only once that
-confirms the virtual machine is running. A port file left behind by the
-deferred-cleanup path is harmless stale state — the next `virtdev-start`
+active*: every consumer (`virtdev-ssh`, `virtdev-port`, `virtdev-list`) gates
+on the systemd unit's active state before it uses the port to reach the
+guest, so a port file that outlives its unit is never acted on. A port file
+left behind by the deferred-cleanup path is harmless stale state — the next
+`virtdev-start`
 overwrites it and sweeps stale sockets, and a foreground `virtdev-stop`
 removes it. Auto-assignment finds the lowest port >= 2222 not currently bound
 on the host. Explicit port assignment is

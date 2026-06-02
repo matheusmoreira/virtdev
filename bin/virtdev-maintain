@@ -381,7 +381,8 @@ fi
 #
 # Mirrors virtdev-start's post-launch poll. No new code arm is needed
 # in the later reseal 'case "${qemu_exit}"': once the shim exec's QEMU,
-# qemu_exit is QEMU's (0/143/…) and can never be 83/84/85.
+# qemu_exit is QEMU's (0/143/…) and can never be a pre-exec shim code
+# (83/84/85/86).
 activate_deadline=$(( SECONDS + 5 ))
 while true; do
   activate_state="$(systemctl --user show "${unit}" \
