@@ -168,14 +168,15 @@ if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
     rm -f "${system_disk}.detach" "${home_disk}.detach"
     printf >&2 '%s\n\n' "$(terminal_write fg=green 'Recovery complete. Project restored to pre-detach state.' reset)"
   fi
-fi
-
-# A SIGKILL during the convert phase (before the swap creates any .bak)
-# leaves orphaned .detach temp files that the .bak-keyed recovery above
-# does not touch. The originals are intact (the swap never began), so
-# sweep them. The convert's own EXIT trap covers ordinary signals; this
-# covers a SIGKILL or power loss between runs.
-if [[ ! -f "${system_bak}" && ! -f "${home_bak}" ]]; then
+else
+  # No .bak means the swap never began, so the originals are intact. A
+  # SIGKILL during the convert phase can still leave orphaned .detach
+  # temp files that the .bak-keyed recovery above does not touch; sweep
+  # them. Not required for correctness — the next convert overwrites any
+  # stale .detach — but a leftover .detach is a full base-sized copy, so
+  # this is disk-space and orphan hygiene. The convert's own EXIT trap
+  # covers ordinary signals; this covers a SIGKILL or power loss between
+  # runs.
   rm -f "${system_disk}.detach" "${home_disk}.detach"
 fi
 
