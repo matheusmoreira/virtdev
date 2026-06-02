@@ -194,25 +194,41 @@ maintenance_wait_ssh() {
   ssh_poll_until_ready "${VIRTDEV_SSH_KEY}" "${maintenance_port}" "${unit}" "${VIRTDEV_WAIT_TIMEOUT}"
 }
 
+# maintenance_wait_exit [escalate]
+#   Block until the maintenance unit reaches a TERMINAL state
+#   (inactive/failed), then return 0. Waiting for terminal — not merely
+#   "no longer active" — matters because ExecMainStatus is final only
+#   once QEMU has exited, and a still-active unit reports
+#   ExecMainStatus=0: breaking on the transient 'deactivating' state, or
+#   returning on a timeout, would let the caller misread a wedged guest
+#   as a clean poweroff and reseal a live, dirty image.
+#
+#   Default (no argument): wait indefinitely. The interactive session
+#   uses this — the user decides when to `sudo poweroff`, which can take
+#   arbitrarily long; force-stopping a working session would be wrong.
+#
+#   "escalate": for an automated caller that has ALREADY requested
+#   shutdown. After VIRTDEV_STOP_TIMEOUT with no terminal state, force
+#   `systemctl stop` once; systemd's own TimeoutStopSec then escalates
+#   SIGTERM→SIGKILL, so the unit is guaranteed to terminate. We still
+#   return only on a real terminal state (never on the timeout), so the
+#   status the caller reads afterward is the genuine, non-zero one.
 maintenance_wait_exit() {
-  # Wait for a TERMINAL state (inactive/failed), not merely "no longer
-  # active": ExecMainStatus is final only once QEMU has actually exited,
-  # so breaking on the transient 'deactivating' state could read a stale
-  # 0 and let an unclean shutdown (SIGTERM → exit 143) pass as clean.
-  # Bounded so a wedged guest cannot hang maintain with the lock held.
-  local -r timeout="${VIRTDEV_STOP_TIMEOUT:-60}"
-  local -r deadline=$(( SECONDS + timeout ))
+  local -r escalate="${1:-}"
+  local -r deadline=$(( SECONDS + ${VIRTDEV_STOP_TIMEOUT:-60} ))
+  local escalated=0
   while true; do
     local unit_state
     unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
     case "${unit_state}" in
       inactive|failed) return 0 ;;
     esac
-    if (( SECONDS >= deadline )); then
-      printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: maintenance virtual machine did not reach a terminal state within ${timeout}s" reset)"
-      return 0
+    if [[ "${escalate}" == "escalate" ]] && (( ! escalated )) && (( SECONDS >= deadline )); then
+      printf >&2 '%s\n' "$(terminal_write fg=yellow "Maintenance virtual machine did not halt within ${VIRTDEV_STOP_TIMEOUT:-60}s; forcing stop..." reset)"
+      systemctl --user stop "${unit}" 2>/dev/null || true
+      escalated=1
     fi
-    sleep 0.2
+    sleep 2
   done
 }
 
@@ -606,7 +622,7 @@ if [[ -n "${inventory_before}" ]]; then
       printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: SSH did not come up, skipping inventory' reset)"
       systemctl --user stop "${unit}" 2>/dev/null || true
     fi
-    maintenance_wait_exit
+    maintenance_wait_exit escalate
     boot2_exit="$(systemctl --user show "${unit}" \
         --property=ExecMainStatus --value 2>/dev/null || echo 1)"
     boot2_exit="${boot2_exit:-1}"
