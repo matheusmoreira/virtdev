@@ -22,9 +22,10 @@
 #
 # Exit codes:
 #   64  usage error (arguments library)
-#   83  passt binary not found (from lib/virtdev/passt)
-#   84  passt failed to initialise (from lib/virtdev/passt)
-#   85  forward-port bind race (from lib/virtdev/passt)
+#   83  passt binary not found (constant from lib/virtdev/passt)
+#   84  passt failed to initialise (constant from lib/virtdev/passt)
+#   85  forward-port bind race (constant from lib/virtdev/passt)
+#   86  QEMU command not found / not executable (pre-flight)
 #
 
 set -euo pipefail
@@ -53,6 +54,17 @@ forward_port="${flags[forward]:-}"
 
 if [[ $# -lt 1 || -z "${socket}" ]]; then
   error 64 <<<"$(arguments_usage spec)"
+fi
+
+# Pre-flight the QEMU command before starting passt: if it is missing or
+# not executable, the `exec "$@"` below would fail with 126/127 AFTER
+# passt has already backgrounded — orphaning passt and surfacing to the
+# consumer as the generic "QEMU likely crashed at boot". Fail cleanly,
+# before passt starts, with a message that names the missing command.
+if ! command -v "${1}" &>/dev/null; then
+  error "${passt_qemu_missing_exit_code}" <<MESSAGE
+QEMU command not found or not executable: ${1}
+MESSAGE
 fi
 
 # Step 1: verify passt is present.

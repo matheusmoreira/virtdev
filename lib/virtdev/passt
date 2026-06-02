@@ -32,10 +32,12 @@
 # Environment:
 #   VIRTDEV_DNS   DNS server advertised to the guest (default 9.9.9.9).
 #
-# Exit codes reserved by this library (extending the project table):
+# Exit codes reserved for the passt backend (raised by virtdev-netexec,
+# which owns the constants below):
 #   83  passt binary not found in PATH
 #   84  passt failed to initialise (non-zero exit before QEMU exec)
 #   85  forward-port bind race (port taken when passt tried to bind)
+#   86  QEMU command not found / not executable (pre-flight before exec)
 #
 # Design note: passt initialises its listening socket *before* it forks
 # to background (default mode). The instant passt's foreground invocation
@@ -49,6 +51,7 @@ set -euo pipefail
 readonly passt_missing_exit_code=83
 readonly passt_init_failure_exit_code=84
 readonly passt_port_race_exit_code=85
+readonly passt_qemu_missing_exit_code=86
 
 passt_command() {
   local -n _command="${1}"
