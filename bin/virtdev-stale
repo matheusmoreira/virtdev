@@ -38,6 +38,11 @@ while IFS= read -r p; do
   case "${status}" in
     0) printf '%s\n' "${p}" ;;                  # outdated
     1) : ;;                                      # current or detached
-    *) printf >&2 'warning: %s has a corrupt generation file; skipping\n' "${p}" ;;
+    2) printf >&2 'warning: %s has a corrupt generation file; skipping\n' "${p}" ;;
+    3) error 82 <<MESSAGE
+Base system generation file is corrupt: ${VIRTDEV_HOME}/system/generation
+Cannot determine which projects are outdated; reseal or repair the base.
+MESSAGE
+       ;;
   esac
 done < <(project_list)

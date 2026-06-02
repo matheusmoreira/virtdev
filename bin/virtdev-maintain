@@ -741,6 +741,11 @@ while IFS= read -r p; do
   case "${outdated_status}" in
     0) (( ++outdated_count )) ;;
     2) printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: ${p} has a corrupt generation file; cannot assess" reset)" ;;
+    3) # The base was just resealed with a freshly written generation, so
+       # this is unreachable; warn once and stop the advisory rather than
+       # repeat it for every project if that invariant ever breaks.
+       printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: base generation file is unreadable; cannot assess outdated projects" reset)"
+       break ;;
   esac
 done < <(project_list)
 

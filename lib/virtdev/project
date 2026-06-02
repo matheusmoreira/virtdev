@@ -24,9 +24,13 @@
 #       Returns 0 if the project's generation does not match the
 #       sealed base generation. Returns 1 (not outdated) when either
 #       generation file is missing or the project is detached.
-#       Returns 2 if a generation file is corrupt — callers iterating
-#       over projects must warn and skip, never treat 2 as outdated
+#       Returns 2 if the PROJECT's generation file is corrupt, or 3 if
+#       the BASE generation file is corrupt. Callers iterating over
+#       projects must warn and skip on 2/3, never treat them as outdated
 #       (that would feed corruption into a destroy/recreate pipeline).
+#       Note 3 is identical for every project (the base is shared), so a
+#       caller seeing 3 should report the base once and stop, not blame
+#       each project in turn.
 #
 #   project_is_detached <project>
 #       Returns 0 if the project's generation file contains the
@@ -103,12 +107,13 @@ project_is_outdated() {
   local base_gen project_gen
   # generation_read panics (exit 82) on corruption, but here it runs
   # inside a command substitution, so that exit would be swallowed and
-  # the variable left empty — silently reading as "outdated". Capture
-  # it explicitly as return 2 ("corrupt, cannot decide") so callers
-  # iterating over projects warn and skip instead of destroying a
-  # project off an unreadable generation file. 2>/dev/null suppresses
-  # the per-file panic message; the caller emits one naming the project.
-  base_gen="$(generation_read "${base_file}" 2>/dev/null)" || return 2
+  # the variable left empty — silently reading as "outdated". Capture it
+  # explicitly so callers iterating over projects warn and skip instead
+  # of destroying a project off an unreadable generation file.
+  # Distinguish the source: 3 = the shared BASE file is corrupt (so every
+  # project returns 3), 2 = this project's own file is corrupt. 2>/dev/null
+  # suppresses the per-file panic; the caller emits the right message.
+  base_gen="$(generation_read "${base_file}" 2>/dev/null)" || return 3
   project_gen="$(generation_read "${project_file}" 2>/dev/null)" || return 2
   [[ "${project_gen}" != "${base_gen}" ]]
 }

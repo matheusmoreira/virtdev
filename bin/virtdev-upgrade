@@ -211,11 +211,15 @@ declare -a included_after_skip=()
 for p in "${included[@]}"; do
   outdated_status=0
   project_is_outdated "${p}" || outdated_status=$?
-  if (( outdated_status == 2 )); then
+  if (( outdated_status == 2 || outdated_status == 3 )); then
     # Corrupt generation file: cannot assess, and must never be fed
     # into the backup/recreate pipeline. Exclude with a reason instead
     # of falling through to the else branch (which would treat it as a
     # normal rebuild candidate and recreate off the corrupt file).
+    # Status 3 (corrupt BASE) is pre-empted by the base-generation read
+    # near the top of this script (which aborts with code 82), so in
+    # practice only 2 reaches here; guarding both keeps a future
+    # reordering from feeding corruption into recreate.
     excluded+=("${p}")
     excluded_reasons["${p}"]="corrupt generation file"
   elif (( outdated_status == 0 )) && ! project_is_running "${p}"; then
