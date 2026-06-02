@@ -32,7 +32,7 @@ MESSAGE
   # sun_path is 108 bytes including the trailing NUL, so 107 are usable.
   local -r socket_overhead=23  # /projects//console.sock
   local -r sun_path_limit=107  # 108-byte sun_path minus the NUL terminator
-  local -r max_length=$(( sun_path_limit - ${#VIRTDEV_HOME} - socket_overhead ))
+  local max_length=$(( sun_path_limit - ${#VIRTDEV_HOME} - socket_overhead ))
 
   if (( max_length < 1 )); then
     error 2 <<MESSAGE
@@ -40,6 +40,12 @@ VIRTDEV_HOME path is too long for Unix domain sockets: '${VIRTDEV_HOME}'
 The path must leave room for project socket paths within the 108-byte sun_path limit.
 MESSAGE
   fi
+
+  # The project name also becomes the guest hostname (via fw_cfg), and
+  # the kernel truncates hostnames at 64 bytes (HOST_NAME_MAX). Cap here
+  # so a long name cannot yield a guest hostname that silently diverges
+  # from the project name.
+  (( max_length > 64 )) && max_length=64
 
   if (( ${#name} > max_length )); then
     error 2 <<MESSAGE
