@@ -205,10 +205,10 @@ rsync_log="$(mktemp)"
 trap 'rm -f "${rsync_log}"' EXIT
 
 # Force LC_ALL=C so rsync's --stats output is in English. The
-# partial-transfer counter and the zero-files guard parse the
-# 'Number of regular files transferred:' line; under a non-English
-# locale rsync would emit a translated label and the parse would
-# fail silently. Mirrors the equivalent guard in virtdev-backup.
+# partial-transfer counter (exit 23/24) and the restored-files count
+# parse the 'Number of regular files transferred:' line; under a
+# non-English locale rsync would emit a translated label and the parse
+# would fail silently. Mirrors virtdev-backup.
 if ! LC_ALL=C rsync "${rsync_opts[@]}" \
     --files-from=<(grep -Ev '^\s*(#|$)' "${snapshot}/manifest") \
     -e "${ssh_command}" \
@@ -242,7 +242,8 @@ MESSAGE
       error 21 <<MESSAGE
 rsync transfer failed during restore of ${project} (exit 255: transport).
 The SSH connection to the guest could not be established or was lost.
-The guest's filesystem was not modified.
+If it dropped mid-transfer, some files may already have been written —
+verify the guest's state before retrying.
 Verify the VM is reachable, then retry:
 
     virtdev-ssh ${project} true
@@ -265,10 +266,15 @@ files_transferred="$(awk -F: '/^Number of regular files transferred:/ {
 }' "${rsync_log}")"
 files_transferred="${files_transferred:-0}"
 
-if (( files_transferred == 0 )); then
+# Refuse a restore from a snapshot whose tree is empty (nothing to
+# restore). Check the snapshot tree's contents, NOT rsync's transfer
+# count: a re-run against a guest that already matches transfers zero
+# files while the snapshot is fully populated (the rollback-retry
+# case), and rejecting that would be a false failure. Mirrors backup.
+if [[ -z "$(find "${snapshot}/tree" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
   error 11 <<MESSAGE
-Zero files restored from snapshot: ${resolved_date}/${resolved_time}
-The snapshot may be empty, or every path in its manifest is absent.
+Empty snapshot: ${resolved_date}/${resolved_time}
+The snapshot's tree contains no files to restore.
 MESSAGE
 fi
 
