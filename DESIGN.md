@@ -101,8 +101,9 @@ project VM without modifying fstab.
 
 - Live environment (ISO): `systemd-networkd` + `systemd-resolved`, Quad9 DNS
 - Installed system: same stack, with `UseDNS=false` in the `[DHCPv4]` section
-  to suppress QEMU's broken DNS proxy; Quad9 configured explicitly via
-  `systemd/resolved.conf.d/dns.conf`
+  so the guest ignores the DNS server advertised over DHCP (by passt) and
+  resolves via the fixed `systemd/resolved.conf.d/dns.conf` instead — Quad9 by
+  default, set from `VIRTDEV_DNS` at install time
 
 ### User
 

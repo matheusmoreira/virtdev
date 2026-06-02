@@ -30,7 +30,10 @@
 # (lib/virtdev/port) — not duplicated here.
 #
 # Environment:
-#   VIRTDEV_DNS   DNS server advertised to the guest (default 9.9.9.9).
+#   VIRTDEV_DNS   DNS address passt advertises over DHCP (default 9.9.9.9).
+#                 The guest runs UseDNS=false and resolves via the value
+#                 baked into resolved.conf.d at install time, so this
+#                 selects the guest resolver only at install time.
 #
 # Exit codes reserved for the passt backend (raised by virtdev-netexec,
 # which owns the constants below):
@@ -60,9 +63,13 @@ passt_command() {
 
   # --dns is defense-bearing, not cosmetic: by default passt advertises
   # the host's own resolver address (e.g. systemd-resolved at
-  # 127.0.0.53) to the guest over DHCP. Pinning VIRTDEV_DNS overrides
-  # that host-address advertisement. Configurable via VIRTDEV_DNS so the
-  # runtime path honors the same knob virtdev-install does.
+  # 127.0.0.53) to the guest over DHCP. Pinning a fixed value overrides
+  # that. This controls only what passt advertises, not what the guest
+  # resolves with: the guest runs UseDNS=false and uses the
+  # resolved.conf.d value baked at install time, so VIRTDEV_DNS selects
+  # the guest resolver at install time, not at runtime. A runtime
+  # VIRTDEV_DNS is not delivered into this transient --user unit either;
+  # the value here is just the advertised default.
   _command=(
     passt
     --socket "${socket}"
