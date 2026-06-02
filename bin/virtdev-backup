@@ -354,7 +354,7 @@ MESSAGE
 rsync transfer failed during backup of ${project} (exit 255: transport).
 The SSH connection to the guest could not be established or was lost.
 The partial snapshot has been removed.
-Verify the VM is reachable, then retry:
+Verify the virtual machine is reachable, then retry:
 
     virtdev-ssh ${project} true
     virtdev-backup ${project}

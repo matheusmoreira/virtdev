@@ -252,7 +252,7 @@ rsync transfer failed during restore of ${project} (exit 255: transport).
 The SSH connection to the guest could not be established or was lost.
 If it dropped mid-transfer, some files may already have been written —
 verify the guest's state before retrying.
-Verify the VM is reachable, then retry:
+Verify the virtual machine is reachable, then retry:
 
     virtdev-ssh ${project} true
     virtdev-restore ${project}

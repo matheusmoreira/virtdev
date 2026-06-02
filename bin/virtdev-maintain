@@ -443,7 +443,7 @@ if ! maintenance_wait_ssh; then
                  "${unit}" "${VIRTDEV_STOP_TIMEOUT}"
       break
     fi
-    sleep 1
+    sleep 0.2
   done
 
   maintenance_cleanup
@@ -554,7 +554,7 @@ Discard the staging directory and re-enter maintenance:
     rm -rf '${maintenance_directory}'
     virtdev-maintain
 
-Inside the VM, finish with 'sudo poweroff' — that triggers a
+Inside the virtual machine, finish with 'sudo poweroff' — that triggers a
 proper guest-level shutdown and QEMU will then exit 0.
 MESSAGE
     ;;

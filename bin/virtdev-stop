@@ -129,7 +129,7 @@ if ! command -v socat &>/dev/null; then
     if (( SECONDS >= socat_deadline )); then
       break
     fi
-    sleep 1
+    sleep 0.2
   done
   case "${socat_state}" in
     inactive|failed) ;;
@@ -211,7 +211,7 @@ case "${active_state}" in
   *)
     error 5 <<MESSAGE
 Unit ${unit} is in unexpected state after stop: '${active_state}'.
-Expected 'inactive' or 'failed'. The VM may still be running.
+Expected 'inactive' or 'failed'. The virtual machine may still be running.
 Investigate: systemctl --user status ${unit}
 MESSAGE
     ;;

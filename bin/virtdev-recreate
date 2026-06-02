@@ -111,7 +111,7 @@ if (( ! flags[no-backup] )); then
   if (( ! unit_active )); then
     error 4 <<MESSAGE
 Virtual machine is not running: ${project}
-Recreate must take a backup first, which requires SSH into the VM.
+Recreate must take a backup first, which requires SSH into the virtual machine.
 Either start it with:    virtdev-start ${project}
 Or skip the backup with: virtdev-recreate --no-backup ${project}
 MESSAGE
@@ -199,7 +199,7 @@ total_steps=$(( 4 + do_backup + do_stop + do_provision + do_restore ))
   if (( do_stop )); then
     printf '  %d. stop\n' "$(( ++step ))"
   else
-    printf '  -- stop          (skipped: VM already stopped)\n'
+    printf '  -- stop          (skipped: virtual machine already stopped)\n'
   fi
   printf '  %d. destroy --yes\n' "$(( ++step ))"
   printf '  %d. create\n'        "$(( ++step ))"
@@ -310,7 +310,7 @@ if (( do_stop )); then
 Snapshot from this run: ${backups_project_dir}/${snap}/"
     error 21 <<MESSAGE
 stop failed (virtdev-stop exited non-zero).
-The VM may be in an indeterminate state. Inspect with:
+The virtual machine may be in an indeterminate state. Inspect with:
     systemctl --user status ${unit}
 Stop it manually, then rerun with --no-backup (the snapshot is
 already on disk):
@@ -375,7 +375,7 @@ if ! wait_ssh; then
 Snapshot path: ${backups_project_dir}/${snap}/"
   error 25 <<MESSAGE
 wait failed (virtdev-wait exited non-zero).
-The fresh VM is up at the systemd level but SSH did not come up
+The fresh virtual machine is up at the systemd level but SSH did not come up
 within the timeout. Inspect with:
     journalctl --user -u ${unit}
 Once SSH is up, restore manually:
@@ -406,7 +406,7 @@ Retry with explicit snapshot:
     virtdev-restore ${project} ${snap}"
     error 27 <<MESSAGE
 restore failed (virtdev-restore exited non-zero).
-The fresh VM is up and provisioned but the snapshot was not
+The fresh virtual machine is up and provisioned but the snapshot was not
 applied.${snap_hint}
 MESSAGE
   fi
