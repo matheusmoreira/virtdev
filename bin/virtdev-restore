@@ -279,7 +279,7 @@ files_transferred="${files_transferred:-0}"
 # count: a re-run against a guest that already matches transfers zero
 # files while the snapshot is fully populated (the rollback-retry
 # case), and rejecting that would be a false failure. Mirrors backup.
-if [[ -z "$(find "${snapshot}/tree" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+if [[ -z "$(find "${snapshot}/tree" \( -type f -o -type l \) -print -quit 2>/dev/null)" ]]; then
   error 11 <<MESSAGE
 Empty snapshot: ${resolved_date}/${resolved_time}
 The snapshot's tree contains no files to restore.

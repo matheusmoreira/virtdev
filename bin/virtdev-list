@@ -47,7 +47,7 @@ fi
 terminal_init "" 1
 
 system_generation_file="${VIRTDEV_HOME}/system/generation"
-if [[ -f "${system_generation_file}" ]]; then
+if [[ -s "${system_generation_file}" ]]; then
   base_generation="$(generation_read_lenient "${system_generation_file}")"
 else
   base_generation='-'
@@ -80,7 +80,7 @@ for project in "${projects[@]}"; do
     port='-'
   fi
 
-  if [[ -f "${generation_file}" ]]; then
+  if [[ -s "${generation_file}" ]]; then
     generation="$(generation_read_lenient "${generation_file}")"
   else
     generation='-'
