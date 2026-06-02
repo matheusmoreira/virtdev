@@ -11,6 +11,10 @@
 #                                present but corrupt. Runs in the
 #                                caller's shell so the exit code
 #                                propagates — do NOT wrap in $().
+#                                <varname> must not begin with
+#                                __port_require_ (reserved for the
+#                                function's own locals; a collision would
+#                                make printf -v write the local instead).
 #   port_read_lenient <project>  Print the validated port, or "?" when
 #                                the file is missing or corrupt. For
 #                                display-oriented commands (list).
@@ -49,18 +53,22 @@ _port_value_or_status() {
 }
 
 port_require() {
-  local -r _port_varname="${1}" _port_project="${2}" _port_missing_code="${3}"
-  local _port_value _port_status=0
-  _port_value="$(_port_value_or_status "${_port_project}")" || _port_status=$?
-  if (( _port_status == 0 )); then
-    printf -v "${_port_varname}" '%s' "${_port_value}"
-  elif (( _port_status == port_corrupt_exit_code )); then
+  # Internal locals use the reserved __port_require_ prefix so the
+  # caller's output <varname> cannot collide with one: printf -v assigns
+  # in this function's scope, where a same-named local would shadow the
+  # caller's variable and silently swallow the result.
+  local -r __port_require_varname="${1}" __port_require_project="${2}" __port_require_missing_code="${3}"
+  local __port_require_value __port_require_status=0
+  __port_require_value="$(_port_value_or_status "${__port_require_project}")" || __port_require_status=$?
+  if (( __port_require_status == 0 )); then
+    printf -v "${__port_require_varname}" '%s' "${__port_require_value}"
+  elif (( __port_require_status == port_corrupt_exit_code )); then
     error "${port_corrupt_exit_code}" \
-      <<<"Corrupt port file: ${VIRTDEV_HOME}/projects/${_port_project}/port"
+      <<<"Corrupt port file: ${VIRTDEV_HOME}/projects/${__port_require_project}/port"
   else
-    error "${_port_missing_code}" <<MESSAGE
-Project has no port assigned: ${_port_project}
-Start the virtual machine first: virtdev-start ${_port_project}
+    error "${__port_require_missing_code}" <<MESSAGE
+Project has no port assigned: ${__port_require_project}
+Start the virtual machine first: virtdev-start ${__port_require_project}
 MESSAGE
   fi
 }
