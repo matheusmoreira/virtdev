@@ -198,6 +198,14 @@ printf >&2 '  current generation:  %s\n' "${project_generation}"
 ssh_command=""
 ssh_rsync_command ssh_command "${VIRTDEV_SSH_KEY}" "${port}"
 
+# No --safe-links here, unlike virtdev-backup, and that is deliberate:
+# --safe-links is enforced on the RECEIVER. backup pulls (host is the
+# receiver — protect the host snapshot from guest symlink traversal);
+# restore pushes (the untrusted guest is the receiver), so --safe-links
+# would only protect the guest from the trusted host — the reverse of
+# the threat model — and creates no guest→host vector. Do not "fix" this
+# asymmetry by adding --safe-links (or --link-dest) without re-checking
+# virtdev-backup's guards.
 rsync_opts=(-a --no-D --ignore-missing-args --stats)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
 

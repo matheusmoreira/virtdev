@@ -40,12 +40,19 @@
 #
 # Flags:
 #
-#   --verbose    Show rsync per-file progress.
-#   --list       Print snapshots for the project. Does not create
-#                a snapshot; does not require the VM to be running.
-#   --latest     Print the latest snapshot identifier (YYYY-MM-DD/HH-MM-SS)
-#                to stdout. Machine-readable. Prints nothing if no
-#                snapshots exist.
+#   --verbose      Show rsync per-file progress.
+#   --copy-links   Dereference guest symlinks and copy their targets'
+#                  contents into the snapshot instead of the links.
+#                  WARNING: this overrides the default --safe-links, so a
+#                  guest symlink pointing outside its tree (including to
+#                  an absolute path) has its target's content pulled into
+#                  the snapshot. Use only to deliberately capture
+#                  symlink-target content from a trusted guest.
+#   --list         Print snapshots for the project. Does not create
+#                  a snapshot; does not require the VM to be running.
+#   --latest       Print the latest snapshot identifier
+#                  (YYYY-MM-DD/HH-MM-SS) to stdout. Machine-readable.
+#                  Prints nothing if no snapshots exist.
 #
 # The project's virtual machine must be running (SSH over the
 # host-forwarded port). Concurrent same-project backups at the same
@@ -292,6 +299,11 @@ ssh_rsync_command ssh_command "${VIRTDEV_SSH_KEY}" "${port}"
 
 rsync_opts=(-a --no-D --ignore-missing-args --stats --safe-links)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
+# --copy-links is appended AFTER --safe-links and overrides it: rsync
+# dereferences symlinks on the sender (guest) side, so a guest symlink
+# to an out-of-tree path has its target's content copied into the
+# snapshot. Off by default so --safe-links protects the snapshot tree;
+# an explicit opt-in for capturing symlink-target content.
 (( flags[copy-links] )) && rsync_opts+=(--copy-links)
 
 previous="$(snapshot_latest "${project}")"
