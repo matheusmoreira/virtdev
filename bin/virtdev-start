@@ -27,6 +27,7 @@ import error validate lock arguments project terminal port passt
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
 : "${VIRTDEV_VM_CPUS:=4}"
+: "${VIRTDEV_STOP_TIMEOUT:=60}"
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 
 if [[ ! "${VIRTDEV_VM_MEMORY}" =~ ^[1-9][0-9]*$ ]]; then
@@ -34,6 +35,9 @@ if [[ ! "${VIRTDEV_VM_MEMORY}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ ! "${VIRTDEV_VM_CPUS}" =~ ^[1-9][0-9]*$ ]]; then
   error 64 <<<"Invalid VIRTDEV_VM_CPUS: must be a positive integer"
+fi
+if [[ ! "${VIRTDEV_STOP_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
+  error 64 <<<"Invalid VIRTDEV_STOP_TIMEOUT: must be a positive integer"
 fi
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
@@ -227,6 +231,7 @@ systemd-run \
     --unit="${unit}" \
     --description="virtdev project virtual machine: ${project}" \
     --property="ExecStop=${virtdev_bin_directory}/virtdev-stop --acpi-only ${project}" \
+    --property="TimeoutStopSec=${VIRTDEV_STOP_TIMEOUT}" \
     -- \
     "${virtdev_bin_directory}/virtdev-netexec" \
         --socket "${passt_sock}" \

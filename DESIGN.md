@@ -433,9 +433,10 @@ file or sockets. It runs lock-free because the hook may fire while a foreground
 `virtdev-stop` already holds the lock, and guard-free because systemd runs
 `ExecStop` once the unit is already `deactivating`, where an is-active guard
 would always fail. Escalation on this path is driven by systemd's own
-`TimeoutStopSec` (`DefaultTimeoutStopSec`, ~90s) rather than
-`VIRTDEV_STOP_TIMEOUT`, because the transient unit is created without an
-explicit `TimeoutStopSec`. Port and socket cleanup is deferred to the next
+`TimeoutStopSec`, which `virtdev-start` pins to `VIRTDEV_STOP_TIMEOUT` on the
+transient unit (`--property=TimeoutStopSec=`) so the hook path and the
+foreground path escalate on the same bound. Port and socket cleanup is
+deferred to the next
 `virtdev-start` sweep or a later foreground `virtdev-stop` (see Port
 Allocation).
 
