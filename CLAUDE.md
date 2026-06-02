@@ -71,15 +71,17 @@ Same error → same code, everywhere:
 | 3 | project not found | `project_require` |
 | 64 | usage error (unknown flag, missing value, etc.) | `arguments_parse` |
 | 75 | lock contention (BSD `EX_TEMPFAIL` — retry possible) | `lock_acquire*` |
+| 76 | lock setup failure (cannot create/open the lock file) | `lock_acquire*` |
 | 77 | SSH key not found | `ssh_key_validate` |
 | 78 | SSH key permissions too open | `ssh_key_validate` |
 | 79 | invalid snapshot format | `snapshot_validate_format` |
 | 80 | trigger aborted the command | `trigger_fire` |
-| 81 | corrupt port file | `port_read` |
+| 81 | corrupt port file | `port_require` |
 | 82 | corrupt generation file | `generation_read` |
-| 83 | passt binary not found | `passt_command` (via `virtdev-netexec`) |
+| 83 | passt binary not found | `virtdev-netexec` shim |
 | 84 | passt failed to initialise | `virtdev-netexec` shim |
 | 85 | passt forward-port bind race | `virtdev-netexec` shim |
+| 86 | QEMU command not found (pre-flight before exec) | `virtdev-netexec` shim |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").
@@ -334,8 +336,8 @@ dependency added to `depends` in `build/aur/PKGBUILD`. `.gitignore`
 excludes the `build/` tree from `makepkg`.
 
 **Note:** `bin/virtdev-netexec` is a bash shim (not compiled C), so no
-`Makefile` change is needed — the `find bin/ ! -name '*.c'` install glob
-in `PKGBUILD` picks it up automatically.
+`GNUmakefile` change is needed — the `find bin/ ! -name '*.c'` install
+glob in `PKGBUILD` picks it up automatically.
 
 ## Common gotchas
 
@@ -398,8 +400,9 @@ in `PKGBUILD` picks it up automatically.
 - **passt.sock cleanup.** `passt.sock` lives next to `monitor.sock` and
   `console.sock` in the per-project directory. It is removed by
   `virtdev-stop`'s `stop_finalize`, by `virtdev-maintain`'s
-  `maintenance_cleanup`, and by `virtdev-start`'s `cleanup_failed_start`
-  trap and stale-socket sweep. `virtdev-netexec` unlinks it before each
+  `maintenance_cleanup` and its pre-launch sweep in `maintenance_boot`,
+  and by `virtdev-start`'s `cleanup_failed_start` trap and stale-socket
+  sweep. `virtdev-netexec` unlinks it before each
   passt start (`passt_socket_clean`) — passt's `bind()` returns
   `EADDRINUSE` on a leftover socket file.
 - **Per-project directory permissions (mode 0700).** `virtdev-create`

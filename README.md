@@ -6,8 +6,10 @@ Each project gets its own Arch Linux virtual machine backed by a thin qcow2
 delta over a shared sealed base. The isolation boundary is a hardware-assisted
 hypervisor, not a namespace or permission system.
 
-**Isolation scope:** guest→host via the SLIRP gateway address and passt's
-host-global-address mapping are blocked for project and maintenance virtual
+**Isolation scope:** guest→host via the host-loopback path (passt
+`--map-host-loopback none`, which closes what the old SLIRP gateway
+address exposed) and via passt's host-global-address mapping
+(`--map-guest-addr none`) are blocked for project and maintenance virtual
 machines. Guest→host via the host's real LAN IP (including `0.0.0.0`-bound
 services such as `sshd`) remains reachable in Phase 1 — closing that path
 requires a host-side nftables egress filter (a planned fast-follow).
@@ -29,11 +31,14 @@ From the AUR (`virtdev-git`):
 yay -S virtdev-git
 ```
 
-From source (no install step needed — scripts auto-detect the layout):
+From source — scripts auto-detect the layout, and `make` builds the
+small C helper `virtdev-exchange` that `virtdev-maintain` requires
+(needs a C toolchain, e.g. `base-devel`):
 
 ```
 git clone https://github.com/matheusmoreira/virtdev.git
 cd virtdev
+make
 ```
 
 ### One-time setup

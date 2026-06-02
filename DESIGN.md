@@ -35,8 +35,9 @@ etc.), so outbound network access is intentionally unrestricted.
 
 **Phase 1 residuals (documented openly):** virtdev uses passt as its network
 backend (`start` and `maintain` paths) with both host-translation paths
-disabled (guest→host via the SLIRP gateway address and via passt's
-host-global-address mapping are blocked). However, the following paths
+disabled: `--map-host-loopback none` blocks the guest→host-loopback path
+(the one the old SLIRP gateway address exposed), and `--map-guest-addr none`
+blocks passt's host-global-address mapping. However, the following paths
 remain reachable in Phase 1:
 
 1. **guest→host via the host's real LAN IP / `0.0.0.0` bindings** (including
@@ -237,9 +238,10 @@ The reseal commit point is the `renameat2` syscall — a single atomic
 operation that swaps the two directory names. There is no intermediate
 state where `system/` is missing or partially populated, not even under
 SIGKILL or power loss. The generation counter increment and `chmod 444`
-that follow are not part of the atomic swap, but a crash between the
-exchange and these steps leaves `system/` with the correct new images
-and a stale generation file; re-running `virtdev-maintain` recovers.
+are applied to `maintenance/` *before* the exchange, so the swap is the
+single commit point: a crash before it leaves the old `system/` intact,
+and a crash after it leaves `system/` fully sealed — new images, correct
+generation, and read-only permissions.
 
 ### Maintenance hooks
 
@@ -573,13 +575,13 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `validate` | input validation (`validate_project_name`) | 2 |
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`); universal `--help` and `--color` handling | 64 |
 | `lock` | exclusive `flock(2)` acquisition on `${VIRTDEV_HOME}/lock`, with maintain-aware diagnostics | 75 |
-| `ssh` | SSH key file existence and permission validation (`ssh_key_validate`) | 77, 78 |
-| `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
+| `ssh` | SSH key validation and connection helpers (`ssh_key_validate`, `ssh_rsync_command`, `ssh_poll_until_ready`) | 77, 78 |
+| `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at lifecycle points (`trigger_fire`); discovers system and per-project triggers, captures stdout via namerefs | 80 |
-| `port` | SSH forwarding port file reading and validation (`port_read`, `port_read_lenient`) | 81 |
+| `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
-| `project` | enumerate and query project state (`project_list`, `project_is_running`, `project_is_outdated`, `project_is_detached`, `generation_read`) | 3, 82 |
-| `passt` | passt network backend constructor helpers (`passt_command`, `passt_port_probe`, `passt_socket_clean`); single source of truth for passt flags | 83, 84, 85 |
+| `project` | enumerate and query project state (`project_list`, `project_require`, `project_is_running`, `project_load_running_state`, `project_is_outdated`, `project_is_detached`, `generation_read`, `generation_read_lenient`) | 3, 82 |
+| `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags. The forward-port bind race is detected via `port_in_use`, not a passt helper | 83, 84, 85, 86 |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
 | `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array); lazy-inits on first `terminal_write` call using the color mode from `arguments_parse` | none |
 
@@ -858,11 +860,12 @@ there is no silent shadowing when both files exist.
   out via `virtdev-recreate --no-backup`.
 
 - **Backup system scope.** `virtdev-backup` and `virtdev-restore` are
-  intentionally simple file-list rsync wrappers. Not planned:
-  compression, deduplication, incremental backups (rsync `--link-dest`),
-  encryption at rest, automated retention or rotation policy,
-  cross-project restore, system-disk backup, or glob/brace expansion
-  in manifests. Per `DESIGN.md`'s threat model the host is trusted, so
+  intentionally simple file-list rsync wrappers. `virtdev-backup`
+  hard-links unchanged files from the previous snapshot via rsync
+  `--link-dest`, cheaply deduplicating identical content across
+  snapshots. Not planned: compression, encryption at rest, automated
+  retention or rotation policy, cross-project restore, system-disk
+  backup, or glob/brace expansion in manifests. Per `DESIGN.md`'s threat model the host is trusted, so
   encryption adds complexity without matching a real adversary. The
   manifest is literal (`--files-from`) to keep the contract auditable.
 
