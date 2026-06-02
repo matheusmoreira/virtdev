@@ -170,6 +170,15 @@ if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
   fi
 fi
 
+# A SIGKILL during the convert phase (before the swap creates any .bak)
+# leaves orphaned .detach temp files that the .bak-keyed recovery above
+# does not touch. The originals are intact (the swap never began), so
+# sweep them. The convert's own EXIT trap covers ordinary signals; this
+# covers a SIGKILL or power loss between runs.
+if [[ ! -f "${system_bak}" && ! -f "${home_bak}" ]]; then
+  rm -f "${system_disk}.detach" "${home_disk}.detach"
+fi
+
 # Post-lock re-checks: close the TOCTOU window between the pre-lock
 # checks and lock acquisition. A concurrent virtdev-start could have
 # booted the VM, or a concurrent virtdev-detach could have completed.
