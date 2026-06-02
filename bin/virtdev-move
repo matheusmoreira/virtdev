@@ -59,9 +59,12 @@ if [[ "${source_name}" == "${target_name}" ]]; then
 fi
 
 for name in "${source_name}" "${target_name}"; do
-  if [[ "${name}" == "maintenance" ]]; then
-    error 6 <<<"Project name 'maintenance' is reserved by virtdev-maintain"
-  fi
+  case "${name}" in
+    maintenance)
+      error 6 <<<"Project name 'maintenance' is reserved by virtdev-maintain" ;;
+    base)
+      error 6 <<<"Project name 'base' is reserved for the sealed base system" ;;
+  esac
 done
 
 lock_acquire

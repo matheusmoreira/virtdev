@@ -46,9 +46,14 @@ project="${1}"
 
 validate_project_name "${project}"
 
-if [[ "${project}" == "maintenance" ]]; then
-  error 3 <<<"Project name 'maintenance' is reserved by virtdev-maintain"
-fi
+case "${project}" in
+  maintenance)
+    error 3 <<<"Project name 'maintenance' is reserved by virtdev-maintain" ;;
+  base)
+    # 'base' is a virtdev-path pseudo-target for the sealed base dir;
+    # a real project named 'base' would shadow it.
+    error 3 <<<"Project name 'base' is reserved for the sealed base system" ;;
+esac
 
 lock_acquire
 
