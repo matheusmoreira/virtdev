@@ -66,14 +66,14 @@ disk_info() {
   # "backing file:" lines are top-level and unambiguous.
   info_text="$(qemu-img info "${path}" 2>/dev/null || true)"
   bytes="$(printf '%s\n' "${info_text}" \
-    | sed -n 's/^virtual size:.*(\([0-9]\{1,\}\) bytes).*/\1/p')"
+    | sed -n '/^virtual size:/{s/^virtual size:.*(\([0-9]\{1,\}\) bytes).*/\1/p;q}')"
   if [[ -n "${bytes}" ]]; then
     virtual="$(numfmt --to=iec-i --suffix=B "${bytes}")"
   else
     virtual="?"
   fi
   backing=""
-  backing_path="$(printf '%s\n' "${info_text}" | sed -n 's/^backing file: //p')"
+  backing_path="$(printf '%s\n' "${info_text}" | sed -n '/^backing file: /{s/^backing file: //p;q}')"
   if [[ -n "${backing_path}" ]]; then
     # Strip any " (actual path: ...)" suffix qemu-img appends.
     backing_path="${backing_path%% (actual path:*}"
