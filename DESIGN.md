@@ -258,8 +258,15 @@ Two optional hooks live in `${XDG_CONFIG_HOME}/virtdev/maintenance/`:
   state (e.g., `pacman -Q`, file trees). Executed twice: once before
   the interactive session (Boot 1) and once via a second boot after
   the user powers off. The diff of the two captures is shown before
-  the reseal prompt. Non-fatal: if the hook is absent or fails, the
-  second boot and diff are skipped entirely.
+  the reseal prompt. Non-fatal when the hook is absent, when the
+  before-capture itself fails, or when the second boot fails to
+  start (the images were never opened and stay clean): in those cases
+  the second boot and diff are skipped and the reseal proceeds
+  normally. However, if the second (inventory) boot launches and then
+  exits unclean (e.g. SSH never came up and the boot was stopped,
+  exit 143), the reseal is refused (`error 24`) to avoid sealing a
+  potentially dirty image into the base; the maintenance staging is
+  preserved so the session can be retried.
 
 Both hooks can be suppressed per-invocation: `--no-provision`,
 `--no-inventory`.
@@ -793,8 +800,13 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
                         to capture diffable system state (e.g., pacman -Q).
                         Executed twice: before the interactive session and
                         via a second boot after poweroff. The diff is shown
-                        before the reseal prompt. Non-fatal; suppressible
-                        with --no-inventory.
+                        before the reseal prompt. Non-fatal when absent,
+                        when the before-capture fails, or when the second
+                        boot fails to start (images stay clean). If the
+                        second boot launches but exits unclean, the reseal
+                        is refused to protect the base (exit 24); the
+                        staging is preserved for retry. Suppressible with
+                        --no-inventory.
   projects/
     <name>/
       ssh_config          per-project SSH config. Overrides system-level.
