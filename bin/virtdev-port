@@ -10,6 +10,15 @@
 #
 #     ssh -p "$(virtdev port lone)" dev@127.0.0.1
 #
+# Exit codes:
+#
+#   0   success
+#   2   invalid project name
+#   3   project not found
+#   4   project has no port assigned (virtual machine not running)
+#   5   virtual machine is not running
+#   64  usage error
+#   81  corrupt port file
 
 set -euo pipefail
 
