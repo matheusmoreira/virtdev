@@ -32,10 +32,11 @@
 # fire after disconnecting. See lib/virtdev/trigger for details.
 #
 # Exit codes:
+#
 #   3   project not found
 #   4   virtual machine not running
 #   80  pre-ssh trigger aborted (from lib/virtdev/trigger)
-#   87  no port assigned (virtual machine not started)
+#   87  no port assigned (virtual machine not running)
 #
 
 set -euo pipefail

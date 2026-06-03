@@ -21,7 +21,7 @@
 #
 # Exit codes:
 #   81  corrupt port file (not a valid integer)
-#   87  no port assigned (port file absent — virtual machine not started)
+#   87  no port assigned (port file absent — virtual machine not running)
 #
 # The port file is written by virtdev-start with printf '%d\n' and
 # removed by virtdev-stop. Corruption requires filesystem-level issues
