@@ -64,6 +64,33 @@
 # automatically. Recreate them with virtdev-destroy + virtdev-create,
 # or use virtdev-recreate to do that with backup/restore around it.
 #
+# Exit codes (each distinct failure mode gets a distinct code so
+# programmatic callers can discriminate them):
+#
+#   0   success
+#   3   sealed base system directory not found
+#   4   base system image missing (system.qcow2/home.qcow2/nvram)
+#   5   maintenance staging directory already exists
+#   6   OVMF firmware not found
+#   7   one or more project virtual machines are running
+#   8   orphaned maintenance virtual machine is already running
+#   9   maintenance port already in use on this host
+#   10  SSH did not become available within the timeout (Boot 1)
+#   11  Boot 1 exited via SIGTERM (143); reseal refused
+#   12  reseal cancelled at the confirmation prompt
+#   13  system disk integrity check (qemu-img) failed
+#   14  home disk integrity check (qemu-img) failed
+#   15  base system generation file missing
+#   16  passt forward-port bind race during Boot 1 activation
+#   17  virtdev-exchange helper not found (run 'make')
+#   18  Boot 1 exited abnormally (non-zero, non-143); reseal refused
+#   19  virtdev-exchange (renameat2 RENAME_EXCHANGE) swap failed
+#   20  failed to start the maintenance virtual machine (systemd-run)
+#   21  passt is not installed (Boot 1 activation)
+#   22  passt failed to initialise (Boot 1 activation)
+#   23  QEMU command not found (Boot 1 activation)
+#   24  Boot 2 (inventory) ended unclean; reseal refused to protect the base
+#
 # Configuration via environment variables:
 #
 #   VIRTDEV_HOME              Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
@@ -613,11 +640,63 @@ if [[ -n "${inventory_before}" ]]; then
     boot2_exit="$(systemctl --user show "${unit}" \
         --property=ExecMainStatus --value 2>/dev/null || echo 1)"
     boot2_exit="${boot2_exit:-1}"
-    if [[ "${boot2_exit}" != "0" ]]; then
-      printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: inventory boot exited ${boot2_exit}, discarding diff" reset)"
-      do_diff=0
-    fi
+
+    # Boot 2 DID launch (the `if maintenance_boot` above succeeded), so
+    # the guest opened the maintenance images and may have written to
+    # them. A non-zero terminal status therefore means the same thing it
+    # does for Boot 1: the guest did not power off cleanly, its ext4
+    # journal is potentially dirty, and qemu-img check (which only
+    # validates the qcow2 container, not the guest filesystem) cannot see
+    # it. Hard-gate the reseal exactly as Boot 1 does — a dirtied image
+    # sealed here is inherited by every project.
+    #
+    # 143 is the common case: the SSH-probe-failure path above issues a
+    # `systemctl stop` (SIGTERM → QEMU exit 143), and maintenance_wait_exit
+    # escalate does the same if the guest wedges past VIRTDEV_STOP_TIMEOUT.
+    #
+    # This gate fires ONLY on the booted-but-unclean path. A Boot 2 that
+    # never started (systemd-run failed) is handled by the `else` branch
+    # below, where the images were never opened and stay clean — that path
+    # keeps the old warn-and-proceed behaviour. maintenance_cleanup runs
+    # FIRST (clears only projects/maintenance/{port,*.sock}), mirroring
+    # Boot 1's cleanup-before-gate ordering, so the refusal leaks no
+    # sockets. Crucially, the reseal commit steps (generation bump,
+    # chmod 444, virtdev-exchange) have NOT run yet, so maintenance/
+    # survives intact and the session can be retried.
     maintenance_cleanup
+    case "${boot2_exit}" in
+      0)
+        : # Clean inventory boot. do_diff was set by the capture above.
+        ;;
+      *)
+        [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
+        [[ -n "${inventory_after}" ]] && rm -f "${inventory_after}"
+        error 24 <<MESSAGE
+Inventory boot (Boot 2) exited abnormally.
+Unit exit status: ${boot2_exit}$( [[ "${boot2_exit}" == "143" ]] && printf ' (SIGTERM)' )
+
+After a clean interactive session, virtdev-maintain boots the
+to-be-sealed images a second time to capture the after-inventory.
+That boot did not end with a clean guest poweroff, so the maintenance
+image may now carry a dirty ext4 journal or half-applied writes.
+qemu-img check validates only the qcow2 container, not the guest
+filesystem, so resealing in this state would bake the dirty state
+into the base every project inherits. Resealing is refused.
+
+The sealed base images are intact: '${system_directory}'
+The maintenance staging is preserved intact: '${maintenance_directory}'
+No reseal commit ran — the generation bump, the read-only re-marking,
+and the atomic exchange were all skipped, so the staging from your
+maintenance session survives and the session can be retried.
+
+Inspect the staging, then either re-enter maintenance for a clean
+inventory boot, or discard and start over:
+
+    rm -rf '${maintenance_directory}'
+    virtdev-maintain
+MESSAGE
+        ;;
+    esac
   else
     printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: second boot failed, skipping inventory' reset)"
     maintenance_cleanup
