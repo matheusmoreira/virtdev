@@ -168,7 +168,7 @@ else
   included=("${valid_projects[@]}")
 fi
 
-# ── Phase 1: Audit ──────────────────────────────────────────────────
+# ── Audit ───────────────────────────────────────────────────────────
 
 declare -a audit_failures=()
 declare -a skipped_outdated=()
@@ -296,7 +296,7 @@ if (( ! flags[yes] )); then
   fi
 fi
 
-# ── Phase 2: Backup ─────────────────────────────────────────────────
+# ── Phase 1: Backup ─────────────────────────────────────────────────
 
 total_phases=4
 declare -a stopped_projects=()
@@ -355,7 +355,7 @@ for p in "${included[@]}"; do
   stopped_projects+=("${p}")
 done
 
-# ── Phase 3: Maintain ───────────────────────────────────────────────
+# ── Phase 2: Maintain ───────────────────────────────────────────────
 
 printf '\n%s\n' "$(terminal_write bold "[Phase 2/${total_phases}] Maintaining base system..." reset)" >&2
 printf 'This is the interactive phase. SSH into the maintenance virtual machine,\n' >&2
@@ -375,7 +375,7 @@ if ! "${virtdev_bin_directory}/virtdev-maintain"; then
   error 30 <<<"Aborting."
 fi
 
-# ── Phase 4: Rebuild ────────────────────────────────────────────────
+# ── Phase 3: Rebuild ────────────────────────────────────────────────
 
 printf '\n%s\n' "$(terminal_write bold "[Phase 3/${total_phases}] Rebuilding project virtual machines..." reset)" >&2
 
@@ -414,7 +414,7 @@ for p in "${included[@]}"; do
   fi
 done
 
-# ── Phase 5: Summary ────────────────────────────────────────────────
+# ── Phase 4: Summary ────────────────────────────────────────────────
 
 new_generation="$(generation_read "${system_generation_file}")"
 
