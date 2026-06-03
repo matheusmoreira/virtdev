@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project terminal port passt
+import error validate lock arguments project terminal port passt qemu
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -173,9 +173,9 @@ else
   done
 fi
 
-system_disk="${project_directory}"/system.qcow2
-home_disk="${project_directory}"/home.qcow2
-nvram="${project_directory}"/nvram
+# The disk/nvram paths are derived inside qemu_command from
+# project_directory; only the sockets are still referenced here (cleanup
+# trap, stale-socket sweep, and the netexec --socket argument).
 monitor_sock="${project_directory}"/monitor.sock
 console_sock="${project_directory}"/console.sock
 passt_sock="${project_directory}"/passt.sock
@@ -221,6 +221,15 @@ fi
 
 printf >&2 "Starting project virtual machine %s on SSH port %d...\n" "${project}" "${port}"
 
+# The QEMU argv (everything after the netexec `--` boundary) is owned by
+# lib/virtdev/qemu so it cannot drift from virtdev-maintain's copy — it is
+# the network-isolation security boundary. start's disks and sockets share
+# the per-project directory, so disk_dir and sock_dir are identical here.
+declare -a qemu_argv=()
+qemu_command qemu_argv \
+    "${project_directory}" "${project_directory}" "${project}" \
+    "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}"
+
 # --collect intentionally omitted: it sets CollectMode=inactive-or-failed,
 # which would let systemd garbage-collect a failed unit before anything
 # can query ExecMainStatus or similar post-mortem properties. virtdev-stop
@@ -237,25 +246,7 @@ systemd-run \
         --socket "${passt_sock}" \
         --forward "${port}" \
         -- \
-        qemu-system-x86_64 \
-            -enable-kvm \
-            -cpu host \
-            -machine q35 \
-            -m "${VIRTDEV_VM_MEMORY}" \
-            -smp "${VIRTDEV_VM_CPUS}" \
-            -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
-            -drive if=pflash,format=raw,file="${nvram}" \
-            -drive file="${system_disk}",if=virtio,format=qcow2 \
-            -drive file="${home_disk}",if=virtio,format=qcow2 \
-            -netdev stream,id=net0,server=off,addr.type=unix,addr.path="${passt_sock}" \
-            -device virtio-net-pci,netdev=net0 \
-            -device virtio-rng-pci \
-            -display none \
-            -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
-            -monitor chardev:monitor \
-            -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
-            -serial chardev:serial \
-            -fw_cfg name=opt/virtdev/project,string="${project}"
+        "${qemu_argv[@]}"
 
 # Wait for systemd to confirm the transient unit is active before the
 # lock is released (via script exit). systemd-run returns when the
@@ -265,43 +256,36 @@ systemd-run \
 # systemd seeing the unit, and its 'is-active' check would falsely
 # conclude the VM is not running.
 #
-# The three outcomes we care about are distinguished, so the user
-# gets a targeted error message instead of a generic timeout:
+# qemu_activation_classify (lib/virtdev/qemu) runs the poll and returns
+# a discriminant; the case below maps it to start's own exit codes and
+# messages. The outcomes we distinguish, so the user gets a targeted
+# message instead of a generic timeout:
 #
-#   - active:              normal, break out of the loop
-#   - activating:          still booting, keep polling until deadline
-#   - failed | inactive:   QEMU exited before activation completed
-#                          (bad firmware path, bad qcow2 header,
-#                          KVM initialisation failure, etc.) — fail
-#                          fast with the captured exit status so the
-#                          user is not told "unit did not become
-#                          active" when in fact it entered and left
-#                          in the same second
-#   - other states:        treat as activating for timeout purposes
-deadline=$(( SECONDS + 5 ))
-while true; do
-  state="$(systemctl --user show "${unit}" \
-      --property=ActiveState --value 2>/dev/null || true)"
-  case "${state}" in
-    active)
-      break
-      ;;
-    failed|inactive)
-      exit_status="$(systemctl --user show "${unit}" \
-          --property=ExecMainStatus --value 2>/dev/null || true)"
-      exit_status="${exit_status:-unknown}"
-      # Classify the failure by the shim's exit code first. When the
-      # shim exits before exec'ing QEMU, ExecMainStatus is the shim's
-      # code (83/84/85); once the shim exec's QEMU the status is QEMU's
-      # own (0/143/…) and can never be 83/84/85.
-      #
-      # passt now binds the forward port (not QEMU), so the legacy
-      # post-hoc qemu port_in_use re-probe is removed. Exit code 85
-      # from the shim is the authoritative bind-race signal.
-      case "${exit_status}" in
-        "${passt_port_race_exit_code}")
-          if (( explicit_port )); then
-            error 17 <<MESSAGE
+#   - qemu_active:           normal — continue.
+#   - 83/84/85/86:           passt-shim failures (the shim exited before
+#                            exec'ing QEMU; once it exec's QEMU the status
+#                            is QEMU's own 0/143/… and never these four).
+#                            passt now binds the forward port (not QEMU),
+#                            so exit code 85 is the authoritative bind-race
+#                            signal — the legacy post-hoc port re-probe is
+#                            gone.
+#   - qemu_crashed:          failed/inactive with a non-passt status
+#                            (bad firmware path, bad qcow2 header, KVM
+#                            init failure, …) — fail fast with the captured
+#                            exit status so the user is not told "unit did
+#                            not become active" when it entered and left in
+#                            the same second.
+#   - qemu_still_activating: deadline passed, unit still transient.
+qemu_activation_classify "${unit}" 5 && classify=0 || classify=$?
+state="${VIRTDEV_QEMU_ACTIVE_STATE}"
+exit_status="${VIRTDEV_QEMU_EXIT_STATUS}"
+case "${classify}" in
+  "${qemu_active}")
+    : # Unit is active; fall through.
+    ;;
+  "${passt_port_race_exit_code}")
+    if (( explicit_port )); then
+      error 17 <<MESSAGE
 Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
 Between virtdev-start's pre-flight port check and passt's bind() call,
 a non-virtdev process took the port. The explicit port cannot be
@@ -310,42 +294,42 @@ Retry with a different port, or omit the port arg to auto-assign:
     virtdev-start ${project} <other-port>
     virtdev-start ${project}
 MESSAGE
-          else
-            error 17 <<MESSAGE
+    else
+      error 17 <<MESSAGE
 Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
 Auto-assignment selected this port, but a non-virtdev process took
 it between the port check and passt's bind() call. Retry —
 auto-assignment will pick the next free port:
     virtdev-start ${project}
 MESSAGE
-          fi
-          ;;
-        "${passt_missing_exit_code}")
-          error 18 <<MESSAGE
+    fi
+    ;;
+  "${passt_missing_exit_code}")
+    error 18 <<MESSAGE
 passt is not installed: ${unit} exit status ${exit_status}.
 Install passt and retry: pacman -S passt
     virtdev-start ${project}
 MESSAGE
-          ;;
-        "${passt_init_failure_exit_code}")
-          error 19 <<MESSAGE
+    ;;
+  "${passt_init_failure_exit_code}")
+    error 19 <<MESSAGE
 passt failed to initialise: ${unit} exit status ${exit_status}.
 The socket did not come up before QEMU was launched. Investigate:
     systemctl --user status ${unit}
     journalctl --user -u ${unit}
 MESSAGE
-          ;;
-        "${passt_qemu_missing_exit_code}")
-          error 20 <<MESSAGE
+    ;;
+  "${passt_qemu_missing_exit_code}")
+    error 20 <<MESSAGE
 QEMU command not found: ${unit} exit status ${exit_status}.
 The netexec shim pre-flighted the QEMU binary and could not find it,
 so passt was never started. Install QEMU and retry:
     pacman -S qemu-base
     virtdev-start ${project}
 MESSAGE
-          ;;
-        *)
-          error 12 <<MESSAGE
+    ;;
+  "${qemu_crashed}")
+    error 12 <<MESSAGE
 Unit exited before becoming active: ${unit}
 ActiveState: ${state}
 QEMU exit status: ${exit_status}
@@ -353,22 +337,16 @@ QEMU likely crashed at boot. Investigate:
     systemctl --user status ${unit}
     journalctl --user -u ${unit}
 MESSAGE
-          ;;
-      esac
-      ;;
-    *)
-      if (( SECONDS >= deadline )); then
-        error 16 <<MESSAGE
+    ;;
+  "${qemu_still_activating}")
+    error 16 <<MESSAGE
 Unit did not become active within 5s: ${unit}
 ActiveState: ${state:-unknown}
 systemd-run reported success but systemctl does not see the unit active.
 Investigate: systemctl --user status ${unit}
 MESSAGE
-      fi
-      sleep 0.1
-      ;;
-  esac
-done
+    ;;
+esac
 
 vm_started=1
 

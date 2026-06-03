@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # discriminant constants exported to consumers (virtdev-start, virtdev-maintain)
+# shellcheck disable=SC2154  # passt_*_exit_code constants provided by the imported passt library
+#
+# qemu library: the shared QEMU argv and the post-launch activation
+# classifier for project and maintenance virtual machines.
+#
+# This is the network-isolation security boundary. virtdev-start and
+# virtdev-maintain both launch QEMU through the virtdev-netexec passt
+# shim with a byte-identical argv; the only legitimate differences are
+# the per-call scalars (image directory, fw_cfg project string, memory,
+# CPU count) and maintenance's trailing virtfs cache arguments. Keeping
+# the flag set in one place makes a silent drift — a dropped isolation
+# flag, a re-introduced SLIRP netdev — structurally impossible.
+#
+# Public:
+#   qemu_command <array_name> <disk_dir> <sock_dir> <fw_cfg_project> \
+#                <memory> <cpus> [extra_args...]
+#       Fills the named array with the qemu-system-x86_64 argv that goes
+#       AFTER the `virtdev-netexec ... --` boundary (pure; no process
+#       spawned). The caller passes this array to virtdev-netexec as the
+#       QEMU command. Returning an array (rather than a string the caller
+#       must re-split) keeps the socket and disk paths intact even if a
+#       path contains whitespace — mirrors passt_command.
+#
+#       array_name      — caller-declared array to populate.
+#       disk_dir        — directory holding system.qcow2, home.qcow2 and
+#                         nvram. virtdev-start: the per-project directory.
+#                         virtdev-maintain: the maintenance/ staging dir.
+#       sock_dir        — directory holding the monitor/console/passt
+#                         sockets. virtdev-start: the SAME per-project
+#                         directory. virtdev-maintain: projects/maintenance
+#                         (distinct from the staging disk dir — the two
+#                         roots diverge only in maintenance, so they are
+#                         separate parameters rather than one).
+#       fw_cfg_project  — value for -fw_cfg opt/virtdev/project,string=;
+#                         the guest reads it at boot to set its hostname.
+#       memory          — -m value (MiB).
+#       cpus            — -smp value.
+#       extra_args      — appended TRAILING, after the fixed flag set.
+#                         Additive only: these cannot alter the -drive or
+#                         -netdev lines, which are fixed literals above
+#                         the insertion point. virtdev-maintain passes its
+#                         -virtfs pacman-cache mounts here.
+#
+#       The security-relevant flag set is OWNED here as fixed literals:
+#       the OVMF pflash read-only firmware, the writable nvram pflash,
+#       the system/home virtio qcow2 drives, the passt -netdev stream
+#       (NO SLIRP -netdev user), virtio-rng, and -display none. There is
+#       no read-only/snapshot drive flag — the qcow2 deltas are writable.
+#
+#   qemu_activation_classify <unit> <deadline_seconds>
+#       Poll the transient systemd unit after systemd-run returns and
+#       classify the outcome. Runs the post-launch ActiveState poll until
+#       the unit becomes active, enters a terminal state, or the deadline
+#       passes, then RETURNS an integer discriminant (see below). Runs in
+#       the caller's shell and returns the discriminant via `return` — do
+#       NOT wrap in $(): a subshell would discard the VIRTDEV_QEMU_*
+#       globals and the return code both.
+#
+#       unit             — transient unit name (virtdev-<project>).
+#       deadline_seconds — budget, in seconds, for the unit to reach
+#                          active before the still-activating verdict.
+#
+#       On return, two namespaced globals carry the detail the caller
+#       needs for its own diagnostics:
+#         VIRTDEV_QEMU_EXIT_STATUS  — the unit's ExecMainStatus (the shim
+#                                     exit code 83/84/85/86 when QEMU was
+#                                     never exec'd, otherwise QEMU's own
+#                                     code), or "unknown".
+#         VIRTDEV_QEMU_ACTIVE_STATE — the last ActiveState observed.
+#
+# Discriminants returned by qemu_activation_classify:
+#   0   (qemu_active)            unit reached active state.
+#   90  (qemu_crashed)           unit entered failed/inactive with a
+#                                non-passt ExecMainStatus (bad firmware
+#                                path, bad qcow2 header, KVM failure, …).
+#   91  (qemu_still_activating)  deadline passed; unit still transient.
+#   83  (passt_missing)          passt binary not found (shim pre-exec).
+#   84  (passt_init_failure)     passt failed to initialise (shim).
+#   85  (passt_port_race)        forward-port bind race (shim).
+#   86  (passt_qemu_missing)     QEMU pre-flight found no binary (shim).
+#
+# The 83/84/85/86 constants are owned by lib/virtdev/passt and reused
+# here verbatim; once the shim exec's QEMU, ExecMainStatus is QEMU's own
+# code and can never collide with them. 90 and 91 are reserved here and
+# are disjoint from {0,83,84,85,86}.
+#
+set -euo pipefail
+
+import error passt port
+
+readonly qemu_active=0
+readonly qemu_crashed=90
+readonly qemu_still_activating=91
+
+qemu_command() {
+  local -n _command="${1}"
+  local -r disk_dir="${2}"
+  local -r sock_dir="${3}"
+  local -r fw_cfg_project="${4}"
+  local -r memory="${5}"
+  local -r cpus="${6}"
+  shift 6
+  # Remaining positionals (if any) are the caller's trailing extra args.
+
+  local -r system_disk="${disk_dir}/system.qcow2"
+  local -r home_disk="${disk_dir}/home.qcow2"
+  local -r nvram="${disk_dir}/nvram"
+  local -r monitor_sock="${sock_dir}/monitor.sock"
+  local -r console_sock="${sock_dir}/console.sock"
+  local -r passt_sock="${sock_dir}/passt.sock"
+  local -r ovmf_code="${OVMF_CODE:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}"
+
+  # The flag set below is the network-isolation security boundary. It is
+  # copied verbatim from the historical start/maintain argv and must not
+  # drift. -netdev stream (passt) only — never -netdev user (SLIRP). The
+  # firmware pflash is readonly=on; the disks are writable qcow2 deltas
+  # (no snapshot/readonly drive flag, by design).
+  # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
+  _command=(
+    qemu-system-x86_64
+    -enable-kvm
+    -cpu host
+    -machine q35
+    -m "${memory}"
+    -smp "${cpus}"
+    -drive if=pflash,format=raw,readonly=on,file="${ovmf_code}"
+    -drive if=pflash,format=raw,file="${nvram}"
+    -drive file="${system_disk}",if=virtio,format=qcow2
+    -drive file="${home_disk}",if=virtio,format=qcow2
+    -netdev stream,id=net0,server=off,addr.type=unix,addr.path="${passt_sock}"
+    -device virtio-net-pci,netdev=net0
+    -device virtio-rng-pci
+    -display none
+    -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off
+    -monitor chardev:monitor
+    -chardev socket,id=serial,path="${console_sock}",server=on,wait=off
+    -serial chardev:serial
+    -fw_cfg name=opt/virtdev/project,string="${fw_cfg_project}"
+  )
+
+  # Trailing, additive extra args (maintenance's -virtfs cache mounts).
+  # They follow the fixed flag set and structurally cannot rewrite the
+  # -drive/-netdev lines above.
+  if (( $# > 0 )); then
+    _command+=("$@")
+  fi
+}
+
+qemu_activation_classify() {
+  local -r unit="${1}"
+  local -r deadline_seconds="${2}"
+  local -r deadline=$(( SECONDS + deadline_seconds ))
+
+  # Reset the detail globals so a previous call's values never leak into
+  # this verdict.
+  VIRTDEV_QEMU_EXIT_STATUS=unknown
+  VIRTDEV_QEMU_ACTIVE_STATE=unknown
+
+  local state exit_status
+  while true; do
+    state="$(systemctl --user show "${unit}" \
+        --property=ActiveState --value 2>/dev/null || true)"
+    VIRTDEV_QEMU_ACTIVE_STATE="${state}"
+    case "${state}" in
+      active)
+        return "${qemu_active}"
+        ;;
+      failed|inactive)
+        exit_status="$(systemctl --user show "${unit}" \
+            --property=ExecMainStatus --value 2>/dev/null || true)"
+        exit_status="${exit_status:-unknown}"
+        VIRTDEV_QEMU_EXIT_STATUS="${exit_status}"
+        # Classify by the shim's exit code first. When the shim exits
+        # before exec'ing QEMU, ExecMainStatus is the shim's own code
+        # (83/84/85/86); once the shim exec's QEMU the status is QEMU's
+        # (0/143/…) and can never be one of those four.
+        case "${exit_status}" in
+          "${passt_port_race_exit_code}") return "${passt_port_race_exit_code}" ;;
+          "${passt_missing_exit_code}")   return "${passt_missing_exit_code}" ;;
+          "${passt_init_failure_exit_code}") return "${passt_init_failure_exit_code}" ;;
+          "${passt_qemu_missing_exit_code}") return "${passt_qemu_missing_exit_code}" ;;
+          *) return "${qemu_crashed}" ;;
+        esac
+        ;;
+      *)
+        if (( SECONDS >= deadline )); then
+          return "${qemu_still_activating}"
+        fi
+        sleep 0.1
+        ;;
+    esac
+  done
+}

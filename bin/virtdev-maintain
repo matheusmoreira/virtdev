@@ -81,7 +81,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm terminal port passt
+import error lock arguments ssh project confirm terminal port passt qemu
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -159,6 +159,18 @@ maintenance_boot() {
   rm -f "${monitor_sock}" "${console_sock}" "${passt_sock}"
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
+  # The QEMU argv (everything after the netexec `--` boundary) is owned by
+  # lib/virtdev/qemu so it cannot drift from virtdev-start's copy — it is
+  # the network-isolation security boundary. Maintenance's disks live in
+  # maintenance/ while its sockets live in projects/maintenance/, so the
+  # two roots are passed separately. cache_args (the -virtfs pacman-cache
+  # mounts) are trailing, additive extra args.
+  local -a qemu_argv=()
+  qemu_command qemu_argv \
+      "${maintenance_directory}" "${maintenance_project}" maintenance \
+      "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" \
+      "${cache_args[@]}"
+
   systemd-run \
       --user \
       --unit="${unit}" \
@@ -168,26 +180,7 @@ maintenance_boot() {
           --socket "${passt_sock}" \
           --forward "${maintenance_port}" \
           -- \
-          qemu-system-x86_64 \
-              -enable-kvm \
-              -cpu host \
-              -machine q35 \
-              -m "${VIRTDEV_VM_MEMORY}" \
-              -smp "${VIRTDEV_VM_CPUS}" \
-              -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
-              -drive if=pflash,format=raw,file="${nvram}" \
-              -drive file="${system_disk}",if=virtio,format=qcow2 \
-              -drive file="${home_disk}",if=virtio,format=qcow2 \
-              -netdev stream,id=net0,server=off,addr.type=unix,addr.path="${passt_sock}" \
-              -device virtio-net-pci,netdev=net0 \
-              -device virtio-rng-pci \
-              -display none \
-              -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off \
-              -monitor chardev:monitor \
-              -chardev socket,id=serial,path="${console_sock}",server=on,wait=off \
-              -serial chardev:serial \
-              "${cache_args[@]}" \
-              -fw_cfg name=opt/virtdev/project,string=maintenance
+          "${qemu_argv[@]}"
 }
 
 maintenance_wait_ssh() {
@@ -379,26 +372,20 @@ fi
 # message instead of falling through to the full 120s SSH wait and a
 # misleading "SSH did not become available" report.
 #
-# Mirrors virtdev-start's post-launch poll. No new code arm is needed
+# Mirrors virtdev-start's post-launch poll via the shared
+# qemu_activation_classify (lib/virtdev/qemu). No new code arm is needed
 # in the later reseal 'case "${qemu_exit}"': once the shim exec's QEMU,
 # qemu_exit is QEMU's (0/143/…) and can never be a pre-exec shim code
 # (83/84/85/86).
-activate_deadline=$(( SECONDS + 5 ))
-while true; do
-  activate_state="$(systemctl --user show "${unit}" \
-      --property=ActiveState --value 2>/dev/null || true)"
-  case "${activate_state}" in
-    active)
-      break
-      ;;
-    failed|inactive)
-      activate_exit="$(systemctl --user show "${unit}" \
-          --property=ExecMainStatus --value 2>/dev/null || true)"
-      activate_exit="${activate_exit:-unknown}"
-      case "${activate_exit}" in
-        "${passt_port_race_exit_code}")
-          maintenance_cleanup
-          error 16 <<MESSAGE
+qemu_activation_classify "${unit}" 5 && activate_classify=0 || activate_classify=$?
+activate_exit="${VIRTDEV_QEMU_EXIT_STATUS}"
+case "${activate_classify}" in
+  "${qemu_active}")
+    : # Unit is active; proceed to the SSH wait.
+    ;;
+  "${passt_port_race_exit_code}")
+    maintenance_cleanup
+    error 16 <<MESSAGE
 Port ${maintenance_port} is bound by another process.
 Between virtdev-maintain's pre-flight port check and passt's bind()
 call, another process took the port. The sealed base images are
@@ -406,54 +393,43 @@ intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
 Remove manually to retry: rm -rf '${maintenance_directory}'
 MESSAGE
-          ;;
-        "${passt_missing_exit_code}")
-          maintenance_cleanup
-          error 21 <<MESSAGE
+    ;;
+  "${passt_missing_exit_code}")
+    maintenance_cleanup
+    error 21 <<MESSAGE
 passt is not installed: ${unit} exit status ${activate_exit}.
 Install passt and retry: pacman -S passt
     virtdev-maintain
 MESSAGE
-          ;;
-        "${passt_init_failure_exit_code}")
-          maintenance_cleanup
-          error 22 <<MESSAGE
+    ;;
+  "${passt_init_failure_exit_code}")
+    maintenance_cleanup
+    error 22 <<MESSAGE
 passt failed to initialise: ${unit} exit status ${activate_exit}.
 The socket did not come up before the virtual machine was launched.
 Investigate:
     systemctl --user status ${unit}
     journalctl --user -u ${unit}
 MESSAGE
-          ;;
-        "${passt_qemu_missing_exit_code}")
-          maintenance_cleanup
-          error 23 <<MESSAGE
+    ;;
+  "${passt_qemu_missing_exit_code}")
+    maintenance_cleanup
+    error 23 <<MESSAGE
 QEMU command not found: ${unit} exit status ${activate_exit}.
 The netexec shim pre-flighted the QEMU binary and could not find it,
 so passt was never started. Install QEMU and retry:
     pacman -S qemu-base
     virtdev-maintain
 MESSAGE
-          ;;
-        *)
-          # Some other early exit (bad qcow2, KVM failure, etc.).
-          # Fall through to the SSH wait which will detect the unit is
-          # not active and produce its own diagnostic.
-          break
-          ;;
-      esac
-      ;;
-    *)
-      if (( SECONDS >= activate_deadline )); then
-        # Deadline expired; unit is still in a non-terminal transient
-        # state. Continue to the SSH wait — it will time out with its
-        # own message if the unit never becomes active.
-        break
-      fi
-      sleep 0.1
-      ;;
-  esac
-done
+    ;;
+  "${qemu_crashed}"|"${qemu_still_activating}")
+    # qemu_crashed: some other early exit (bad qcow2, KVM failure, etc.).
+    # qemu_still_activating: deadline expired, unit still transient.
+    # Both fall through to the SSH wait, which detects the unit is not
+    # active and produces its own diagnostic.
+    :
+    ;;
+esac
 
 printf >&2 'Waiting for SSH on port %d with timeout %ds...' \
        "${maintenance_port}" "${VIRTDEV_WAIT_TIMEOUT}"
