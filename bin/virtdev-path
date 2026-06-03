@@ -53,40 +53,20 @@ project="${1}"
 resource="${2:-data}"
 
 case "${project}" in
-  base)
+  base|maintenance)
+    dir="${project/base/system}"
     case "${resource}" in
       data)
-        path="${VIRTDEV_HOME}/system"
+        path="${VIRTDEV_HOME}/${dir}"
         ;;
       system-image)
-        path="${VIRTDEV_HOME}/system/system.qcow2"
+        path="${VIRTDEV_HOME}/${dir}/system.qcow2"
         ;;
       home-image)
-        path="${VIRTDEV_HOME}/system/home.qcow2"
+        path="${VIRTDEV_HOME}/${dir}/home.qcow2"
         ;;
       *)
-        error 5 <<<"Unknown resource for base: '${resource}' (valid: data, system-image, home-image)"
-        ;;
-    esac
-    if [[ ! -e "${path}" ]]; then
-      error 4 <<<"Path does not exist: '${path}'"
-    fi
-    printf '%s\n' "${path}"
-    exit 0
-    ;;
-  maintenance)
-    case "${resource}" in
-      data)
-        path="${VIRTDEV_HOME}/maintenance"
-        ;;
-      system-image)
-        path="${VIRTDEV_HOME}/maintenance/system.qcow2"
-        ;;
-      home-image)
-        path="${VIRTDEV_HOME}/maintenance/home.qcow2"
-        ;;
-      *)
-        error 5 <<<"Unknown resource for maintenance: '${resource}' (valid: data, system-image, home-image)"
+        error 5 <<<"Unknown resource for ${project}: '${resource}' (valid: data, system-image, home-image)"
         ;;
     esac
     if [[ ! -e "${path}" ]]; then
