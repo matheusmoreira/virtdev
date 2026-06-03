@@ -117,6 +117,8 @@ else
 fi
 
 ssh_command=""
-ssh_rsync_command ssh_command "${VIRTDEV_SSH_KEY}" "${port}"
+rsync_wrapper=""
+ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
+trap 'rm -f "${rsync_wrapper}"' EXIT
 
-exec rsync -a -e "${ssh_command}" "${rsync_src}" "${rsync_dest}"
+rsync -a -e "${ssh_command}" "${rsync_src}" "${rsync_dest}"

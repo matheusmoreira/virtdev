@@ -196,7 +196,8 @@ printf >&2 '  snapshot generation: %s\n' "${snapshot_generation}"
 printf >&2 '  current generation:  %s\n' "${project_generation}"
 
 ssh_command=""
-ssh_rsync_command ssh_command "${VIRTDEV_SSH_KEY}" "${port}"
+rsync_wrapper=""
+ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 
 # No --safe-links here, unlike virtdev-backup, and that is deliberate:
 # --safe-links is enforced on the RECEIVER. backup pulls (host is the
@@ -210,7 +211,7 @@ rsync_opts=(-a --no-D --ignore-missing-args --stats)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
 
 rsync_log="$(mktemp)"
-trap 'rm -f "${rsync_log}"' EXIT
+trap 'rm -f "${rsync_log}" "${rsync_wrapper}"' EXIT
 
 # Force LC_ALL=C so rsync's --stats output is in English. The
 # partial-transfer counter (exit 23/24) and the restored-files count

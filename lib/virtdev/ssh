@@ -3,11 +3,15 @@
 # ssh library: SSH helpers for virtdev guest connections.
 #
 # Public:
-#   ssh_rsync_command <varname> <key-path> <port>
-#       Builds an rsync-compatible SSH command string and assigns it
-#       to the caller's variable named by <varname>. The command
-#       includes key, port, host-key/logging options, and isolation
-#       from the user's ~/.ssh/config and agent (untrusted guest).
+#   ssh_rsync_command <cmd-varname> <wrapper-varname> <key-path> <port>
+#       Creates a temporary wrapper script and assigns its path to
+#       <cmd-varname> for use as rsync's -e argument. Also assigns
+#       the temp file path to <wrapper-varname> so callers can clean
+#       it up on exit. The wrapper exec-s ssh with the key, port, and
+#       isolation options; the key path is passed via env (not
+#       interpolated into the command string) so spaces in the path
+#       survive rsync's word-split of the -e argument.
+#       Callers must: rm -f "${<wrapper-varname>}" in their EXIT trap.
 #
 #   ssh_poll_until_ready <key-path> <port> <unit> <timeout>
 #       Polls SSH on 127.0.0.1:<port> every 2s until a connection
@@ -35,16 +39,42 @@ readonly ssh_key_not_found_exit_code=77
 readonly ssh_key_permissions_exit_code=78
 
 ssh_rsync_command() {
-  local -r varname="${1}" key="${2}" port="${3}"
+  local -r cmd_varname="${1}" wrapper_varname="${2}" key="${3}" port="${4}"
+  # rsync word-splits the -e string (it does not shell-evaluate it), so
+  # %q backslash-escaping does not survive: a space in the key path
+  # becomes two separate tokens and ssh receives a broken -i argument.
+  # The fix: write a minimal wrapper script that receives the key path
+  # via an environment variable (_VIRTDEV_RSYNC_SSH_KEY) and exec-s ssh.
+  # rsync's -e receives only the unambiguous wrapper path; no spaces
+  # appear in the command string itself.
+  #
   # -F /dev/null: ignore the user's ~/.ssh/config. These rsync transports
   # connect to an UNTRUSTED guest; a host-side 'Host *' stanza
   # (ForwardAgent, ProxyCommand, ControlMaster, LocalForward) must not
   # leak in — the same isolation ssh_poll_until_ready and virtdev-ssh
   # already enforce. IdentitiesOnly=yes offers only the given key (not
   # agent identities); BatchMode=yes never blocks on a prompt mid-rsync.
-  printf -v "${varname}" \
-      'ssh -F /dev/null -i %q -p %q -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR' \
-      "${key}" "${port}"
+  local wrapper
+  wrapper="$(mktemp)"
+  chmod 700 "${wrapper}"
+  # Write the wrapper using a quoted heredoc so ${...} is written
+  # literally for /bin/sh to expand at runtime (not by bash now).
+  cat > "${wrapper}" <<'WRAPPER_EOF'
+#!/bin/sh
+exec ssh -F /dev/null \
+    -i "${_VIRTDEV_RSYNC_SSH_KEY}" \
+    -p "${_VIRTDEV_RSYNC_SSH_PORT}" \
+    -o IdentitiesOnly=yes \
+    -o BatchMode=yes \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR \
+    "$@"
+WRAPPER_EOF
+  printf -v "${cmd_varname}" '%s' "${wrapper}"
+  printf -v "${wrapper_varname}" '%s' "${wrapper}"
+  export _VIRTDEV_RSYNC_SSH_KEY="${key}"
+  export _VIRTDEV_RSYNC_SSH_PORT="${port}"
 }
 
 ssh_poll_until_ready() {

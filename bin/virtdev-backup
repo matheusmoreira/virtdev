@@ -270,9 +270,11 @@ fi
 
 backup_succeeded=0
 rsync_log=
+rsync_wrapper=
 cleanup_partial() {
   (( backup_succeeded )) || rm -rf "${partial}"
   [[ -n "${rsync_log}" ]] && rm -f "${rsync_log}"
+  [[ -n "${rsync_wrapper}" ]] && rm -f "${rsync_wrapper}"
 }
 trap cleanup_partial EXIT
 
@@ -296,7 +298,7 @@ printf '%s\n' "${base_generation}" > "${partial}/generation"
 mkdir -m 0700 "${partial}/tree"
 
 ssh_command=""
-ssh_rsync_command ssh_command "${VIRTDEV_SSH_KEY}" "${port}"
+ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 
 rsync_opts=(-a --no-D --ignore-missing-args --stats --safe-links)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
