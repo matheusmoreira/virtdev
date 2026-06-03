@@ -15,7 +15,7 @@
 #
 # Public:
 #   qemu_command <array_name> <disk_dir> <sock_dir> <fw_cfg_project> \
-#                <memory> <cpus> [extra_args...]
+#                <memory> <cpus> <ovmf_code> [extra_args...]
 #       Fills the named array with the qemu-system-x86_64 argv that goes
 #       AFTER the `virtdev-netexec ... --` boundary (pure; no process
 #       spawned). The caller passes this array to virtdev-netexec as the
@@ -37,6 +37,10 @@
 #                         the guest reads it at boot to set its hostname.
 #       memory          — -m value (MiB).
 #       cpus            — -smp value.
+#       ovmf_code       — path to the OVMF_CODE pflash read-only firmware
+#                         image. Callers default it via OVMF_CODE before
+#                         calling. Explicit parameter rather than an ambient
+#                         env read so the contract is visible at call sites.
 #       extra_args      — appended TRAILING, after the fixed flag set.
 #                         Additive only: these cannot alter the -drive or
 #                         -netdev lines, which are fixed literals above
@@ -88,7 +92,7 @@
 #
 set -euo pipefail
 
-import error passt port
+import passt
 
 readonly qemu_active=0
 readonly qemu_crashed=90
@@ -101,7 +105,8 @@ qemu_command() {
   local -r fw_cfg_project="${4}"
   local -r memory="${5}"
   local -r cpus="${6}"
-  shift 6
+  local -r ovmf_code="${7}"
+  shift 7
   # Remaining positionals (if any) are the caller's trailing extra args.
 
   local -r system_disk="${disk_dir}/system.qcow2"
@@ -110,7 +115,6 @@ qemu_command() {
   local -r monitor_sock="${sock_dir}/monitor.sock"
   local -r console_sock="${sock_dir}/console.sock"
   local -r passt_sock="${sock_dir}/passt.sock"
-  local -r ovmf_code="${OVMF_CODE:-/usr/share/edk2/x64/OVMF_CODE.4m.fd}"
 
   # The flag set below is the network-isolation security boundary. It is
   # copied verbatim from the historical start/maintain argv and must not

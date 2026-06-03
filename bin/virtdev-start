@@ -228,7 +228,7 @@ printf >&2 "Starting project virtual machine %s on SSH port %d...\n" "${project}
 declare -a qemu_argv=()
 qemu_command qemu_argv \
     "${project_directory}" "${project_directory}" "${project}" \
-    "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}"
+    "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" "${OVMF_CODE}"
 
 # --collect intentionally omitted: it sets CollectMode=inactive-or-failed,
 # which would let systemd garbage-collect a failed unit before anything

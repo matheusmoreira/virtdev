@@ -168,7 +168,7 @@ maintenance_boot() {
   local -a qemu_argv=()
   qemu_command qemu_argv \
       "${maintenance_directory}" "${maintenance_project}" maintenance \
-      "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" \
+      "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" "${OVMF_CODE}" \
       "${cache_args[@]}"
 
   systemd-run \
