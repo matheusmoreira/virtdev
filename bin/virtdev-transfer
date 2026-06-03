@@ -29,6 +29,21 @@
 #   VIRTDEV_HOME       Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #   VIRTDEV_SSH_KEY    Default: ${VIRTDEV_HOME}/ssh/id
 #
+# Exit codes:
+#
+#   0   success
+#   2   invalid project name
+#   3   project not found
+#   4   virtual machine is not running
+#   8   rsync not found
+#   9   neither source nor destination is a remote path
+#   10  both source and destination are remote paths
+#   64  usage error
+#   77  SSH key not found
+#   78  SSH key permissions too open
+#   81  corrupt port file
+#   87  no port assigned (virtual machine not running)
+#
 
 set -euo pipefail
 
@@ -63,15 +78,15 @@ validate_project_name "${project}"
 
 project_require "${project}"
 
-port=""
-port_require port "${project}" 4
-
 if ! project_is_running "${project}"; then
-  error 5 <<MESSAGE
+  error 4 <<MESSAGE
 Virtual machine is not running: ${project}
 Run it with: virtdev-start ${project}
 MESSAGE
 fi
+
+port=""
+port_require port "${project}"
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 

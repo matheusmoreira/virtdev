@@ -33,9 +33,9 @@
 #
 # Exit codes:
 #   3   project not found
-#   4   no port assigned (virtual machine not started)
-#   5   virtual machine not running
+#   4   virtual machine not running
 #   80  pre-ssh trigger aborted (from lib/virtdev/trigger)
+#   87  no port assigned (virtual machine not started)
 #
 
 set -euo pipefail
@@ -71,15 +71,15 @@ validate_project_name "${project}"
 
 project_require "${project}"
 
-port=""
-port_require port "${project}" 4
-
 if ! project_is_running "${project}"; then
-  error 5 <<MESSAGE
+  error 4 <<MESSAGE
 Virtual machine is not running: ${project}
 Start it with: virtdev-start ${project}
 MESSAGE
 fi
+
+port=""
+port_require port "${project}"
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 

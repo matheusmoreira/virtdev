@@ -82,6 +82,7 @@ Same error → same code, everywhere:
 | 84 | passt failed to initialise | `virtdev-netexec` shim |
 | 85 | passt forward-port bind race | `virtdev-netexec` shim |
 | 86 | QEMU command not found (pre-flight before exec) | `virtdev-netexec` shim |
+| 87 | no port assigned (virtual machine not running) | `port_require` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").

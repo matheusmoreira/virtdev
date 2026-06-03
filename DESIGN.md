@@ -596,7 +596,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `ssh` | SSH key validation and connection helpers (`ssh_key_validate`, `ssh_rsync_command`, `ssh_poll_until_ready`) | 77, 78 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at lifecycle points (`trigger_fire`); discovers system and per-project triggers, captures stdout via namerefs | 80 |
-| `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81 |
+| `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_require`, `project_is_running`, `project_load_running_state`, `project_is_outdated`, `project_is_detached`, `generation_read`, `generation_read_lenient`) | 3, 82 |
 | `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags. The forward-port bind race is detected via `port_in_use`, not a passt helper | 83, 84, 85, 86 |
@@ -610,7 +610,11 @@ defaults `VIRTDEV_HOME`). The bootstrap's idempotency guard makes
 redundant imports harmless. Library-owned exit codes are reserved by
 the library and documented in its header; consumers do not override
 them, so the same error condition produces the same exit code in
-every script.
+every script. `port_require`, for instance, raises the absent-port
+condition as a fixed `87` (and a corrupt file as `81`) rather than
+accepting a per-script code, so "no port assigned" reports identically
+from `virtdev-ssh`, `virtdev-port`, `virtdev-wait`, `virtdev-transfer`,
+`virtdev-backup`, and `virtdev-restore`.
 
 The full discipline rules (no top-level side effects, function
 naming convention, `local` everywhere, `readonly` for true

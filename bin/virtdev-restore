@@ -85,7 +85,7 @@ MESSAGE
 fi
 
 port=""
-port_require port "${project}" 15
+port_require port "${project}"
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 

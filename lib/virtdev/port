@@ -3,15 +3,14 @@
 # port library: SSH forwarding port file reading and validation.
 #
 # Public:
-#   port_require <varname> <project> <missing-code>
+#   port_require <varname> <project>
 #                                Read and validate the port file and
 #                                assign the port to the caller's
-#                                <varname>. Errors with <missing-code>
-#                                if the file is absent, or 81 if it is
-#                                present but corrupt. Runs in the
-#                                caller's shell so the exit code
-#                                propagates — do NOT wrap in $().
-#                                <varname> must not begin with
+#                                <varname>. Errors 87 if the file is
+#                                absent, or 81 if it is present but
+#                                corrupt. Runs in the caller's shell so
+#                                the exit code propagates — do NOT wrap
+#                                in $(). <varname> must not begin with
 #                                __port_require_ (reserved for the
 #                                function's own locals; a collision would
 #                                make printf -v write the local instead).
@@ -22,6 +21,7 @@
 #
 # Exit codes:
 #   81  corrupt port file (not a valid integer)
+#   87  no port assigned (port file absent — virtual machine not started)
 #
 # The port file is written by virtdev-start with printf '%d\n' and
 # removed by virtdev-stop. Corruption requires filesystem-level issues
@@ -30,15 +30,16 @@
 # Why port_require uses a nameref instead of `port="$(port_read ...)"`:
 # a port_read that called error() on a corrupt file would only exit the
 # command-substitution subshell, and the caller's `if !` would then
-# report its own "no port" code (4/13/15) with a contradictory message
-# — never the reserved 81. port_require runs in the caller's shell, so
-# its error() terminates the process with the correct code.
+# report its own code with a contradictory message — never the reserved
+# 87 or 81. port_require runs in the caller's shell, so its error()
+# terminates the process with the correct code.
 #
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 import error
 
 readonly port_corrupt_exit_code=81
+readonly port_missing_exit_code=87
 
 # Internal. Print the port and return 0; return 1 if the port file is
 # missing, or 81 (port_corrupt_exit_code) if it exists but is not a
@@ -57,7 +58,7 @@ port_require() {
   # caller's output <varname> cannot collide with one: printf -v assigns
   # in this function's scope, where a same-named local would shadow the
   # caller's variable and silently swallow the result.
-  local -r __port_require_varname="${1}" __port_require_project="${2}" __port_require_missing_code="${3}"
+  local -r __port_require_varname="${1}" __port_require_project="${2}"
   local __port_require_value __port_require_status=0
   __port_require_value="$(_port_value_or_status "${__port_require_project}")" || __port_require_status=$?
   if (( __port_require_status == 0 )); then
@@ -66,7 +67,7 @@ port_require() {
     error "${port_corrupt_exit_code}" \
       <<<"Corrupt port file: ${VIRTDEV_HOME}/projects/${__port_require_project}/port"
   else
-    error "${__port_require_missing_code}" <<MESSAGE
+    error "${port_missing_exit_code}" <<MESSAGE
 Project has no port assigned: ${__port_require_project}
 Start the virtual machine first: virtdev-start ${__port_require_project}
 MESSAGE
