@@ -37,6 +37,9 @@ import() {
   local f
   for f in "$@"; do
     [[ -v virtdev_loaded_libraries[$f] ]] && continue
+    # Set the loaded flag BEFORE sourcing: a circular import then terminates
+    # at the second entry instead of recursing forever. Load-bearing — do not
+    # move this after the source.
     virtdev_loaded_libraries[$f]=1
     # shellcheck disable=SC1090
     source -p "${virtdev_library_directory}" "${f}"

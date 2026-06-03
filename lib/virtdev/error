@@ -15,6 +15,8 @@ set -euo pipefail
 
 error() {
   local -r code="${1}"
+  # Guard on stdin being an interactive TTY: a caller that forgot the heredoc/
+  # here-string would otherwise make the message read hang on terminal input.
   if [[ -t 0 ]]; then
     printf 'internal error: error() called without stdin redirection\n' >&2
     exit "${code}"
