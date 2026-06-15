@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2154  # firewall_* constants provided by the imported firewall library
+#
+# virtdev-firewall — host egress lockdown: generate / apply / status / hold.
+#
+#   virtdev firewall apply     (root)  generate + atomically install + (re)load the ruleset
+#   virtdev firewall status            report whether the lockdown is active (rootless)
+#   virtdev firewall hold      (root)  ExecStart of virtdev-firewall.service: load the
+#                                      ruleset into an owner,persist table and hold it
+#
+# The lockdown is a host-root nftables `inet virtdev` table that filters
+# the virtual machines' egress (passt's host sockets) by destination,
+# matched to the machines' systemd --user slice cgroups. The table carries
+# the `owner,persist` flags and is held open by a resident holder
+# (virtdev-firewall.service): while that service runs, another process's
+# `nft flush ruleset` (a host firewall reload) SKIPS the table instead of
+# wiping it, so no reassert timer is needed. The rootless policy (zones,
+# slice names, the launch guard) lives in lib/virtdev/firewall; this tool
+# owns the root-only ruleset generation, the apply flow, and the holder.
+#
+# Exit codes (local; 88 is library-owned by lib/virtdev/firewall):
+#   92  not invoked via sudo / target identity indeterminate
+#   93  ruleset rejected: failed nft -c, or a registry zone lacks a policy case
+#   94  unit install / daemon-reload / enable failure
+#   95  ruleset installed on disk but the holder failed to load it
+#   96  holder: ruleset file missing, or uid/base underivable from it
+#   97  holder: table did not come up, or baseline record failed
+#   98  apply: lingering not enabled for the target user
+#   99  holder: zone-slice cgroup dirs never appeared (pins not running)
+#
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+
+import error arguments firewall
+
+# No VIRTDEV_HOME / HOME defaulting here: the firewall tool never reads it, and
+# the holder runs `hold` as a root system service where HOME is unset — under
+# set -u that default would crash the holder at source time.
+
+# firewall_relaxation_zones -> the nft-referenced zones (the registry minus the
+# 'none' floor, which carries no rule), sorted. The single source for "which
+# zones get a slice jump AND a resident pin", so the generator and the pin
+# bootstrap can never cover different sets.
+firewall_relaxation_zones() {
+  firewall_zones | grep -vx none | sort
+}
+
+# firewall_generate <cgroup_base>
+# <cgroup_base> is the cgroup2-root-relative path of virtdev.slice, e.g.
+#   user.slice/user-1000.slice/user@1000.service/virtdev.slice
+# Emits the full `inet virtdev` table to stdout: a FIXED, project-agnostic
+# ladder. One base jump narrows to virtdev.slice (every machine, by cgroup
+# ancestry — verified scoped: catches descendants, nothing outside), then one
+# jump per RELAXATION zone matches that zone's shared slice one level deeper.
+# 'none' emits no rule — the terminal drop is its policy. The ruleset no longer
+# references per-project leaf slices: those were transient and absent at load
+# time, which is exactly what kept the old table from ever loading.
+firewall_generate() {
+  local -r base="${1:?firewall_generate: cgroup base required}"
+  local -r base_level="$(awk -F/ '{print NF}' <<<"${base}")"
+  # The per-zone slices are direct children of virtdev.slice:
+  # base/virtdev-<zone>.slice — one level deeper than the base.
+  local -r zone_level=$(( base_level + 1 ))
+
+  printf 'destroy table inet %s\n' "${firewall_table_name}"
+  printf 'table inet %s {\n' "${firewall_table_name}"
+  # owner,persist: the resident holder (virtdev-firewall.service) owns this
+  # table, so another process's `nft flush ruleset` skips it — a host firewall
+  # reload cannot wipe the lockdown. persist keeps the rules in place if the
+  # holder ever dies (the guard then reports down until it is restarted).
+  printf '  flags owner, persist\n'
+  printf '  set lan_v4 { type ipv4_addr; flags interval; elements = { %s } }\n' "${firewall_lan_v4_elements}"
+  printf '  set lan_v6 { type ipv6_addr; flags interval; elements = { %s } }\n' "${firewall_lan_v6_elements}"
+  printf '  chain output {\n'
+  printf '    type filter hook output priority 0; policy accept;\n'
+  # Narrow to virtdev FIRST so the host's own egress is untouched; jump
+  # only for sockets in virtdev.slice (every machine, by ancestry).
+  printf '    socket cgroupv2 level %s "%s" jump virtdev_machines\n' "${base_level}" "${base}"
+  printf '  }\n'
+  printf '  chain virtdev_machines {\n'
+  # Loopback DESTINATION accept, ahead of all policy in EVERY zone: passt's
+  # SSH-forward reply targets 127.0.0.1 (the sole address it binds) and rides
+  # in the machine's cgroup, so none/wan would otherwise drop the reply and
+  # break `virtdev ssh`. Accept by destination, not output interface — a
+  # guest->host-LAN-IP packet routes via lo too, so an oifname match would be a
+  # fail-open. ::1 is inert defense-in-depth. (Guest-INITIATED host loopback is
+  # blocked separately by passt's --map-host-loopback none, regardless of zone.)
+  printf '    ip daddr 127.0.0.1 accept\n'
+  printf '    ip6 daddr ::1 accept\n'
+  # One cgroup-ancestry jump per RELAXATION zone (the registry minus the 'none'
+  # floor). Zone MEMBERSHIP is data (the registry); each zone's VERDICT is
+  # policy (the case). The slice literal is built through firewall_slice_for —
+  # the single source of truth for slice names — so the launch side
+  # (systemd-run --slice) and the rule side can never drift. Sorted for a
+  # deterministic ruleset. A registry zone with no case fails LOUDLY here (exit
+  # 93) rather than silently emitting an unmatched machine; a `jump zone_<z>`
+  # verdict requires its chain below, or nft -c rejects the table at apply.
+  local zone slice
+  while IFS= read -r zone; do
+    slice="$(firewall_slice_for "${zone}")"
+    case "${zone}" in
+      full) printf '    socket cgroupv2 level %s "%s/%s" accept\n'        "${zone_level}" "${base}" "${slice}" ;;
+      wan)  printf '    socket cgroupv2 level %s "%s/%s" jump zone_wan\n' "${zone_level}" "${base}" "${slice}" ;;
+      *)    error 93 <<<"firewall_generate: no nft policy for relaxation zone '${zone}' (add a generator case)" ;;
+    esac
+  done < <(firewall_relaxation_zones)
+  # none + anything not accepted/relaxed above: deny by default.
+  printf '    drop\n'
+  printf '  }\n'
+  # Policy chain for the `wan` jump verdict above: drop host + LAN, accept the
+  # rest (WAN). `full` needs no chain (its verdict is a direct accept); `none`
+  # needs none (the terminal drop is its policy).
+  printf '  chain zone_wan {\n'
+  printf '    fib daddr type local drop\n'   # the host itself (its LAN IP / 0.0.0.0 services)
+  printf '    ip daddr @lan_v4 drop\n'
+  printf '    ip6 daddr @lan_v6 drop\n'
+  printf '    accept\n'                       # WAN
+  printf '  }\n'
+  printf '}\n'
+}
+
+# ── apply: ordered, fail-closed, atomic ─────────────────────────────
+#
+# The generated ruleset is admin state, not package state, so it is installed
+# under /etc (never the pacman-managed /usr/lib). The systemd units come from one
+# of two places depending on how virtdev-firewall is run (firewall_install_units):
+# a packaged install already ships them to /usr/lib/systemd/{system,user} (systemd
+# unit dirs) and apply leaves them there; a source checkout has them only in the
+# tree's systemd/ dir, so apply copies them into /etc/systemd/{system,user}. The
+# holder is a system unit, the pin a --user unit — the split is user-vs-system,
+# not by file extension.
+readonly firewall_etc_dir="/etc/virtdev"
+readonly firewall_nft_file="${firewall_etc_dir}/firewall.nft"
+readonly firewall_systemd_dir="/etc/systemd/system"
+readonly firewall_user_systemd_dir="/etc/systemd/user"
+readonly firewall_pkg_systemd_dir="/usr/lib/systemd/system"
+readonly firewall_pkg_user_systemd_dir="/usr/lib/systemd/user"
+readonly firewall_holder_unit="virtdev-firewall.service"
+readonly firewall_pin_template="virtdev-firewall-pin@.service"
+
+# Resolve + validate the target (the user whose virtual machines we
+# protect) and CONSTRUCT — never search — the cgroup2-root-relative base
+# path for that uid. The user's cgroup tree is user-writable (delegation),
+# so a planted decoy virtdev.slice at another depth would bake a wrong
+# baseline level and fail open; constructing from the validated uid is the
+# only safe option.
+firewall_target_base() {
+  local -r uid="${SUDO_UID:-}"
+  [[ "${uid}" =~ ^[1-9][0-9]*$ ]] \
+    || error 92 <<<"run via sudo as your normal user (SUDO_UID unset/invalid: '${uid:-}'). Do not run as bare root."
+  # Require the user manager cgroup. It exists once the user has a
+  # lingering manager or an active session; do NOT gate on virtdev.slice,
+  # which will not exist until the first virtual machine starts (that would
+  # deadlock a fresh user).
+  local -r svc="/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service"
+  [[ -d "${svc}" ]] \
+    || error 92 <<<"user@${uid}.service cgroup not found at ${svc}. Enable lingering (loginctl enable-linger) or start a virtual machine first."
+  printf 'user.slice/user-%s.slice/user@%s.service/virtdev.slice\n' "${uid}" "${uid}"
+}
+
+# Run `systemctl --user ...` for the target user from a root apply. The user
+# manager is live (linger is required and checked first), so its private bus is
+# reachable at the well-known runtime-dir path. One place to get the
+# cross-privilege environment right.
+firewall_user_systemctl() {
+  local -r uid="${1:?firewall_user_systemctl: uid required}"; shift
+  sudo -u "#${uid}" XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user "$@"
+}
+
+# apply requires the target user to have lingering enabled: the resident pins
+# and the user manager that owns the zone cgroups must run boot->shutdown,
+# independent of an interactive login, or the holder's wait deadlocks and the
+# cgroups the ruleset matches vanish at logout. A persistent per-user change is
+# the user's call — refuse (98), never enable it silently.
+firewall_require_linger() {
+  local -r uid="${1:?firewall_require_linger: uid required}"
+  local linger
+  linger="$(loginctl show-user "${uid}" -p Linger --value 2>/dev/null || true)"
+  [[ "${linger}" == "yes" ]] \
+    || error 98 <<<"lingering is not enabled for uid ${uid}; the firewall pins must run boot->shutdown. Enable it:  loginctl enable-linger ${uid}"
+}
+
+# Enable + start the resident pins AS THE USER. This materialises the
+# virtdev-<zone>.slice cgroup dirs (a started-but-empty slice has none) before
+# the generator's nft -c and the holder's wait need them. One pin per relaxation
+# zone — the same set the generator emits rules for — so the two never drift.
+# `enable --now` = start now + boot persistence.
+firewall_start_pins() {
+  local -r uid="${1:?firewall_start_pins: uid required}"
+  local zone
+  local -a units=()
+  while IFS= read -r zone; do
+    units+=( "virtdev-firewall-pin@${zone}.service" )
+  done < <(firewall_relaxation_zones)
+  [[ ${#units[@]} -gt 0 ]] || return 0
+  firewall_user_systemctl "${uid}" enable --now "${units[@]}" \
+    || error 94 <<<"failed enabling the firewall pins (${units[*]}) for uid ${uid}. Is the user manager running under linger?"
+}
+
+# Make the holder + pin units available to systemd, then enable the holder.
+# Two layouts: a SOURCE CHECKOUT has them only in the tree's systemd/ dir, which
+# is not a systemd unit dir, so copy them into /etc (the holder to the system
+# dir, the --user pin to the user dir). A PACKAGED install already ships them to
+# /usr/lib/systemd/{system,user}, so there is nothing to copy. Copy (never
+# symlink) in the checkout case: the holder runs as root from a root-owned unit,
+# and a symlink into a possibly-user-writable tree would let the dev user rewrite
+# ExecStart=. Reload both managers so a freshly-copied unit is visible.
+firewall_install_units() {
+  local -r uid="${1:?firewall_install_units: uid required}"
+  local -r devdir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../systemd"
+
+  if [[ -f "${devdir}/${firewall_holder_unit}" ]]; then
+    install -m 0644 -o root -g root "${devdir}/${firewall_holder_unit}" \
+      "${firewall_systemd_dir}/${firewall_holder_unit}" \
+      || error 94 <<<"failed installing ${firewall_holder_unit}"
+    install -d -m 0755 -o root -g root "${firewall_user_systemd_dir}"
+    install -m 0644 -o root -g root "${devdir}/${firewall_pin_template}" \
+      "${firewall_user_systemd_dir}/${firewall_pin_template}" \
+      || error 94 <<<"failed installing ${firewall_pin_template}"
+  else
+    [[ -f "${firewall_pkg_systemd_dir}/${firewall_holder_unit}" \
+       && -f "${firewall_pkg_user_systemd_dir}/${firewall_pin_template}" ]] \
+      || error 94 <<<"firewall units not found in ${devdir} nor ${firewall_pkg_systemd_dir%/system}"
+  fi
+
+  systemctl daemon-reload || error 94 <<<"systemctl daemon-reload failed"
+  firewall_user_systemctl "${uid}" daemon-reload \
+    || error 94 <<<"systemctl --user daemon-reload failed for uid ${uid}"
+
+  # Enable the holder for boot persistence only — the actual load happens via
+  # the restart in firewall_apply.
+  systemctl enable "${firewall_holder_unit}" \
+    || error 94 <<<"failed enabling ${firewall_holder_unit}"
+  systemctl reset-failed "${firewall_holder_unit}" 2>/dev/null || true
+}
+
+# apply: linger gate -> install units -> start pins -> generate/validate/install
+# -> restart holder. The pins must start BEFORE generate: nft -c resolves the
+# zone-slice cgroup paths to inodes, so those dirs must already exist (verified).
+# The holder (Type=notify) records firewall.base post-load; apply does not.
+firewall_apply() {
+  local base
+  base="$(firewall_target_base)"            # validates SUDO_UID
+  local -r uid="${SUDO_UID}"                 # validated by firewall_target_base above
+
+  firewall_require_linger "${uid}"
+
+  install -d -m 0755 -o root -g root "${firewall_etc_dir}"
+
+  # Units first (holder -> system dir, pin -> user dir; both managers reloaded),
+  # then start the pins so the virtdev-<zone>.slice cgroup dirs exist before the
+  # generator's nft -c resolves them.
+  firewall_install_units "${uid}"
+  firewall_start_pins "${uid}"
+
+  # Generate to a temp file ON THE SAME FILESYSTEM as the target so the
+  # rename(2) below cannot fail EXDEV (a cross-fs $TMPDIR would).
+  local tmp
+  tmp="$(mktemp -p "${firewall_etc_dir}" firewall.nft.XXXXXX)"
+  # shellcheck disable=SC2064  # expand tmp now: the trap must name this exact file
+  trap "rm -f '${tmp}'" EXIT
+
+  firewall_generate "${base}" >"${tmp}"
+
+  # Validate before installing. nft -c needs root + a live netlink socket
+  # (a hardware gate on the dev box), and the pin-backed zone slices to exist.
+  nft -c -f "${tmp}" \
+    || error 93 <<<"generated ruleset failed validation (nft -c). Left ${firewall_nft_file} unchanged."
+
+  # Atomic install: rename(2) the validated temp over the target, then fix
+  # ownership/mode (the mktemp temp is 0600). An interrupted apply can never
+  # leave a destroy-table-only truncation; the prior good file survives any
+  # earlier failure.
+  mv -f "${tmp}" "${firewall_nft_file}"
+  chown root:root "${firewall_nft_file}"
+  chmod 0644 "${firewall_nft_file}"
+  trap - EXIT
+
+  # (Re)load NOW by restarting the holder. Its ExecStart (hold) includes the
+  # freshly-installed ruleset into a new owner session; on a re-apply it
+  # destroys the old owner table and recreates it. Type=notify, so `restart`
+  # returns success only once the holder waited for the pins, loaded, verified,
+  # and recorded firewall.base — the on-disk file and the kernel ruleset cannot
+  # diverge behind a green service.
+  systemctl restart virtdev-firewall.service \
+    || error 95 <<<"installed ${firewall_nft_file} but the holder failed to load it (virtdev-firewall.service)."
+  printf >&2 'host egress lockdown applied: %s\n' "${firewall_nft_file}"
+}
+
+# firewall_record_baseline <uid> <base>
+# Write "<uid> <virtdev.slice-inode>" to firewall.base ATOMICALLY (mktemp in the
+# same dir + rename(2)), so a guard reading concurrently never catches a torn
+# write (-> spurious exit-88 / a one-frame UNFILTERED read). <base> is the
+# cgroup2-root-relative virtdev.slice path; its inode is the one the ruleset was
+# just frozen against, so recording it here (post-load) — not at apply time —
+# means a reboot re-records against the new inode and never bricks the guard.
+# Returns non-zero on any failure (the caller turns that into exit 97).
+firewall_record_baseline() {
+  local -r uid="${1:?firewall_record_baseline: uid required}"
+  local -r base="${2:?firewall_record_baseline: base required}"
+  local inode
+  inode="$(stat -c %i "/sys/fs/cgroup/${base}" 2>/dev/null || true)"
+  [[ "${inode}" =~ ^[0-9]+$ ]] || return 1
+  install -d -m 0755 -o root -g root "${firewall_etc_dir}" || return 1
+  local tmp
+  tmp="$(mktemp -p "${firewall_etc_dir}" firewall.base.XXXXXX)" || return 1
+  { printf '%s %s\n' "${uid}" "${inode}" >"${tmp}" \
+      && chmod 0644 "${tmp}" \
+      && mv -f "${tmp}" "${firewall_base_file}"; } \
+    || { rm -f "${tmp}"; return 1; }
+}
+
+# firewall_hold — ExecStart of virtdev-firewall.service (root, resident).
+# Loads the installed ruleset into the `owner,persist` table via a persistent
+# nft session and HOLDS that session open, so the table stays owned (and thus
+# unflushable by other processes) for as long as the service runs. nft's owner
+# protection lives only while the creating socket is open, so the service must
+# stay resident; when it stops or dies, persist keeps the rules in place but the
+# table becomes flushable and the guard (firewall_is_active) reports down.
+#
+# Four steps (panel §6): (1) DERIVE the uid + cgroup base from the installed
+# ruleset — a boot system unit has no SUDO_UID; (2) WAIT for the pin-backed zone
+# cgroup DIRS (an empty slice has none, so unit state is insufficient — bounded,
+# exit 99 on timeout so the guard reads down = fail CLOSED; this also resolves
+# the system-unit-cannot-After-a-user-unit boot ordering); (3) LOAD + verify the
+# table came up (exit 97); (4) RECORD the frozen <uid> <inode> baseline so the
+# guard can fail closed on a later user-manager teardown. Then notify ready and
+# wait. SIGTERM exits cleanly; a crash returns non-zero so Restart= re-asserts.
+firewall_hold() {
+  [[ -f "${firewall_nft_file}" ]] \
+    || error 96 <<<"ruleset not installed: ${firewall_nft_file}. Run: sudo virtdev firewall apply"
+  # The EXIT trap reaps the forked nft -i child on EVERY exit path (signal,
+  # error, normal) so a standalone `hold` never leaks an owner,persist child —
+  # an orphan keeps the table owned and would block a later destroy/re-apply.
+  # Under the service's KillMode=control-group the child is reaped anyway; this
+  # makes the guarantee hold without it. The signal traps just exit, so the
+  # single EXIT handler runs once.
+  local holder=""
+  trap '[[ -n "${holder:-}" ]] && kill "${holder}" 2>/dev/null || true' EXIT
+  trap 'exit 0' TERM INT
+
+  # 1. Derive uid + cgroup base from the installed ruleset. Only the base-jump
+  #    literal ends in `virtdev.slice"` (the relaxation jumps end in
+  #    `-<zone>.slice"`), so the substitution matches exactly that one line; the
+  #    uid is identical across all three literals, so head -1 is a safe guard.
+  local uid base
+  read -r uid base < <(
+    sed -n 's#.*"\(user\.slice/user-\([0-9]\+\)\.slice/[^"]*virtdev\.slice\)".*#\2 \1#p' \
+      "${firewall_nft_file}" | head -1
+  ) || true
+  [[ "${uid}" =~ ^[1-9][0-9]*$ && -n "${base}" ]] \
+    || error 96 <<<"could not derive uid/base from ${firewall_nft_file}; re-run: sudo virtdev firewall apply"
+
+  # 2. Wait for the pin-backed zone cgroup DIRS (what nft resolves to inodes; an
+  #    empty slice has no dir). Bounded ~30 s; on timeout exit 99 (distinct from
+  #    97) -> service failed -> guard reads down (fail CLOSED). Same relaxation
+  #    set the generator emits rules for, so the wait and the rules cannot drift.
+  local -a waitdirs=()
+  local zone
+  while IFS= read -r zone; do
+    waitdirs+=( "/sys/fs/cgroup/${base}/$(firewall_slice_for "${zone}")" )
+  done < <(firewall_relaxation_zones)
+  local i d ok
+  for (( i = 0; i < 150; i++ )); do
+    ok=1
+    for d in "${waitdirs[@]}"; do [[ -d "${d}" ]] || { ok=0; break; }; done
+    (( ok )) && break
+    sleep 0.2
+  done
+  for d in "${waitdirs[@]}"; do
+    [[ -d "${d}" ]] \
+      || error 99 <<<"holder: zone-slice cgroup dir never appeared: ${d}. Are the firewall pins running? (loginctl enable-linger; they start under the user manager)"
+  done
+
+  # 3. Load the ruleset into the owner,persist table and hold the session open.
+  #    Interactive nft is line-oriented and cannot parse the multi-line block
+  #    file, so feed it one `include` line plus a never-ending tail (the table is
+  #    owned by that nft -i socket). Cross-process reads ARE allowed on owner
+  #    tables, so the post-load poll can confirm it came up.
+  nft -i < <(printf 'include "%s"\n' "${firewall_nft_file}"; exec sleep infinity) &
+  holder=$!
+
+  for (( i = 0; i < 25; i++ )); do
+    nft list table inet "${firewall_table_name}" >/dev/null 2>&1 && break
+    kill -0 "${holder}" 2>/dev/null || break
+    sleep 0.2
+  done
+  # On any error below the EXIT trap reaps the child, so the failure arms do not
+  # re-kill it (fail CLOSED: a down holder reads guard-down).
+  if ! nft list table inet "${firewall_table_name}" >/dev/null 2>&1; then
+    error 97 <<<"holder: 'inet ${firewall_table_name}' did not come up from ${firewall_nft_file}"
+  fi
+
+  # 4. Record the frozen baseline <uid> <virtdev.slice-inode> (atomic; §4). On
+  #    failure the EXIT trap tears down the owning session so the guard reads
+  #    down (fail CLOSED) rather than running with no recorded baseline.
+  firewall_record_baseline "${uid}" "${base}" \
+    || error 97 <<<"holder: failed recording ${firewall_base_file}"
+
+  systemd-notify --ready 2>/dev/null || true
+  wait "${holder}"
+}
+
+# Rootless report of whether the lockdown is active. Uses the shared
+# firewall_is_active predicate. Prints a single machine-readable token to
+# stdout (active|inactive) and exits 0/1 accordingly.
+firewall_status() {
+  if firewall_is_active; then
+    printf 'active\n'
+    return 0
+  fi
+  printf 'inactive\n'
+  return 1
+}
+
+# ── main: subcommand dispatch (apply|status) ────────────────────────
+# shellcheck disable=SC2034  # spec/companions read via nameref
+declare -A spec=()
+# shellcheck disable=SC2034
+declare -a spec_positionals=("subcommand?" "args*")
+# shellcheck disable=SC2034
+declare -A flags=()
+declare -a positional=()
+arguments_parse spec flags positional "$@"
+set -- "${positional[@]}"
+
+case "${1:-status}" in
+  apply)  firewall_apply ;;
+  status) firewall_status ;;
+  hold)   firewall_hold ;;
+  *)      error 64 <<<"$(arguments_usage spec); subcommands: apply status hold" ;;
+esac
