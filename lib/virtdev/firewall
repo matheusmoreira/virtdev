@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # firewall_table_name / firewall_lan_*_elements read by bin/virtdev-firewall's generator
+#
+# firewall library: network-isolation policy — zones, slice names, the launch guard.
+#
+# This is the rootless policy single-source-of-truth for the host egress
+# lockdown. The root-only ruleset generation and apply live in
+# bin/virtdev-firewall, NOT here (mirroring the passt-lib / netexec-tool
+# split).
+#
+# Zones form a registry (firewall_zone_known). v1 members are the three scope
+# zones; each machine launches into exactly one per-zone slice, shared across
+# projects (no per-project slice). 'none' is the deny-by-default floor.
+#
+#   none   virtdev-none.slice   nothing reachable (only the host SSH session)
+#   wan    virtdev-wan.slice    + WAN (internet); host + LAN blocked
+#   full   virtdev-full.slice   + the local environment (host + LAN + WAN)
+#
+# Public:
+#   firewall_slice_for <zone>
+#       Echoes the per-zone slice unit name (virtdev-<zone>.slice). Errors 64 on
+#       an unknown zone.
+#   firewall_zone_of_slice <slice-unit-name>
+#       Inverse of firewall_slice_for: echoes the zone for a slice unit name, or
+#       'none' for a stray/unknown slice. Registry-driven (no drift).
+#   firewall_zone_default <project>
+#       Echoes the project's configured default zone, read from the host-side
+#       file ${XDG_CONFIG_HOME}/virtdev/projects/<name>/zone. Fails CLOSED to
+#       'none' on absent / irregular / oversized / unknown content. Never aborts.
+#   firewall_require [--unfiltered]
+#       Launch guard. Errors 88 unless the host egress lockdown is active AND its
+#       recorded baseline matches the live cgroup AND the caller is the firewall's
+#       user. --unfiltered bypasses it with a loud warning.
+#   firewall_zone_valid <zone>          0 iff <zone> is a registry member.
+#   firewall_zones                      Echoes the registry zone names, one per line.
+#   firewall_is_active
+#       Shared predicate: 0 iff the holder is active AND the recorded base inode
+#       matches the live virtdev.slice (built from the RECORDED uid, so it is
+#       caller-uid-independent — status/list run by any user report truth).
+#   firewall_baseline   (internal helper)
+#       Echoes "<uid> <inode>" from the recorded baseline file, or returns
+#       non-zero (fail closed). Shared by firewall_is_active / firewall_require /
+#       firewall_assert_unit_filtered.
+#   firewall_assert_unit_filtered <control-group-path>
+#       Post-launch TOCTOU close: 0 iff a just-started unit's virtdev.slice
+#       ancestor inode equals the recorded baseline. Fails CLOSED. Called by
+#       virtdev-start / virtdev-maintain after activation.
+#
+# Constants (read by bin/virtdev-firewall's generator):
+#   firewall_table_name, firewall_lan_v4_elements, firewall_lan_v6_elements
+#
+# Reserved exit code (library-owned):
+#   88  host egress lockdown not active / stale baseline / wrong user (firewall_require)
+#
+set -euo pipefail
+# No VIRTDEV_HOME / XDG defaulting at source time: the holder sources this lib as
+# a root system service where HOME is unset, so these would crash under set -u.
+# VIRTDEV_HOME is unused here; XDG_CONFIG_HOME has exactly one reader
+# (firewall_zone_default, always rootless), which defaults it in-function.
+import error
+
+readonly firewall_table_name="virtdev"
+readonly firewall_lockdown_exit_code=88
+# The holder records "<uid> <virtdev.slice-inode>" here after each load; the
+# rootless guard reads it. Root-written, world-readable.
+readonly firewall_base_file="/etc/virtdev/firewall.base"
+
+# Zone registry. All three are explicit, selectable zones with their own slice;
+# 'none' is the deny-by-default floor (enforced by the ruleset's terminal drop,
+# not a dedicated rule). Declared global because libraries are sourced from
+# within import(), where a bare `declare -A` would be function-local.
+declare -gA firewall_zone_known=([none]=1 [wan]=1 [full]=1)
+
+# Destination sets (text fragments the generator splices into the ruleset).
+# Private LAN ranges plus link-local, CGNAT, multicast and broadcast —
+# everything that is NOT WAN.
+readonly firewall_lan_v4_elements='10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255'
+readonly firewall_lan_v6_elements='fc00::/7, fe80::/10, ff00::/8'
+
+firewall_zones() {
+  local zone
+  for zone in "${!firewall_zone_known[@]}"; do
+    printf '%s\n' "${zone}"
+  done
+}
+
+firewall_zone_valid() {
+  local -r zone="${1:-}"
+  [[ -n "${zone}" && -v "firewall_zone_known[${zone}]" ]]
+}
+
+# firewall_slice_for <zone> -> virtdev-<zone>.slice
+# The single source of truth for the per-zone slice name, shared by the launch
+# path (systemd-run --slice) and the rule generator (cgroup literal), so the two
+# can never drift. No systemd-escape: the zone vocabulary is fixed and validated,
+# never user-derived, so there is nothing to collide.
+firewall_slice_for() {
+  local -r zone="${1:?firewall_slice_for: zone required}"
+  firewall_zone_valid "${zone}" || error 64 <<<"firewall_slice_for: unknown zone '${zone}'"
+  printf 'virtdev-%s.slice\n' "${zone}"
+}
+
+# firewall_zone_of_slice <slice-unit-name> -> the zone whose slice this is, else
+# 'none'. The inverse of firewall_slice_for, registry-driven so the forward and
+# reverse maps cannot drift: a zone added to firewall_zone_known is recognised
+# here automatically, and a stray / legacy / unknown slice yields 'none' (the
+# most restrictive — matching the rebuild paths' catch-all). Used by virtdev-list
+# (display) and virtdev-recreate / virtdev-upgrade (restore the prior zone).
+firewall_zone_of_slice() {
+  local -r slice="${1:-}"
+  local zone
+  for zone in "${!firewall_zone_known[@]}"; do
+    [[ "${slice}" == "$(firewall_slice_for "${zone}")" ]] && { printf '%s\n' "${zone}"; return 0; }
+  done
+  printf 'none\n'
+}
+
+# firewall_zone_default <project> -> the project's configured zone, else 'none'.
+# Host-controlled file (the guest has no path to it). Fail CLOSED: a missing,
+# irregular (symlink/FIFO/dir), oversized, unreadable, or unknown/multi-token
+# value yields 'none'. Trims only SURROUNDING whitespace, so "w a n" stays
+# invalid -> 'none' (never emit an unvalidated token into a slice name).
+firewall_zone_default() {
+  local -r project="${1:?firewall_zone_default: project required}"
+  local -r cfg="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
+  local -r f="${cfg}/virtdev/projects/${project}/zone"
+  [[ -f "${f}" && ! -L "${f}" ]] || { printf 'none\n'; return 0; }
+  [[ "$(stat -c %s "${f}" 2>/dev/null || echo 99999)" -le 64 ]] || { printf 'none\n'; return 0; }
+  local zone=""
+  # read returns non-zero at an unterminated EOF (a file written with no trailing
+  # newline, e.g. `printf full > zone`) but still populates zone — so keep the
+  # value and let the validation below decide. A genuinely unreadable file leaves
+  # zone empty, which fails the validation and yields 'none' (fail closed).
+  IFS= read -r zone < "${f}" 2>/dev/null || true
+  zone="${zone#"${zone%%[![:space:]]*}"}"   # trim leading whitespace
+  zone="${zone%"${zone##*[![:space:]]}"}"   # trim trailing whitespace
+  zone="${zone,,}"
+  if firewall_zone_valid "${zone}"; then
+    printf '%s\n' "${zone}"
+  else
+    printf 'none\n'
+  fi
+}
+
+# firewall_baseline -> echoes "<uid> <inode>" from the recorded baseline, or
+# returns non-zero (fail-closed) if absent / unreadable / non-numeric.
+firewall_baseline() {
+  local line u i
+  [[ -f "${firewall_base_file}" ]] || return 1
+  IFS= read -r line < "${firewall_base_file}" 2>/dev/null || return 1
+  read -r u i _ <<<"${line}"
+  # uid must be >= 1 (matching the writer firewall_target_base's ^[1-9][0-9]*$);
+  # a recorded uid 0 is never written, so reject it rather than trust it.
+  [[ "${u}" =~ ^[1-9][0-9]*$ && "${i}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s %s\n' "${u}" "${i}"
+}
+
+# firewall_is_active
+# Shared predicate behind firewall_require, the tool's `status`, and
+# virtdev-list. Returns 0 iff:
+#   1. virtdev-firewall.service (the holder) is exactly 'active' — it is a SYSTEM
+#      unit (query the system manager; the guests are --user units but the
+#      firewall protects the host's egress), and being active means the
+#      owner,persist table is loaded and unflushable; AND
+#   2. the live virtdev.slice cgroup inode still equals the one the holder froze
+#      the ruleset against (recorded in firewall.base). The path is built from
+#      the RECORDED uid, NOT the caller's id -u, so a non-owner caller (root, a
+#      second user running status/list) reads the true state rather than a
+#      false 'inactive'. nft freezes cgroup paths to inodes at load; a
+#      user@<uid>.service teardown churns the inode and would silently fail open,
+#      so this equality is the staleness guard.
+# No `nft list` here — it is root-only; the holder (Type=notify) already asserts
+# the table before signalling ready, so a dead table reads down transitively.
+firewall_is_active() {
+  [[ "$(systemctl is-active virtdev-firewall.service 2>/dev/null || true)" == "active" ]] || return 1
+  local uid inode live
+  read -r uid inode < <(firewall_baseline) || return 1
+  live="$(stat -c %i "/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/virtdev.slice" 2>/dev/null || true)"
+  [[ -n "${live}" && "${live}" == "${inode}" ]]
+}
+
+# firewall_require [--unfiltered]
+# Refuses (error 88) unless firewall_is_active AND the caller is the firewall's
+# user (single-user coupling: the launching user must own the cgroups the
+# lockdown matches). --unfiltered bypasses with a loud warning. The remediation
+# is caller-agnostic (both virtdev-start and virtdev-maintain call this).
+firewall_require() {
+  if [[ "${1:-}" == "--unfiltered" ]]; then
+    printf >&2 'WARNING: --unfiltered: the host egress lockdown is NOT enforced for this launch. The guest can reach the host and the LAN.\n'
+    return 0
+  fi
+  if ! firewall_is_active; then
+    error "${firewall_lockdown_exit_code}" <<MESSAGE
+host egress lockdown is not active or its baseline is stale.
+Install or repair it:  sudo virtdev firewall apply
+Or launch deliberately unprotected by passing --unfiltered.
+MESSAGE
+  fi
+  local uid inode
+  read -r uid inode < <(firewall_baseline) || error "${firewall_lockdown_exit_code}" <<<"host egress lockdown baseline is unreadable; run: sudo virtdev firewall apply"
+  if [[ "${uid}" != "$(id -u)" ]]; then
+    error "${firewall_lockdown_exit_code}" <<MESSAGE
+host egress lockdown belongs to uid ${uid}, but you are $(id -u). Launch as that user, or re-run: sudo virtdev firewall apply
+MESSAGE
+  fi
+}
+
+# firewall_assert_unit_filtered <control-group-path>
+# Post-launch TOCTOU close (virtdev-start / virtdev-maintain call this once the
+# machine's unit is active). The launch guard ran BEFORE the lock + systemd-run,
+# so a user-manager teardown in that window could have re-created virtdev.slice
+# with a new inode — the loaded ruleset then no longer matches the unit and it
+# runs UNFILTERED. Given the unit's live ControlGroup (systemctl --user show
+# <unit> -p ControlGroup --value), walk to its 'virtdev.slice' ancestor (exact
+# basename) and compare that dir's inode to the recorded baseline. Returns 0 iff
+# they match; fails CLOSED on empty input, a missing baseline, no virtdev.slice
+# ancestor, or any stat gap. The caller tears the unit down on non-zero.
+firewall_assert_unit_filtered() {
+  local -r cgroup="${1:-}"
+  [[ -n "${cgroup}" ]] || return 1
+  local inode _
+  read -r _ inode < <(firewall_baseline) || return 1
+  local -a parts
+  IFS=/ read -r -a parts <<<"${cgroup}"
+  local ancestor="" part found=0
+  for part in "${parts[@]}"; do
+    [[ -z "${part}" ]] && continue
+    ancestor="${ancestor}/${part}"
+    if [[ "${part}" == "virtdev.slice" ]]; then found=1; break; fi
+  done
+  (( found )) || return 1
+  local live
+  live="$(stat -c %i "/sys/fs/cgroup${ancestor}" 2>/dev/null || true)"
+  [[ -n "${live}" && "${live}" == "${inode}" ]]
+}
