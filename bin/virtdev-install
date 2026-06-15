@@ -279,10 +279,19 @@ done
 # Both unblock the reader naturally — no watchdog or polling needed.
 # If QEMU dies before the guest sends a terminal token (crash, bad
 # firmware, etc.), socat gets EOF and the reader exits with no match.
+#
+# -u makes socat unidirectional (socket -> stdout): this side only ever
+# READS tokens from the guest, never writes to the channel. Without it
+# socat is bidirectional and also forwards its own stdin into the socket,
+# so a closed or non-interactive stdin (a pipe, `</dev/null`, a CI runner,
+# or a stray Ctrl-D) reaches EOF immediately, tears the connection down,
+# and the reader sees no tokens — falsely reporting "did not complete"
+# while the guest installs fine. Reading is unaffected: a guest-side
+# terminal token or QEMU death still EOFs the socket and ends the reader.
 progress_fifo="${installation_directory}/progress.fifo"
 if [[ -S "${install_sock}" ]]; then
   mkfifo "${progress_fifo}"
-  socat UNIX-CONNECT:"${install_sock}" - > "${progress_fifo}" 2>/dev/null &
+  socat -u UNIX-CONNECT:"${install_sock}" - > "${progress_fifo}" 2>/dev/null &
   socat_pid=$!
 
   while IFS= read -r token; do
