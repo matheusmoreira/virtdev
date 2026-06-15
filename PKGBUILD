@@ -20,7 +20,7 @@ optdepends=(
   'archiso: required for building the installation ISO (virtdev-iso)'
   'rsync: required for backup, restore, transfer, and recreate'
 )
-makedepends=('git')
+makedepends=('git' 'scdoc')
 provides=("${pkgname%-git}")
 conflicts=("${pkgname%-git}")
 install="${pkgname%-git}.install"
@@ -87,4 +87,10 @@ package() {
   install -Dm644 README.md  "${pkgdir}/usr/share/doc/${pkgname%-git}/README.md"
   install -Dm644 DESIGN.md  "${pkgdir}/usr/share/doc/${pkgname%-git}/DESIGN.md"
   install -Dm644 LICENSE.AGPLv3 "${pkgdir}/usr/share/licenses/${pkgname%-git}/LICENSE"
+
+  # Install man pages (built from man/*.scd by `make`; section from the suffix)
+  local _man
+  while IFS= read -rd '' _man; do
+    install -Dm644 "${_man}" "${pkgdir}/usr/share/man/man${_man##*.}/${_man##*/}"
+  done < <(find man/ -maxdepth 1 -type f -name '*.[1-8]' -print0)
 }
