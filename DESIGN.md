@@ -33,25 +33,60 @@ the point where the isolation is practical for day-to-day development.
 require internet egress (package managers, Claude Code's Anthropic API calls,
 etc.), so outbound network access is intentionally unrestricted.
 
-**Phase 1 residuals (documented openly):** virtdev uses passt as its network
-backend (`start` and `maintain` paths) with both host-translation paths
-disabled: `--map-host-loopback none` blocks the guest→host-loopback path
-(the one the old SLIRP gateway address exposed), and `--map-guest-addr none`
-blocks passt's host-global-address mapping. However, the following paths
-remain reachable in Phase 1:
+**Network backend:** virtdev uses passt as its network backend (`start` and
+`maintain` paths) with both host-translation paths disabled:
+`--map-host-loopback none` blocks the guest→host-loopback path (the one the
+old SLIRP gateway address exposed), and `--map-guest-addr none` blocks passt's
+host-global-address mapping.
 
-1. **guest→host via the host's real LAN IP / `0.0.0.0` bindings** (including
-   the host's `sshd`, which binds `0.0.0.0:22`). This is plain NAT through
-   passt — passt cannot filter by destination. Closing it requires a host-side
-   nftables egress filter scoped to the virtual machine cgroup (a planned
-   fast-follow; the passt/cgroup architecture here is explicitly designed to
-   enable it). This applies to all protocols (TCP, UDP, ICMP) and both
-   address families (IPv4 and IPv6).
-2. **`install`-time guest→host**: the installer keeps SLIRP networking.
+**Phase 2 — host egress lockdown (deny-by-default, per-zone):** passt cannot
+filter by destination, so Phase 1 still left the guest able to reach the host's
+real LAN IP / `0.0.0.0` bindings (including the host's `sshd`) and the rest of
+the LAN. Phase 2 closes this with a **host-root nftables `inet virtdev` table**
+that filters the virtual machines' egress by destination, matched to the
+machines' systemd `--user` slice cgroups (`virtdev.slice` and below). Every
+machine launches into one of three **zone** slices and is filtered accordingly:
+`none` (the default — nothing reachable but the host→guest SSH reply), `wan`
+(WAN only; host + LAN dropped via `fib daddr type local` and the
+private/link-local/CGNAT/multicast/broadcast sets), `full` (host + LAN + WAN).
+Host and LAN move together — the host is a LAN device, so "allow LAN, block
+host" is incoherent. The host→guest SSH forward survives in EVERY zone via a
+loopback-**destination** accept (`ip daddr 127.0.0.1`), not an interface match,
+because a guest→host-LAN-IP packet also routes via `lo` (an `oifname "lo"`
+accept would be a fail-open). See **VM Runtime → Host egress lockdown** for the
+full ruleset and rationale.
+
+- **Zones (`--zone`, per invocation):** a machine starts in `none` (fully
+  locked) unless its host-side `zone` file or an explicit `--zone none|wan|full`
+  says otherwise. `wan` opens the internet; `full` additionally re-opens the
+  local environment (host + LAN). The default (no `--zone`, no `zone` file) is
+  the most restrictive policy. The guest cannot choose its own zone — the host
+  picks it at start, and the `zone` file is host-controlled.
+- **passt is a filter-correctness invariant, not only a rootlessness one:**
+  the match surface *is* passt's host sockets (passt is a userspace process in
+  the unit cgroup making ordinary host sockets). A future TAP backend would
+  move guest egress off them and silently void the ruleset — so passt is
+  load-bearing for the filter and must not be swapped without redesigning it.
+- **Single-user:** `socket cgroupv2` matches a uid-specific path, so
+  `virtdev firewall apply` derives and bakes the validated `SUDO_UID` user's
+  cgroup path. Protecting multiple users (one ruleset per user) is future work.
+- **Flush-resistant via `owner,persist`:** the table carries the `owner,persist`
+  flags and a resident holder (`virtdev-firewall.service`) keeps the owning
+  socket open, so another process's `flush ruleset` / `systemctl restart
+  nftables` SKIPS the table instead of wiping it — no reassert timer is needed.
+  The separate exposure is a `user@<uid>.service` teardown that churns
+  `virtdev.slice`'s inode (the frozen base match stops matching); the launch
+  guard catches it by comparing the live inode to the holder-recorded baseline
+  and fails CLOSED, and each launch re-verifies post-activation (see **Host
+  egress lockdown → staleness**).
+
+Remaining residuals (documented openly):
+
+1. **`install`-time guest→host**: the installer keeps SLIRP networking.
    Accepted: the installer runs only official Arch Linux signed packages
    (no AUR, no `makepkg`, no provisioning), so the threat window is very
    short and the network exposure is similar to any OS installation.
-3. **Host-local-user access to socket files** (`passt.sock`, `monitor.sock`):
+2. **Host-local-user access to socket files** (`passt.sock`, `monitor.sock`):
    mitigated by mode 0700 on the per-project directory; outside the primary
    hypervisor-escape threat model but documented for completeness.
 
@@ -457,6 +492,142 @@ the unit has reached a terminal state (`inactive` or `failed`) before
 removing sockets. `virtdev-start` calls `reset-failed` before `systemd-run`
 to clear any residual state from a previous failed start.
 
+### Host egress lockdown (Phase 2 network isolation)
+
+The host-root nftables table introduced in the Threat Model is what makes a
+guest unable to reach the host or the LAN by default. Its mechanism lives
+entirely in the per-zone slice the machine launches into and a host-static,
+project-agnostic ruleset; the runtime path (`virtdev-start`, `virtdev-maintain`)
+stays rootless.
+
+**Slices.** Every machine launches with `--slice=` into one of three per-zone
+slices, all children of `virtdev.slice`:
+
+```
+virtdev.slice                lockdown handle — EVERY machine is under it (base match)
+  virtdev-none.slice         no rule; the terminal drop is its policy (the secure default)
+  virtdev-wan.slice          WAN only (jump zone_wan: host + LAN dropped)
+  virtdev-full.slice         host + LAN + WAN (accept)
+```
+
+The slices are **shared across projects** — there is no per-project slice and no
+`systemd-escape`. Identity stays in the unit name `virtdev-<project>.service`
+(`stop`/`list`/`status` key off it); the zone vocabulary is a fixed, validated
+set, so there is nothing to collide and nothing to escape. `firewall_slice_for
+<zone>` (in `lib/virtdev/firewall`) is the **single** helper producing these
+names; `virtdev-start`, `virtdev-maintain`, and the ruleset generator all call
+it, so a launch path cannot silently forget `--slice` and escape the baseline.
+`maintenance` launches into `virtdev-wan.slice` (it needs WAN for `pacman -Syu`;
+the base image is trusted and needs no host/LAN).
+
+Because nft resolves a `socket cgroupv2 "path"` to a cgroup **inode at load
+time**, a referenced slice must exist when the ruleset loads — but a
+started-but-EMPTY systemd slice has no cgroup directory. So each nft-referenced
+zone (`wan`, `full`) carries a **resident pin**:
+`virtdev-firewall-pin@<zone>.service`, a `--user` `sleep infinity`
+(`Restart=always`) launched into the slice by `apply`. The pins hold
+`virtdev-{wan,full}.slice` and their parent `virtdev.slice` present with stable
+inodes for the firewall's lifetime. `virtdev-none.slice` needs no pin (no rule
+references it). **Linger is required** so the user manager, pins, and slices run
+boot→shutdown.
+
+**Ruleset.** `bin/virtdev-firewall` generates one fixed dual-stack `inet
+virtdev` table (no per-project content; illustrative):
+
+```
+table inet virtdev {
+  flags owner, persist                 # held by the resident holder; flush-resistant
+  set lan_v4 { type ipv4_addr; flags interval; elements = { <private/CGNAT/mcast/bcast> } }
+  set lan_v6 { type ipv6_addr; flags interval; elements = { fc00::/7, fe80::/10, ff00::/8 } }
+  chain output {
+    type filter hook output priority 0; policy accept;
+    socket cgroupv2 level 4 "user.slice/user-<uid>.slice/user@<uid>.service/virtdev.slice" jump virtdev_machines
+  }
+  chain virtdev_machines {
+    ip  daddr 127.0.0.1 accept          # passt's SSH-forward reply (loopback DEST, every zone)
+    ip6 daddr ::1       accept
+    socket cgroupv2 level 5 "…/virtdev.slice/virtdev-full.slice" accept    # full = host+LAN+WAN
+    socket cgroupv2 level 5 "…/virtdev.slice/virtdev-wan.slice"  jump zone_wan
+    drop                                # none + strays: deny by default
+  }
+  chain zone_wan {
+    fib daddr type local drop           # the host itself — dynamic, never stale
+    ip  daddr @lan_v4 drop
+    ip6 daddr @lan_v6 drop
+    accept                              # everything else = WAN
+  }
+}
+```
+
+The generator iterates the zone registry's relaxation zones (everything but
+`none`): membership is data, each zone's verdict (`full`→accept, `wan`→`jump
+zone_wan`) is code. The cgroup `level` numbers above (4 for the base, 5 for the
+zones) illustrate the standard layout but are not hard-coded — the generator
+derives them from the constructed base path's depth, so the level can never
+disagree with the actual cgroup depth. Properties: dropping on `daddr` with no L4
+qualifier is
+**all-protocol** for free; one `inet` table is **dual-stack** for free; `fib
+daddr type local` solves the host's own addresses without enumeration; the
+**loopback-destination** accept (not `oifname "lo"`) preserves the host→guest
+SSH forward in every zone without accepting guest→host-LAN-IP (which also routes
+via `lo`), and needs **no conntrack** so a `notrack`-on-`lo` rule in the user's
+firewall cannot break `virtdev-ssh`. The base match is on `virtdev.slice` and
+catches every machine by ancestry (scoped: descendants only, nothing outside —
+verified); `none` machines and anything unrecognised hit the terminal `drop`
+(fail-closed).
+
+**Apply (root, one-time).** `sudo virtdev firewall apply` requires **linger**
+(exit 98; never enables it silently), validates `SUDO_UID` (numeric > 0; refuses
+bare root, never bakes a guessed uid/path), **copies** (never symlinks) the
+holder unit → `/etc/systemd/system` and the `--user` pin template →
+`/etc/systemd/user` (the split is user-vs-system, NOT by file extension), starts
+the pins AS THE USER (so the zone cgroups exist), **constructs** the cgroup base
+path from the validated uid (never searches the user-writable cgroup tree),
+generates to a temp file on the same filesystem, validates it (`nft -c`, which
+DOES resolve the cgroup paths — so the pins must be up first), atomically
+`rename(2)`s it over `/etc/virtdev/firewall.nft`, and restarts the holder. The
+atomic install means an interrupted apply leaves the prior good ruleset intact.
+The ruleset is project-agnostic, so a project created later is covered
+immediately — no re-apply.
+
+**Holder.** One resident unit, `virtdev-firewall.service` (root, `Type=notify`),
+loads the ruleset into the `owner,persist` table via an `nft -i` include and
+holds the owning socket open. While it runs the table is **owned**, so another
+process's `flush ruleset` SKIPS it — no reassert timer is needed. At start it
+derives the uid + cgroup base from the installed ruleset, waits for the
+pin-backed cgroup dirs to appear (exit 99 on timeout → guard reads down → fail
+CLOSED; also resolves boot ordering, since a system unit cannot `After=` a
+`--user` unit), loads + verifies the table, and records `<uid>
+<virtdev.slice-inode>` to `/etc/virtdev/firewall.base` atomically. Recording the
+inode it actually froze against means a reboot re-records and never bricks the
+guard.
+
+**Launch guard + staleness.** `firewall_require` (in `lib/virtdev/firewall`)
+runs before every launch and refuses (exit 88) unless the shared
+`firewall_is_active` holds — the holder is exactly `active` AND the live
+`virtdev.slice` inode still equals the recorded baseline (built from the
+RECORDED uid, so `status`/`list` run by any user report truth) — AND the caller
+IS the firewall's uid. No `nft list` (root-only); the `owner,persist` holder
+asserts the table transitively. It queries the **system** manager (the firewall
+is a system unit; the guests are `--user` units). `--unfiltered` bypasses it
+with a loud warning. The guard is local to `virtdev-maintain` too, firing before
+**both** its boots. The remaining exposure is a `user@<uid>.service` teardown
+(`systemctl restart user@<uid>`, manager OOM, reboot) that recreates
+`virtdev.slice` with a NEW inode — the frozen base rule then stops matching. A
+teardown kills all running machines, so the exposure is strictly *new launches*:
+the inode check catches them (fail CLOSED), and each launch additionally
+re-verifies post-activation — it reads the launched unit's live `ControlGroup`,
+walks to its `virtdev.slice` ancestor, and compares the inode to the recorded
+baseline (`firewall_assert_unit_filtered`), tearing the unit down on a mismatch
+(`virtdev-start` exit 21 / `virtdev-maintain` 25) to close the
+guard→`systemd-run` TOCTOU.
+
+**Migration:** no reseal or generation bump, but `apply` is now mandatory before
+launches (the guard reads `/etc/virtdev/firewall.base`, which only the holder
+writes). When the new ruleset first loads, a machine still in an OLD slice name
+matches no zone jump and falls to the terminal `drop` (loses all network) until
+relaunched — fail CLOSED; `recreate`/`upgrade` relaunch to migrate it.
+
 ---
 
 ## Concurrency and Locking
@@ -607,6 +778,8 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_require`, `project_is_running`, `project_load_running_state`, `project_is_outdated`, `project_is_detached`, `generation_read`, `generation_read_lenient`) | 3, 82 |
 | `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags. The forward-port bind race is detected via `port_in_use`, not a passt helper | 83, 84, 85, 86 |
+| `qemu` | the shared QEMU argv and post-launch activation classifier (`qemu_command`, `qemu_activation_classify`); the network-isolation security boundary keeping `start` and `maintain`'s QEMU flags byte-identical | 90, 91 |
+| `firewall` | host egress lockdown policy single-source-of-truth (`firewall_slice_for`, `firewall_zone_of_slice`, `firewall_zone_default`, `firewall_require`, `firewall_is_active`, `firewall_assert_unit_filtered`, `firewall_zone_valid`, `firewall_zones`) + zone/destination-set constants. Root-only ruleset generation and apply live in `bin/virtdev-firewall`, not here | 88 |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
 | `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array); lazy-inits on first `terminal_write` call using the color mode from `arguments_parse` | none |
 
@@ -695,6 +868,7 @@ during a maintenance session.
 | `virtdev-recreate` | Backup, destroy, recreate, optionally provision, and restore in one command |
 | `virtdev-upgrade`  | Back up all projects, maintain the base, rebuild all projects on the new base |
 | `virtdev-detach`   | Convert a project's delta images into standalone images, removing base dependency |
+| `virtdev-firewall` | Generate / apply / status of the host egress lockdown (`apply` is root; `status` is rootless) |
 
 ---
 
@@ -825,6 +999,28 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
                         with `virtdev-recreate --provision <path>`.
 ```
 
+The host egress lockdown (Phase 2) stores root-owned state outside
+`${VIRTDEV_HOME}`, established by `sudo virtdev firewall apply`:
+
+```
+/etc/virtdev/
+  firewall.nft            generated nftables ruleset (not shipped; mode 0644).
+                          Loaded by the holder below; regenerated atomically.
+  firewall.base           "<uid> <virtdev.slice-inode>" recorded by the holder
+                          post-load; the launch guard's staleness reference.
+/etc/systemd/system/      admin copy written by `virtdev firewall apply`
+  virtdev-firewall.service          resident owner,persist holder (Type=notify); is-active signal
+/etc/systemd/user/        admin copy of the --user pin template
+  virtdev-firewall-pin@.service     sleep-infinity pin, one instance per relaxation zone
+/usr/lib/systemd/{system,user}/  package copies of the holder + pin (shipped by PKGBUILD)
+
+systemd --user slices (shared per zone; the pins keep wan/full resident):
+  virtdev.slice                     lockdown handle (every machine is under it)
+  virtdev-none.slice                the secure default (no rule; terminal drop)
+  virtdev-wan.slice                 WAN only (pinned)
+  virtdev-full.slice                host + LAN + WAN (pinned)
+```
+
 `virtdev-backup` consults `projects/<name>/manifest` under
 `${VIRTDEV_HOME}` first, falling back to the same relative path
 under `${XDG_CONFIG_HOME}`. The first existing file wins.
@@ -913,19 +1109,25 @@ there is no silent shadowing when both files exist.
   encryption adds complexity without matching a real adversary. The
   manifest is literal (`--files-from`) to keep the contract auditable.
 
-- **Network isolation Phase 1 residuals.** The passt backend (`start` and
-  `maintain` paths) blocks guest→host via passt's two translation shortcuts
-  (loopback-via-gateway and host-global-address). The following reachability
-  paths remain open in Phase 1:
+- **Network isolation residuals.** The passt backend (`start` and `maintain`
+  paths) blocks guest→host via passt's two translation shortcuts
+  (loopback-via-gateway and host-global-address), and the Phase 2 host egress
+  lockdown (see VM Runtime → Host egress lockdown) drops guest→host (real LAN
+  IP / `0.0.0.0`-bound services, including `sshd`) and guest→LAN by default
+  across all protocols and both families. The following remain:
 
-  - **Guest→host via the host's real LAN IP or `0.0.0.0`-bound services**
-    (including `sshd`, which binds `0.0.0.0:22`). This is ordinary NAT;
-    passt cannot filter by destination address. Closing this requires a
-    host-side nftables egress filter scoped to the virtual machine cgroup.
-    Applies to all protocols (TCP, UDP, ICMP) and both IPv4 and IPv6.
+  - **The lockdown is opt-in to install.** It is inactive until
+    `sudo virtdev firewall apply` runs (the launch guard refuses to start until
+    then, override `--unfiltered`). The `owner,persist` table + resident holder
+    make it flush-resistant (an external `flush ruleset` / `systemctl restart
+    nftables` SKIPS it). A `user@<uid>.service` teardown churns the base inode;
+    the guard fails CLOSED on the mismatch and each launch re-verifies
+    post-activation. Multi-user hosts are not yet covered (the match is
+    uid-specific).
   - **`install`-time guest→host**: `virtdev-install` keeps the original
     `-netdev user` SLIRP backend (accepted: short window, official signed
-    repositories only, no untrusted code running during install).
+    repositories only, no untrusted code running during install). The
+    installer does not pass through the egress lockdown.
   - passt crashing **mid-session**: the guest loses networking; the
     systemd unit continues (QEMU is the main process). No health
-    supervision in Phase 1 — notice and restart the virtual machine.
+    supervision — notice and restart the virtual machine.

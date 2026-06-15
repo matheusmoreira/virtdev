@@ -6,14 +6,25 @@ Each project gets its own Arch Linux virtual machine backed by a thin qcow2
 delta over a shared sealed base. The isolation boundary is a hardware-assisted
 hypervisor, not a namespace or permission system.
 
-**Isolation scope:** guest→host via the host-loopback path (passt
-`--map-host-loopback none`, which closes what the old SLIRP gateway
-address exposed) and via passt's host-global-address mapping
-(`--map-guest-addr none`) are blocked for project and maintenance virtual
-machines. Guest→host via the host's real LAN IP (including `0.0.0.0`-bound
-services such as `sshd`) remains reachable in Phase 1 — closing that path
-requires a host-side nftables egress filter (a planned fast-follow).
-Outbound internet access is unrestricted (package managers, Claude Code, etc.).
+**Isolation scope:** project and maintenance virtual machines **start fully
+locked by default** — zone `none`, no network at all beyond your own SSH
+session. passt blocks the guest→host-loopback path (`--map-host-loopback none`)
+and its host-global-address mapping (`--map-guest-addr none`); a host-root
+nftables egress filter, scoped to the machines' systemd slice cgroups, then
+enforces a per-machine **zone**:
+
+| zone   | guest can reach                        | host + LAN |
+|--------|----------------------------------------|------------|
+| `none` | nothing (just your SSH session)        | blocked    |
+| `wan`  | the internet                           | blocked    |
+| `full` | the internet + your local environment  | allowed    |
+
+`wan` is the usual working zone (package managers, Claude Code); `full` is the
+explicit opt-out of host isolation (host and LAN move together — the host is a
+LAN device). The filter is **opt-in to install**: run `sudo virtdev firewall
+apply` once (see One-time setup); until you do, `virtdev start` refuses to launch
+(override with `--unfiltered`). A project's default zone comes from its `zone`
+dotfile; `--zone` overrides it per launch.
 
 ## Getting started
 
@@ -21,7 +32,7 @@ Outbound internet access is unrestricted (package managers, Claude Code, etc.).
 
 - Arch Linux host, bash >= 5.2
 - KVM-capable CPU, QEMU (`qemu-system-x86`), OVMF (`edk2-ovmf`)
-- OpenSSH (`openssh`), passt, socat, rsync, archiso
+- OpenSSH (`openssh`), passt, nftables, socat, rsync, archiso
 
 ### Install
 
@@ -51,6 +62,22 @@ virtdev iso                       # build Arch Linux installer ISO
 virtdev install                   # install base system to qcow2 disks
 virtdev seal                      # mark base read-only
 ```
+
+Install the host egress lockdown (root, once). Until this is applied,
+`virtdev start` refuses to launch. It requires **lingering** enabled for your
+user (`loginctl enable-linger "$USER"`) so the firewall's resident helpers run
+boot-to-shutdown:
+
+```bash
+sudo virtdev firewall apply       # generate + load the nftables filter, install + start its units
+virtdev firewall status           # 'active' once the lockdown is loaded (rootless)
+```
+
+`apply` derives the cgroup match from your own user (run it via `sudo`, not as
+bare root). The ruleset is project-agnostic and the per-zone slices are shared,
+so a project created later is covered immediately — no re-apply per project. Set
+a project's default zone by writing `none`, `wan`, or `full` to
+`~/.config/virtdev/projects/<name>/zone` (absent or invalid → `none`).
 
 ### Create a project
 
@@ -199,14 +226,16 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-iso` | Build the Arch Linux installation ISO |
 | `virtdev-install [flags] [iso]` | Install base system to qcow2 disks |
 | `virtdev-seal` | Seal installation as read-only base |
-| `virtdev-maintain [flags]` | Boot sealed base for maintenance, reseal on exit |
+| `virtdev-maintain [flags]` | Boot sealed base for maintenance, reseal on exit (`--unfiltered` to skip the egress lockdown) |
+| `sudo virtdev-firewall apply` | Generate + load the host egress lockdown (root, one-time) |
+| `virtdev-firewall status` | Print `active`/`inactive` for the lockdown (rootless) |
 
 ### Project lifecycle
 
 | Command | Description |
 |---------|-------------|
 | `virtdev-create <project>` | Derive a project VM from the sealed base |
-| `virtdev-start <project> [port]` | Start VM as a systemd user service |
+| `virtdev-start <project> [--zone none\|wan\|full] [--unfiltered] [port]` | Start VM as a systemd user service (zone `none` by default, or the project's `zone` file; `--zone` overrides; `--unfiltered` skips the egress lockdown) |
 | `virtdev-stop <project>` | ACPI shutdown with SIGTERM fallback |
 | `virtdev-move <old-name> <new-name>` | Rename a project (must be stopped) |
 | `virtdev-destroy [-y] <project>` | Delete a project VM (confirmation required) |
@@ -223,7 +252,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-console <project>` | Serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is available |
 | `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
-| `virtdev-list` | List projects with port, status, and generation (colored) |
+| `virtdev-list` | List projects with port, status, zone, and generation (colored) |
 
 ### Inspection
 
@@ -401,6 +430,7 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
     inventory                       before/after diff by virtdev-maintain
   projects/<name>/
     ssh_config                        per-project SSH config (overrides system)
+    zone                              default network zone: none|wan|full (default none)
     triggers/
       pre-ssh, post-ssh              per-project trigger scripts (override system)
     manifest                       canonical backup manifest (survives nuke)

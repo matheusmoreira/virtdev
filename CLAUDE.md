@@ -58,7 +58,7 @@ first, then `PATH`. The dispatcher does not use the arguments library
 parsing needs are different). Beyond the lifecycle commands (`start`,
 `stop`, `create`, `destroy`, etc.), the dispatcher also routes to
 query/utility commands: `log`, `port`, `path`, `pid`, `status`, `disk`,
-`monitor`, `generation`, and `stale`.
+`monitor`, `generation`, `stale`, and `firewall`.
 
 ### Library-owned exit codes
 
@@ -83,6 +83,17 @@ Same error → same code, everywhere:
 | 85 | passt forward-port bind race | `virtdev-netexec` shim |
 | 86 | QEMU command not found (pre-flight before exec) | `virtdev-netexec` shim |
 | 87 | no port assigned (virtual machine not running) | `port_require` |
+| 88 | host egress lockdown not active / stale baseline / wrong user | `firewall_require` |
+| 90 | QEMU exited before active (non-passt status) | `qemu_activation_classify` |
+| 91 | unit did not become active before deadline | `qemu_activation_classify` |
+| 92 | apply: not invoked via sudo / target identity indeterminate | `bin/virtdev-firewall` |
+| 93 | apply: ruleset rejected (`nft -c`, or a registry zone lacks a policy case) | `bin/virtdev-firewall` |
+| 94 | apply: unit install / daemon-reload / enable failure | `bin/virtdev-firewall` |
+| 95 | apply: ruleset installed but the holder failed to load it | `bin/virtdev-firewall` |
+| 96 | holder: ruleset file missing or uid/base underivable | `bin/virtdev-firewall` |
+| 97 | holder: table did not come up / baseline record failed | `bin/virtdev-firewall` |
+| 98 | apply: lingering not enabled for the target user | `bin/virtdev-firewall` |
+| 99 | holder: zone-slice cgroup dirs never appeared (pins not running) | `bin/virtdev-firewall` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").
@@ -329,6 +340,8 @@ Install layout:
 
 - `bin/virtdev-*` → `/usr/bin/virtdev-*` (mode 755)
 - `lib/virtdev/*` → `/usr/lib/virtdev/*` (mode 644)
+- `systemd/virtdev-firewall.service` → `/usr/lib/systemd/system/` (holder)
+- `systemd/virtdev-firewall-pin@.service` → `/usr/lib/systemd/user/` (pin; `--user`, NOT system)
 - `iso/*` → `/usr/share/virtdev/profile/*`
 - Docs → `/usr/share/doc/virtdev/`
 
@@ -413,6 +426,64 @@ glob in `PKGBUILD` picks it up automatically.
   ${VIRTDEV_HOME}` on every lock acquisition to harden pre-existing
   installs. This protects the socket files (`passt.sock`, `monitor.sock`)
   from other local users.
+- **Host egress lockdown (Phase 2 network isolation).** A host-root nftables
+  `inet virtdev` table (`lib/virtdev/firewall` policy + `bin/virtdev-firewall`
+  root tool + a resident holder unit and a `--user` pin template under
+  `systemd/`) filters guest egress per **zone**, matched to the machines'
+  systemd `--user` slice cgroups. `nftables` is a runtime dependency. The
+  ruleset is FIXED (project-agnostic): one base jump narrows to `virtdev.slice`
+  (every machine, by cgroup ancestry — scoped, catches descendants only), then
+  one jump per relaxation zone. Key invariants:
+  - **Three zones, deny-by-default.** `none` (nothing but your SSH session),
+    `wan` (the internet; host + LAN blocked), `full` (host + LAN + WAN — the
+    explicit opt-out of host isolation; host and LAN move together). The zones
+    are a registry (`firewall_zone_known`); membership is data, each zone's
+    verdict is code in the generator. The default is `none` — both an omitted
+    `--zone` and an absent/invalid project `zone` file fall to it.
+  - **Every launch passes `--slice`.** `firewall_slice_for <zone>` →
+    `virtdev-<zone>.slice` is the single helper producing slice names;
+    `virtdev-start`, `virtdev-maintain`, and the ruleset generator all call it.
+    Slices are SHARED across projects (the collapse): identity stays in the unit
+    name `virtdev-<project>.service`, so there is no per-project slice and no
+    `systemd-escape` (deleted — the zone vocabulary is fixed and validated).
+  - **Per-project default zone.** Host-side
+    `${XDG_CONFIG_HOME}/virtdev/projects/<name>/zone` (`firewall_zone_default`,
+    fail-closed to `none`, host-controlled only — the guest has no path to it).
+    `--zone` overrides per launch; `--unfiltered` bypasses `firewall_require`
+    with a loud warning.
+  - **Resident pins materialise the cgroups.** A started-but-empty slice has no
+    cgroup dir, so nft (which resolves cgroup paths to inodes at load) cannot
+    reference it. `virtdev-firewall-pin@<zone>.service` (`sleep infinity`,
+    `Restart=always`, one per relaxation zone, enabled `--now` by `apply`) holds
+    `virtdev-{wan,full}.slice` and their parent `virtdev.slice` with stable
+    inodes. **Linger is required** so they run boot→shutdown.
+  - **The guard is fail-closed on staleness.** `firewall_require` (and the
+    shared `firewall_is_active` behind `status`/`list`) checks the holder is
+    `active` AND the recorded base inode (`/etc/virtdev/firewall.base`, written
+    by the HOLDER post-load) still matches the live `virtdev.slice` — a
+    `user@<uid>.service` teardown churns that inode and reads down. No `nft list`
+    (root-only); the `owner,persist` holder asserts the table transitively. The
+    guard additionally requires the caller to BE the firewall's uid. It runs
+    before the lock in `virtdev-start` and before both boots in
+    `virtdev-maintain`; both then re-verify post-launch via the unit's live
+    `ControlGroup` (`firewall_assert_unit_filtered`) to close the guard→launch
+    TOCTOU, tearing the unit down on a mismatch (start exit 21 / maintain 25).
+  - **`apply` is root, runtime is rootless.** `sudo virtdev firewall apply`
+    requires linger (98), validates `SUDO_UID` (never bakes a guessed uid),
+    **copies** (never symlinks) the holder → `/etc/systemd/system` and the pin →
+    `/etc/systemd/user` (user-vs-system, NOT by file extension) and starts the
+    pins AS THE USER, then constructs (never searches) the cgroup base, generates
+    → `nft -c` → atomic `rename(2)`, and restarts the holder. The holder derives
+    uid+base from the installed ruleset, waits for the pin-backed cgroup dirs
+    (99 on timeout), loads, verifies, and records `firewall.base`. The package
+    ships `/usr/lib/systemd/{system,user}`.
+  - **maintenance runs in `wan`** (needs WAN for `pacman -Syu`; trusted base, no
+    host/LAN). Its running-machine preflight glob excludes the pins
+    (`virtdev-firewall-pin@*.service`, permanent under linger).
+    `virtdev-recreate`/`virtdev-upgrade` restore a running machine's captured
+    zone and otherwise pass NO `--zone` (so `virtdev-start` reads the zone file).
+  - **`virtdev-status` stdout is unchanged** — the ZONE column lives only in
+    `virtdev-list` (a ZONE token in status would break `grep -q running`).
 
 ## Process notes
 
