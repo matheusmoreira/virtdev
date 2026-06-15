@@ -1,0 +1,22 @@
+# Resident cgroup pin for one firewall zone slice. Started per nft-referenced
+# zone (wan, full) by `virtdev firewall apply` as the user, under linger.
+#
+# A started-but-EMPTY systemd slice has no cgroup directory, so nft cannot
+# resolve `virtdev-<zone>.slice` and the holder cannot stat it. This unit runs a
+# trivial process inside virtdev-<zone>.slice, which materialises that cgroup
+# directory (and its parent virtdev.slice) and holds it with a stable inode for
+# the firewall's lifetime. Restart=always is load-bearing: if the pin is killed
+# while no machine occupies the zone, the empty slice would be GC'd and the inode
+# the holder froze the ruleset against would churn -> the next wan/full machine
+# falls to the terminal drop until re-apply. Respawning keeps the same slice.
+[Unit]
+Description=virtdev firewall cgroup pin for zone %i
+
+[Service]
+Slice=virtdev-%i.slice
+ExecStart=/usr/bin/sleep infinity
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target

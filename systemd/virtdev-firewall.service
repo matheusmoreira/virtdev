@@ -1,0 +1,36 @@
+# Resident holder for the host egress lockdown. `virtdev-firewall hold` loads
+# the ruleset into an `owner,persist` nftables table and holds the owning
+# socket open for the unit's whole lifetime. While this unit is active the
+# table is owned, so another process's `nft flush ruleset` (a host firewall
+# reload) SKIPS it instead of wiping it — no reassert timer is needed. The unit
+# being active IS the launch guard's signal (firewall_is_active); if the holder
+# dies, persist keeps the rules in place but the guard reports down until it is
+# restarted (Restart=on-failure re-establishes ownership). On each load the
+# holder records the frozen cgroup baseline (<uid> <inode>) to
+# /etc/virtdev/firewall.base; the guard compares it to the live slice to fail
+# closed after a user-manager teardown churns the inode.
+#
+# ExecStart is the INSTALLED tool (/usr/bin/virtdev-firewall), never a dev-tree
+# path: the holder runs as root, so it must be a root-owned binary. Applying
+# from a dev tree therefore needs the package (or virtdev-firewall installed to
+# /usr/bin) — unlike the previous nft-only loader.
+[Unit]
+Description=virtdev host egress lockdown (nftables inet virtdev, owner-held)
+After=nftables.service
+Documentation=man:virtdev-firewall
+# The holder waits IN-CODE for the --user firewall pins' cgroup dirs to appear
+# (a system unit cannot After= a --user unit). That wait is bounded (~30 s, exit
+# 99) and exceeds the default 10 s start-limit window, so disable the start
+# limit: repeated waits while the user manager and pins come up at boot must not
+# trip "start-limit-hit" and wedge the lockdown down.
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStart=/usr/bin/virtdev-firewall hold
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
