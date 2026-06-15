@@ -235,7 +235,12 @@ ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 # the threat model — and creates no guest→host vector. Do not "fix" this
 # asymmetry by adding --safe-links (or --link-dest) without re-checking
 # virtdev-backup's guards.
-rsync_opts=(-a --no-D --ignore-missing-args --stats)
+# -r is REQUIRED despite -a: with --files-from in effect, rsync's man page
+# notes "the --archive (-a) option's behavior does not imply --recursive
+# (-r), so specify it explicitly". Without it a directory manifest entry is
+# recreated empty on the guest and its contents are silently skipped — the
+# mirror of the same fix in virtdev-backup.
+rsync_opts=(-a -r --no-D --ignore-missing-args --stats)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
 
 rsync_log="$(mktemp)"

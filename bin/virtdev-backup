@@ -324,7 +324,13 @@ mkdir -m 0700 "${partial}/tree"
 ssh_command=""
 ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 
-rsync_opts=(-a --no-D --ignore-missing-args --stats --safe-links)
+# -r is REQUIRED despite -a: rsync's man page documents that, with
+# --files-from in effect, "the --archive (-a) option's behavior does not
+# imply --recursive (-r), so specify it explicitly". Without it a directory
+# manifest entry (e.g. the '.claude/projects/' Claude state) is recreated
+# as an EMPTY directory in the snapshot and its contents are silently
+# skipped — the backup reports success while capturing nothing.
+rsync_opts=(-a -r --no-D --ignore-missing-args --stats --safe-links)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
 # --copy-links is appended AFTER --safe-links and overrides it: rsync
 # dereferences symlinks on the sender (guest) side, so a guest symlink
