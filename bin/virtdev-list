@@ -9,6 +9,10 @@
 #   PROJECT   Name of the project virtual machine
 #   PORT      Host-side SSH forwarding port
 #   STATUS    running | stopped
+#   ZONE      Network zone of a running virtual machine, derived from its
+#             live systemd slice AND the host egress lockdown being active:
+#             none | wan | full | UNFILTERED (the lockdown is down, so the
+#             machine is not actually filtered) | - (stopped).
 #   GENERATION  Base generation the project was created against,
 #               or 'detached' for standalone projects
 #
@@ -18,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments project terminal port
+import error arguments project terminal port firewall
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=()
@@ -60,11 +64,37 @@ for project in "${projects[@]}"; do
 done
 (( max_name += 2 ))
 
-printf "%-${max_name}s %-5s %-8s %s\n" 'PROJECT' 'PORT' 'STATUS' 'GENERATION'
-printf "%-${max_name}s %-5s %-8s %s\n" '-------' '----' '------' '----------'
+printf "%-${max_name}s %-5s %-8s %-10s %s\n" 'PROJECT' 'PORT' 'STATUS' 'ZONE' 'GENERATION'
+printf "%-${max_name}s %-5s %-8s %-10s %s\n" '-------' '----' '------' '----' '----------'
 
 declare -A running_state=()
 project_load_running_state running_state "${projects[@]}"
+
+# The host egress lockdown is global state, not per-project: query it once
+# here rather than forking systemctl per running row. A running machine is
+# only as filtered as the lockdown is up, so a down lockdown displays
+# UNFILTERED for every running machine. Use the SHARED firewall_is_active
+# predicate (holder active + the recorded base inode still matching the live
+# virtdev.slice) so the displayed state matches the launch guard exactly — a
+# bare is-active check would show a reassuring zone in the very window (a churned
+# base inode) the guard refuses to launch in.
+firewall_up=1
+firewall_is_active || firewall_up=0
+
+# zone_display <project> <running?0|1>
+# Derives the displayed zone from the live unit's Slice and the firewall state.
+# A stopped machine has no zone (-). A running machine with the lockdown down is
+# UNFILTERED (never a falsely reassuring zone name). Otherwise the shared
+# firewall_zone_of_slice maps the live slice to its zone (a stray/legacy/unknown
+# slice reads 'none', the most restrictive — matching the rebuild paths).
+zone_display() {
+  local -r project="${1}" running="${2}"
+  [[ "${running}" == "1" ]] || { printf -- '-'; return; }
+  [[ "${firewall_up}" == "1" ]] || { printf 'UNFILTERED'; return; }
+  local slice
+  slice="$(systemctl --user show -p Slice --value "virtdev-${project}.service" 2>/dev/null || true)"
+  printf '%s' "$(firewall_zone_of_slice "${slice}")"
+}
 
 for project in "${projects[@]}"; do
   project_directory="${VIRTDEV_HOME}/projects/${project}"
@@ -74,10 +104,12 @@ for project in "${projects[@]}"; do
     status='running'
     status_color='fg=green'
     port="$(port_read_lenient "${project}")"
+    zone="$(zone_display "${project}" 1)"
   else
     status='stopped'
     status_color='fg=red'
     port='-'
+    zone="$(zone_display "${project}" 0)"
   fi
 
   if [[ -s "${generation_file}" ]]; then
@@ -103,9 +135,10 @@ for project in "${projects[@]}"; do
     colored_generation="${generation}"
   fi
 
-  printf "%-${max_name}s %-5s %s%-*s %s\n" \
+  printf "%-${max_name}s %-5s %s%-*s %-10s %s\n" \
     "${project}" "${port}" \
     "${colored_status}" $(( 8 - ${#status} )) "" \
+    "${zone}" \
     "${colored_generation}"
 done
 

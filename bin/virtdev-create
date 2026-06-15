@@ -53,6 +53,15 @@ case "${project}" in
     # 'base' is a virtdev-path pseudo-target for the sealed base dir;
     # a real project named 'base' would shadow it.
     error 3 <<<"Project name 'base' is reserved for the sealed base system" ;;
+  none|wan|full)
+    # A zone name as a project would land in that zone's shared slice
+    # (virtdev-<zone>.slice) and silently inherit its relaxation (full =
+    # host+LAN+WAN) — an isolation gap. Reserve the zone vocabulary.
+    error 3 <<<"Project name '${project}' is reserved for the network zone of the same name" ;;
+  firewall)
+    # 'firewall' would launch as the --user unit virtdev-firewall.service,
+    # confusingly shadowing the system holder unit of the same name.
+    error 3 <<<"Project name 'firewall' is reserved (the host egress lockdown unit)" ;;
 esac
 
 lock_acquire
