@@ -118,7 +118,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm terminal port passt qemu
+import error lock arguments ssh project confirm terminal port passt qemu firewall
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -147,7 +147,7 @@ readonly unit=virtdev-maintenance
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([yes]=bool [no-provision]=bool [no-inventory]=bool)
+declare -A spec=([yes]=bool [no-provision]=bool [no-inventory]=bool [unfiltered]=bool)
 # shellcheck disable=SC2034
 declare -A spec_short=([y]=yes)
 declare -A flags=()
@@ -158,6 +158,14 @@ set -- "${positional[@]}"
 if [[ $# -ne 0 ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
+
+# Network isolation (Phase 2). Resolved once here and consulted by
+# maintenance_boot, which gates BOTH Boot 1 (interactive) and Boot 2
+# (inventory) on the host egress lockdown. The maintenance virtual machine runs
+# in the 'wan' zone — it needs WAN for pacman -Syu, the base image it runs is
+# trusted, and it never needs the host or LAN; --unfiltered is maintain's own
+# bypass.
+maintenance_unfiltered="${flags[unfiltered]}"
 
 # ── Hook resolution ─────────────────────────────────────────────────
 
@@ -180,6 +188,16 @@ fi
 # ── Functions ───────────────────────────────────────────────────────
 
 maintenance_boot() {
+  # Gate the launch on the host egress lockdown. This function backs BOTH
+  # Boot 1 and Boot 2, so the guard fires before each boot — if the
+  # firewall went down between them, Boot 2 refuses (fail-closed) before
+  # the reseal commit, leaving maintenance/ intact for a retry.
+  if [[ "${maintenance_unfiltered}" != "0" ]]; then
+    firewall_require --unfiltered
+  else
+    firewall_require
+  fi
+
   local pacman_cache="${VIRTDEV_CACHE}/pacman"
   mkdir -p "${pacman_cache}"
 
@@ -211,6 +229,7 @@ maintenance_boot() {
   systemd-run \
       --user \
       --unit="${unit}" \
+      --slice="$(firewall_slice_for wan)" \
       --description='virtdev base system maintenance virtual machine' \
       -- \
       "${virtdev_bin_directory}/virtdev-netexec" \
@@ -218,6 +237,34 @@ maintenance_boot() {
           --forward "${maintenance_port}" \
           -- \
           "${qemu_argv[@]}"
+}
+
+# maintenance_assert_filtered — post-launch firewall TOCTOU close (mirrors
+# virtdev-start). maintenance_boot's guard ran before systemd-run, so a
+# user-manager teardown in that window could churn virtdev.slice's inode and
+# leave the boot UNFILTERED behind the stale ruleset. Called once the unit is
+# active (both boots, on the SSH-up success path): assert the unit sits under
+# the frozen virtdev.slice, else stop it + clean up + abort (fail CLOSED, so
+# Boot 2 aborts before the reseal). --unfiltered opted out, so skips.
+maintenance_assert_filtered() {
+  [[ "${maintenance_unfiltered}" != "0" ]] && return 0
+  local control_group="" i
+  for (( i = 0; i < 25; i++ )); do
+    control_group="$(systemctl --user show "${unit}" -p ControlGroup --value 2>/dev/null || true)"
+    [[ -n "${control_group}" ]] && break
+    sleep 0.2
+  done
+  firewall_assert_unit_filtered "${control_group}" && return 0
+  systemctl --user stop "${unit}" 2>/dev/null || true
+  maintenance_cleanup
+  error 25 <<MESSAGE
+host egress lockdown baseline changed during maintenance launch: not filtered.
+virtdev.slice's cgroup inode churned between the pre-boot guard and unit
+activation (a user-manager restart?). The maintenance virtual machine was
+stopped to avoid running unfiltered. Re-apply the firewall and retry:
+    sudo virtdev firewall apply
+    virtdev-maintain
+MESSAGE
 }
 
 maintenance_wait_ssh() {
@@ -342,8 +389,17 @@ fi
 # Refuse to run if any project virtual machines are currently running.
 # They depend on system/system.qcow2 as a backing file.
 # Replacing it while a project virtual machine is running would corrupt it.
-if systemctl --user list-units --state=active --no-legend 'virtdev-*.service' \
-       2>/dev/null | grep -q .; then
+# Exclude the firewall pins (virtdev-firewall-pin@<zone>.service): they are
+# --user units that run permanently under linger, so they always match the glob
+# and would otherwise abort every maintenance run with a spurious "machines
+# running". list-units indents the unit name (the status-dot column), so take
+# the first field before the anchored match; capture the result rather than a
+# `grep -q` tail, which could SIGPIPE the upstream stages under pipefail.
+running_machines="$(
+  systemctl --user list-units --state=active --no-legend 'virtdev-*.service' 2>/dev/null \
+    | awk '{print $1}' | grep -v '^virtdev-firewall-pin@' || true
+)"
+if [[ -n "${running_machines}" ]]; then
   error 7 <<MESSAGE
 One or more project virtual machines are running.
 Stop all project virtual machines before running virtdev-maintain:
@@ -368,6 +424,16 @@ trap cleanup_partial_staging EXIT
 system_disk="${maintenance_directory}/system.qcow2"
 home_disk="${maintenance_directory}/home.qcow2"
 nvram="${maintenance_directory}/nvram"
+
+# Enforce the host egress lockdown BEFORE the expensive base-image copy, so a
+# down lockdown fails fast instead of after a multi-GiB reflink copy.
+# maintenance_boot re-checks before each boot (Boot 2's re-verification gates
+# the reseal).
+if [[ "${maintenance_unfiltered}" != "0" ]]; then
+  firewall_require --unfiltered
+else
+  firewall_require
+fi
 
 printf >&2 "Copying sealed base images to: '%s'\n" "${maintenance_directory}"
 # --reflink=auto produces an instant COW clone on filesystems that
@@ -418,7 +484,10 @@ qemu_activation_classify "${unit}" 5 && activate_classify=0 || activate_classify
 activate_exit="${VIRTDEV_QEMU_EXIT_STATUS}"
 case "${activate_classify}" in
   "${qemu_active}")
-    : # Unit is active; proceed to the SSH wait.
+    : # Unit is active. The firewall TOCTOU re-check fires after the SSH wait
+      # (below), NOT here: a boot that activates past this 5s classify deadline
+      # falls through to the SSH wait, so anchoring the check there covers every
+      # boot speed (mirrors Boot 2).
     ;;
   "${passt_port_race_exit_code}")
     maintenance_cleanup
@@ -496,6 +565,12 @@ MESSAGE
 fi
 
 printf >&2 ' up.\n'
+
+# Close the firewall TOCTOU now that the unit is active (SSH up). Anchored here,
+# not in the qemu_active classify arm, so a boot that activates after the 5s
+# classify deadline still gets the inode re-check before the session runs
+# (mirrors Boot 2). Fails CLOSED on a mismatch (stop + error 25).
+maintenance_assert_filtered
 
 # ── Provision ───────────────────────────────────────────────────────
 
@@ -634,6 +709,7 @@ if [[ -n "${inventory_before}" ]]; then
     printf >&2 'Waiting for SSH...'
     if maintenance_wait_ssh; then
       printf >&2 ' up.\n'
+      maintenance_assert_filtered
       printf >&2 'Taking inventory (after)...\n'
       if maintenance_ssh -- bash -s < "${inventory_path}" > "${inventory_after}"; then
         do_diff=1
