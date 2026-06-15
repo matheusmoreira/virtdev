@@ -53,7 +53,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project confirm terminal
+import error validate arguments manifest project confirm terminal firewall
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -62,6 +62,8 @@ import error validate arguments manifest project confirm terminal
 declare -A spec=(
   [only]=value
   [except]=value
+  [zone]=value
+  [unfiltered]=bool
   [skip-outdated]=bool
   [yes]=bool
   [verbose]=bool
@@ -69,7 +71,7 @@ declare -A spec=(
 # shellcheck disable=SC2034
 declare -A spec_short=([y]=yes [v]=verbose)
 # shellcheck disable=SC2034
-declare -A spec_placeholders=([only]=projects [except]=projects)
+declare -A spec_placeholders=([only]=projects [except]=projects [zone]=zone)
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"
@@ -81,6 +83,16 @@ fi
 
 if [[ -n "${flags[only]}" && -n "${flags[except]}" ]]; then
   error 4 <<<"--only and --except are mutually exclusive"
+fi
+
+# Resolve the requested zone (Phase 2). An explicit --zone forces every rebuilt
+# machine into that zone; otherwise each machine that was running is restored to
+# its prior zone (captured in Phase 1, before the stop), and a stopped machine
+# falls to its project zone file (resolved down in virtdev-start).
+zone_arg="${flags[zone]:-}"
+if [[ -n "${zone_arg}" ]]; then
+  firewall_zone_valid "${zone_arg}" \
+    || error 64 <<<"unknown --zone '${zone_arg}'. Known zones: $(firewall_zones | paste -sd' ')"
 fi
 
 # ── Parse --only / --except into arrays ──────────────────────────────
@@ -301,6 +313,14 @@ fi
 total_phases=4
 declare -a stopped_projects=()
 
+# Capture each running machine's zone BEFORE Phase 1 stops it (the Slice
+# property reads empty once stopped). Phase 3 passes each captured zone back to
+# virtdev-recreate so a running machine returns to the zone it was in, rather
+# than silently dropping to a more restrictive default. An explicit
+# upgrade-level --zone overrides all. Keyed by project name; only populated for
+# machines that were running.
+declare -A prior_slices=()
+
 abort_backup() {
   {
     printf '\n%s\n' "${1}"
@@ -323,6 +343,7 @@ for p in "${included[@]}"; do
   was_running=0
   if project_is_running "${p}"; then
     was_running=1
+    prior_slices["${p}"]="$(systemctl --user show -p Slice --value "virtdev-${p}.service" 2>/dev/null || true)"
   fi
 
   if (( ! was_running )); then
@@ -389,6 +410,17 @@ for p in "${included[@]}"; do
   printf '\n  Recreating %s...\n' "${p}" >&2
   recreate_opts=(--no-backup --yes)
   (( flags[verbose] )) && recreate_opts+=(--verbose)
+  # Restore each machine's prior zone across the rebuild (it is already stopped,
+  # so recreate cannot recapture it). Precedence mirrors recreate/start: an
+  # explicit upgrade --zone wins; else a machine that WAS running is restored to
+  # its mapped zone (stray/legacy slice -> most restrictive 'none'); else pass
+  # no --zone so recreate -> virtdev-start reads the project's zone file.
+  if [[ -n "${zone_arg}" ]]; then
+    recreate_opts+=(--zone "${zone_arg}")
+  elif [[ -n "${prior_slices[${p}]:-}" ]]; then
+    recreate_opts+=(--zone "$(firewall_zone_of_slice "${prior_slices[${p}]}")")
+  fi
+  (( flags[unfiltered] )) && recreate_opts+=(--unfiltered)
 
   if "${virtdev_bin_directory}/virtdev-recreate" "${recreate_opts[@]}" "${p}"; then
     succeeded+=("${p}")

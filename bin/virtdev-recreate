@@ -60,7 +60,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest confirm terminal project
+import error validate arguments snapshot manifest confirm terminal project firewall
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -68,6 +68,8 @@ import error validate arguments snapshot manifest confirm terminal project
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=(
   [provision]=value
+  [zone]=value
+  [unfiltered]=bool
   [no-backup]=bool
   [no-restore]=bool
   [no-provision]=bool
@@ -77,7 +79,7 @@ declare -A spec=(
 # shellcheck disable=SC2034
 declare -A spec_short=([p]=provision [y]=yes [v]=verbose)
 # shellcheck disable=SC2034
-declare -A spec_placeholders=([provision]=path)
+declare -A spec_placeholders=([provision]=path [zone]=zone)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project)
 declare -A flags=()
@@ -93,6 +95,17 @@ project="${1}"
 
 validate_project_name "${project}"
 
+# Resolve the zone to relaunch into (Phase 2 network isolation). Precedence:
+#   1. an explicit --zone always wins;
+#   2. else restore the zone a RUNNING machine was in (captured before the stop);
+#   3. else pass nothing and let virtdev-start resolve from the project's zone
+#      file — never synthesize --zone none, which would ignore that file.
+zone_arg="${flags[zone]:-}"
+if [[ -n "${zone_arg}" ]]; then
+  firewall_zone_valid "${zone_arg}" \
+    || error 64 <<<"unknown --zone '${zone_arg}'. Known zones: $(firewall_zones | paste -sd' ')"
+fi
+
 unit="virtdev-${project}"
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 backups_project_dir="$(snapshot_directory "${project}")"
@@ -105,6 +118,29 @@ project_require "${project}"
 unit_active=0
 if project_is_running "${project}"; then
   unit_active=1
+fi
+
+# Capture the live zone BEFORE the stop below clears it (the Slice property
+# reads empty once the unit is gone), so a running machine can be restored to
+# the zone it was in. Map the slice unit name to its zone EXACTLY; a stray,
+# legacy, or unreadable slice maps to the most restrictive 'none', preserving
+# the old "fail to most locked" intent.
+prior_slice=""
+prior_zone=""
+if (( unit_active )); then
+  prior_slice="$(systemctl --user show -p Slice --value "${unit}" 2>/dev/null || true)"
+  prior_zone="$(firewall_zone_of_slice "${prior_slice}")"
+fi
+
+# The zone to relaunch into: explicit --zone wins; else a running machine's
+# restored zone; else empty -> omit --zone so virtdev-start reads the project's
+# zone file (synthesizing --zone none here would ignore that file).
+if [[ -n "${zone_arg}" ]]; then
+  zone="${zone_arg}"
+elif (( unit_active )); then
+  zone="${prior_zone}"
+else
+  zone=""
 fi
 
 if (( ! flags[no-backup] )); then
@@ -256,7 +292,10 @@ create() {
 }
 
 start() {
-  "${virtdev_bin_directory}/virtdev-start" "${project}"
+  local opts=()
+  [[ -n "${zone}" ]] && opts+=(--zone "${zone}")
+  (( flags[unfiltered] )) && opts+=(--unfiltered)
+  "${virtdev_bin_directory}/virtdev-start" "${opts[@]}" "${project}"
 }
 
 wait_ssh() {
