@@ -17,7 +17,7 @@
 [Unit]
 Description=virtdev host egress lockdown (nftables inet virtdev, owner-held)
 After=nftables.service
-Documentation=man:virtdev-firewall
+Documentation=man:virtdev-firewall(8)
 # The holder waits IN-CODE for the --user firewall pins' cgroup dirs to appear
 # (a system unit cannot After= a --user unit). That wait is bounded (~30 s, exit
 # 99) and exceeds the default 10 s start-limit window, so disable the start

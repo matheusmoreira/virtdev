@@ -11,16 +11,23 @@ CFLAGS := $(CFLAGS)
 LDFLAGS ?=
 LDFLAGS := $(LDFLAGS)
 
+SCDOC ?= scdoc
+SCDOC := $(SCDOC)
+
 scripts := $(filter-out bin/virtdev-exchange,$(wildcard bin/virtdev bin/virtdev-*))
 libraries := $(wildcard lib/virtdev/*)
+manpages := $(patsubst %.scd,%,$(wildcard man/*.scd))
 
-all: bin/virtdev-exchange
+all: bin/virtdev-exchange $(manpages)
 
 bin/virtdev-exchange: source/virtdev/exchange.c
 	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
 
+man/%: man/%.scd
+	$(SCDOC) < $< > $@
+
 clean:
-	rm -f bin/virtdev-exchange
+	rm -f bin/virtdev-exchange $(manpages)
 
 check: bin/virtdev-exchange
 	bash -n $(scripts) $(libraries)
