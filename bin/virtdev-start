@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project terminal port passt qemu
+import error validate lock arguments project terminal port passt qemu firewall
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -41,7 +41,9 @@ if [[ ! "${VIRTDEV_STOP_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=()
+declare -A spec=([zone]=value [unfiltered]=bool)
+# shellcheck disable=SC2034
+declare -A spec_placeholders=([zone]=zone)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project "port?")
 # shellcheck disable=SC2034
@@ -57,6 +59,33 @@ fi
 project="${1}"
 
 validate_project_name "${project}"
+
+# Network isolation (Phase 2). Resolve the zone, enforce the host egress
+# lockdown, and resolve the systemd slice the virtual machine launches into —
+# all before taking the lock, so a refused launch never blocks another virtdev
+# operation. Zone precedence: an explicit --zone wins; else the project's
+# configured default (its host-side `zone` file); else 'none' (start fully
+# locked). firewall_zone_default already falls back to 'none' for an
+# absent/invalid file. firewall_slice_for routes EVERY launch through the one
+# helper so a new path cannot silently skip --slice and escape the baseline.
+zone="${flags[zone]:-}"
+if [[ -n "${zone}" ]]; then
+  firewall_zone_valid "${zone}" \
+    || error 64 <<<"unknown --zone '${zone}'. Known zones: $(firewall_zones | paste -sd' ')"
+else
+  zone="$(firewall_zone_default "${project}")"
+fi
+
+unfiltered=0
+if [[ -n "${flags[unfiltered]:-}" && "${flags[unfiltered]}" != "0" ]]; then
+  unfiltered=1
+fi
+if (( unfiltered )); then
+  firewall_require --unfiltered
+else
+  firewall_require
+fi
+slice="$(firewall_slice_for "${zone}")"
 
 # Held until after systemd confirms the transient unit is active, so
 # any other virtdev script that arrives during the critical section
@@ -238,6 +267,7 @@ qemu_command qemu_argv \
 systemd-run \
     --user \
     --unit="${unit}" \
+    --slice="${slice}" \
     --description="virtdev project virtual machine: ${project}" \
     --property="ExecStop=${virtdev_bin_directory}/virtdev-stop --acpi-only ${project}" \
     --property="TimeoutStopSec=${VIRTDEV_STOP_TIMEOUT}" \
@@ -347,6 +377,26 @@ Investigate: systemctl --user status ${unit}
 MESSAGE
     ;;
 esac
+
+# Close the firewall TOCTOU: the guard ran before the lock + systemd-run, so a
+# user-manager teardown in that window could have churned virtdev.slice's inode,
+# leaving this machine UNFILTERED behind the now-stale ruleset. Confirm it
+# actually sits under the frozen virtdev.slice; on mismatch error while
+# vm_started is still 0 so cleanup_failed_start stops the unit (fail CLOSED).
+# --unfiltered opted out of the lockdown entirely, so it skips this.
+if (( ! unfiltered )); then
+  control_group="$(systemctl --user show "${unit}" -p ControlGroup --value 2>/dev/null || true)"
+  if ! firewall_assert_unit_filtered "${control_group}"; then
+    error 21 <<MESSAGE
+host egress lockdown baseline changed during launch: ${project} is not filtered.
+virtdev.slice's cgroup inode churned between the pre-launch guard and unit
+activation (a user-manager restart?). The machine is being stopped to avoid
+running unfiltered. Re-apply the firewall and retry:
+    sudo virtdev firewall apply
+    virtdev-start ${project}
+MESSAGE
+  fi
+fi
 
 vm_started=1
 
