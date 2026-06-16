@@ -53,10 +53,12 @@ case "${project}" in
     # 'base' is a virtdev-path pseudo-target for the sealed base dir;
     # a real project named 'base' would shadow it.
     error 3 <<<"Project name 'base' is reserved for the sealed base system" ;;
-  none|wan|full)
-    # A zone name as a project would land in that zone's shared slice
-    # (virtdev-<zone>.slice) and silently inherit its relaxation (full =
-    # host+LAN+WAN) — an isolation gap. Reserve the zone vocabulary.
+  none|wan|lan|full)
+    # The built-in zone vocabulary is reserved as a project name to avoid
+    # command/vocabulary confusion (`virtdev start wan` — project or zone?). Only
+    # the BUILT-INS are reserved: a custom zone's name need not be, because a
+    # project's zone comes from its zone file / --zone, never its name, so a
+    # project sharing a name with a custom zone carries no isolation gap.
     error 3 <<<"Project name '${project}' is reserved for the network zone of the same name" ;;
   firewall)
     # 'firewall' would launch as the --user unit virtdev-firewall.service,
