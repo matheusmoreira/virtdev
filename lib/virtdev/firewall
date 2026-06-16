@@ -90,7 +90,7 @@ readonly firewall_zone_name_max=32
 # 'none' is the deny-by-default floor (enforced by the ruleset's terminal drop,
 # not a dedicated rule). Declared global because libraries are sourced from
 # within import(), where a bare `declare -A` would be function-local.
-declare -gA firewall_zone_known=([none]=1 [wan]=1 [full]=1)
+declare -gA firewall_zone_known=([none]=1 [wan]=1 [lan]=1 [full]=1)
 
 # Destination sets (text fragments the generator splices into the ruleset).
 # Private LAN ranges plus link-local, CGNAT, multicast and broadcast —

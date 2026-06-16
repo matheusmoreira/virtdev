@@ -18,10 +18,11 @@
 # slice names, the launch guard) lives in lib/virtdev/firewall; this tool
 # owns the root-only ruleset generation, the apply flow, and the holder.
 #
-# Exit codes (local; 88 is library-owned by lib/virtdev/firewall):
+# Exit codes (local; 88 + 89 are library-owned by lib/virtdev/firewall):
+#   89  invalid zone-definition file (apply, raised via firewall_zone_parse)
 #   92  not invoked via sudo / target identity indeterminate
-#   93  ruleset rejected: failed nft -c, or a registry zone lacks a policy case
-#   94  unit install / daemon-reload / enable failure
+#   93  ruleset rejected by nft -c
+#   94  unit install / daemon-reload / enable / manifest-write failure
 #   95  ruleset installed on disk but the holder failed to load it
 #   96  holder: ruleset file missing, or uid/base underivable from it
 #   97  holder: table did not come up, or baseline record failed
@@ -39,10 +40,59 @@ import error arguments firewall
 # the holder runs `hold` as a root system service where HOME is unset — under
 # set -u that default would crash the holder at source time.
 
-# firewall_relaxation_zones -> the nft-referenced zones (the registry minus the
-# 'none' floor, which carries no rule), sorted. The single source for "which
-# zones get a slice jump AND a resident pin", so the generator and the pin
-# bootstrap can never cover different sets.
+# Custom-zone generation state, populated by firewall_load_custom_zones and read
+# by firewall_generate / firewall_start_pins / firewall_write_zones_manifest. The
+# tool's `apply` is the ONLY context that reads the user's zones/ config (root,
+# via SUDO_UID); the holder and the rootless launch never do (spec §2.3).
+declare -ga firewall_gen_zones=()      # custom zone names, sorted
+declare -gA firewall_gen_base=()       # name -> base (a built-in)
+declare -gA firewall_gen_ports=()      # name -> ";"-joined "<port> <proto...>" specs
+
+# firewall_load_custom_zones <uid>
+# Enumerate + parse the target user's custom zone-definition files into the
+# firewall_gen_* globals. The config dir is CONSTRUCTED from the validated uid
+# (getent home + /.config — NOT $XDG_CONFIG_HOME, which under sudo is root's
+# environment, and NOT a search of a user-writable tree). Skips dotfiles and
+# non-regular entries; REFUSES symlinks; a regular file must bear a valid zone
+# name that does not shadow a built-in and must parse, or apply aborts (89). No
+# zones/ dir is normal (zero custom zones).
+firewall_load_custom_zones() {
+  local -r uid="${1:?firewall_load_custom_zones: uid required}"
+  firewall_gen_zones=(); firewall_gen_base=(); firewall_gen_ports=()
+  local home
+  home="$(getent passwd "${uid}" | cut -d: -f6)"
+  [[ -n "${home}" && -d "${home}" ]] || return 0
+  local -r zones_dir="${home}/.config/virtdev/zones"
+  [[ -d "${zones_dir}" ]] || return 0
+  local f name base reason joined p
+  local -a ports
+  while IFS= read -r -d '' f; do
+    name="$(basename -- "${f}")"
+    [[ "${name}" == .* ]] && continue
+    if [[ -L "${f}" ]]; then
+      error "${firewall_invalid_zone_exit_code}" <<<"zone file is a symlink (refused): ${f}"
+    fi
+    [[ -f "${f}" ]] || continue                    # skip dirs / other non-regular
+    firewall_zone_name_valid "${name}" \
+      || error "${firewall_invalid_zone_exit_code}" <<<"invalid zone name '${name}' in ${zones_dir} (lowercase ^[a-z][a-z0-9_]*\$, no dashes/dots, <=${firewall_zone_name_max})"
+    [[ -v "firewall_zone_known[${name}]" ]] \
+      && error "${firewall_invalid_zone_exit_code}" <<<"zone '${name}' shadows a built-in; choose another name"
+    base=""; ports=(); reason=""
+    firewall_zone_parse "${f}" base ports reason \
+      || error "${firewall_invalid_zone_exit_code}" <<<"zone '${name}': ${reason}"
+    firewall_gen_zones+=("${name}")
+    firewall_gen_base["${name}"]="${base}"
+    joined=""
+    for p in "${ports[@]}"; do joined+="${p};"; done
+    firewall_gen_ports["${name}"]="${joined}"
+  done < <(find "${zones_dir}" -mindepth 1 -maxdepth 1 -print0 | sort -z)
+}
+
+# firewall_relaxation_zones -> the BUILT-IN relaxation zones (the built-in
+# registry minus the 'none' floor), sorted. Custom zones are appended alongside
+# these by firewall_generate and firewall_start_pins (from firewall_gen_zones);
+# the holder derives its own cgroup-dir wait-set from the installed ruleset, not
+# from here (it has no access to the custom-zone set).
 firewall_relaxation_zones() {
   firewall_zones | grep -vx none | sort
 }
@@ -64,6 +114,13 @@ firewall_generate() {
   # base/virtdev-<zone>.slice — one level deeper than the base.
   local -r zone_level=$(( base_level + 1 ))
 
+  # Any host-hole zone present? (controls the conditional loopback narrowing).
+  # firewall_gen_* are populated by firewall_load_custom_zones before this runs.
+  local any_hole=0 z
+  for z in "${firewall_gen_zones[@]}"; do
+    [[ -n "${firewall_gen_ports[${z}]:-}" ]] && { any_hole=1; break; }
+  done
+
   printf 'destroy table inet %s\n' "${firewall_table_name}"
   printf 'table inet %s {\n' "${firewall_table_name}"
   # owner,persist: the resident holder (virtdev-firewall.service) owns this
@@ -80,44 +137,76 @@ firewall_generate() {
   printf '    socket cgroupv2 level %s "%s" jump virtdev_machines\n' "${base_level}" "${base}"
   printf '  }\n'
   printf '  chain virtdev_machines {\n'
-  # Loopback DESTINATION accept, ahead of all policy in EVERY zone: passt's
-  # SSH-forward reply targets 127.0.0.1 (the sole address it binds) and rides
-  # in the machine's cgroup, so none/wan would otherwise drop the reply and
-  # break `virtdev ssh`. Accept by destination, not output interface — a
-  # guest->host-LAN-IP packet routes via lo too, so an oifname match would be a
-  # fail-open. ::1 is inert defense-in-depth. (Guest-INITIATED host loopback is
-  # blocked separately by passt's --map-host-loopback none, regardless of zone.)
-  printf '    ip daddr 127.0.0.1 accept\n'
-  printf '    ip6 daddr ::1 accept\n'
-  # One cgroup-ancestry jump per RELAXATION zone (the registry minus the 'none'
-  # floor). Zone MEMBERSHIP is data (the registry); each zone's VERDICT is
-  # policy (the case). The slice literal is built through firewall_slice_for —
-  # the single source of truth for slice names — so the launch side
-  # (systemd-run --slice) and the rule side can never drift. Sorted for a
-  # deterministic ruleset. A registry zone with no case fails LOUDLY here (exit
-  # 93) rather than silently emitting an unmatched machine; a `jump zone_<z>`
-  # verdict requires its chain below, or nft -c rejects the table at apply.
-  local zone slice
-  while IFS= read -r zone; do
-    slice="$(firewall_slice_for "${zone}")"
-    case "${zone}" in
-      full) printf '    socket cgroupv2 level %s "%s/%s" accept\n'        "${zone_level}" "${base}" "${slice}" ;;
-      wan)  printf '    socket cgroupv2 level %s "%s/%s" jump zone_wan\n' "${zone_level}" "${base}" "${slice}" ;;
-      *)    error 93 <<<"firewall_generate: no nft policy for relaxation zone '${zone}' (add a generator case)" ;;
-    esac
-  done < <(firewall_relaxation_zones)
-  # none + anything not accepted/relaxed above: deny by default.
-  printf '    drop\n'
+  # Loopback DESTINATION accept for passt's SSH-forward reply (targets 127.0.0.1
+  # in the machine's cgroup; none/wan would otherwise drop it and break virtdev
+  # ssh). Accept by destination, not oifname — a guest->host-LAN-IP packet routes
+  # via lo too, so oifname would fail open.
+  #
+  # CONDITIONAL NARROWING: only when a host-hole zone exists do we add
+  # `ct state established`, so a guest-INITIATED new loopback flow falls through
+  # to the zone chains and is gated per-port. With NO host-hole zone the
+  # UNCONDITIONAL accept stands, preserving the documented property that
+  # virtdev-ssh needs no conntrack (a notrack-on-lo host rule cannot break it) —
+  # and passt's --map-host-loopback none still blocks guest-initiated loopback in
+  # every zone, so there is nothing to gate. SAFETY of the narrowed form rests on
+  # passt always performing a real connect(2) for guest flows: the host-side
+  # packet is therefore SYN-first -> ct new -> gated by the zone (NOT on a generic
+  # "established follows new", which is false under nf_conntrack_tcp_loose). Only
+  # the SSH-reply leg (passt as the accepting server) is ct established. `related`
+  # is deliberately excluded. (See DESIGN.md and the spec §4.2/§7.)
+  if (( any_hole )); then
+    printf '    ip daddr 127.0.0.1 ct state established accept\n'
+    printf '    ip6 daddr ::1 ct state established accept\n'
+  else
+    printf '    ip daddr 127.0.0.1 accept\n'
+    printf '    ip6 daddr ::1 accept\n'
+  fi
+  # One cgroup-ancestry jump per zone that owns a slice: the built-in relaxation
+  # zones (everything but 'none') plus every custom zone. 'none' has no jump — the
+  # terminal drop is its policy. Slices are named through firewall_slice_for (the
+  # single source of truth), so launch (systemd-run --slice) and rule can't drift.
+  # Uniform `jump zone_<z>`; each target chain is emitted below.
+  local slice
+  for z in $(firewall_relaxation_zones) "${firewall_gen_zones[@]}"; do
+    slice="$(firewall_slice_for "${z}")"
+    printf '    socket cgroupv2 level %s "%s/%s" jump zone_%s\n' "${zone_level}" "${base}" "${slice}" "${z}"
+  done
+  printf '    drop\n'                          # none + strays: deny by default
   printf '  }\n'
-  # Policy chain for the `wan` jump verdict above: drop host + LAN, accept the
-  # rest (WAN). `full` needs no chain (its verdict is a direct accept); `none`
-  # needs none (the terminal drop is its policy).
+  # Built-in base chains — reusable jump targets; custom chains compose on them.
+  # zone_none is the floor (also the base for `base none` custom zones); the
+  # built-in 'none' machines reach the terminal drop above, not this chain.
+  printf '  chain zone_none { drop }\n'
   printf '  chain zone_wan {\n'
-  printf '    fib daddr type local drop\n'   # the host itself (its LAN IP / 0.0.0.0 services)
+  printf '    fib daddr type local drop\n'     # the host itself (its LAN IP / 0.0.0.0 services)
   printf '    ip daddr @lan_v4 drop\n'
   printf '    ip6 daddr @lan_v6 drop\n'
-  printf '    accept\n'                       # WAN
+  printf '    accept\n'                         # WAN
   printf '  }\n'
+  printf '  chain zone_lan {\n'
+  printf '    ip daddr @lan_v4 accept\n'
+  printf '    ip6 daddr @lan_v6 accept\n'
+  printf '    fib daddr type local accept\n'    # host + LAN
+  printf '    drop\n'                            # WAN blocked
+  printf '  }\n'
+  printf '  chain zone_full { accept }\n'
+  # Custom-zone chains: bind-agnostic per-port host holes (fib daddr type local
+  # matches loopback AND the host's LAN IPs), THEN jump to the base policy so the
+  # holes win over the base host drop.
+  local spec pnum protos protoset
+  local -a specs
+  for z in "${firewall_gen_zones[@]}"; do
+    printf '  chain zone_%s {\n' "${z}"
+    IFS=';' read -r -a specs <<<"${firewall_gen_ports[${z}]}"
+    for spec in "${specs[@]}"; do
+      [[ -z "${spec}" ]] && continue
+      read -r pnum protos <<<"${spec}"          # "1234 tcp udp" -> pnum=1234, protos="tcp udp"
+      protoset="${protos// /, }"                # nft set form: "tcp, udp"
+      printf '    fib daddr type local meta l4proto { %s } th dport %s accept\n' "${protoset}" "${pnum}"
+    done
+    printf '    jump zone_%s\n' "${firewall_gen_base[${z}]}"
+    printf '  }\n'
+  done
   printf '}\n'
 }
 
@@ -182,21 +271,39 @@ firewall_require_linger() {
     || error 98 <<<"lingering is not enabled for uid ${uid}; the firewall pins must run boot->shutdown. Enable it:  loginctl enable-linger ${uid}"
 }
 
-# Enable + start the resident pins AS THE USER. This materialises the
-# virtdev-<zone>.slice cgroup dirs (a started-but-empty slice has none) before
-# the generator's nft -c and the holder's wait need them. One pin per relaxation
-# zone — the same set the generator emits rules for — so the two never drift.
-# `enable --now` = start now + boot persistence.
+# Enable + start the resident pins AS THE USER, then RECONCILE. This materialises
+# the virtdev-<zone>.slice cgroup dirs (a started-but-empty slice has none) before
+# the generator's nft -c and the holder's wait need them. The pinned set is the
+# built-in relaxation zones PLUS every custom zone — the same set the generator
+# emits rules and dispatch for — so the two never drift. `enable --now` = start
+# now + boot persistence. Reconcile disables a pin whose zone no longer exists, so
+# a removed custom zone leaves no immortal sleep-infinity unit or stale cgroup.
 firewall_start_pins() {
   local -r uid="${1:?firewall_start_pins: uid required}"
   local zone
+  local -A desired=()
   local -a units=()
   while IFS= read -r zone; do
+    desired["${zone}"]=1
     units+=( "virtdev-firewall-pin@${zone}.service" )
   done < <(firewall_relaxation_zones)
-  [[ ${#units[@]} -gt 0 ]] || return 0
-  firewall_user_systemctl "${uid}" enable --now "${units[@]}" \
-    || error 94 <<<"failed enabling the firewall pins (${units[*]}) for uid ${uid}. Is the user manager running under linger?"
+  for zone in "${firewall_gen_zones[@]}"; do
+    desired["${zone}"]=1
+    units+=( "virtdev-firewall-pin@${zone}.service" )
+  done
+  if [[ ${#units[@]} -gt 0 ]]; then
+    firewall_user_systemctl "${uid}" enable --now "${units[@]}" \
+      || error 94 <<<"failed enabling the firewall pins (${units[*]}) for uid ${uid}. Is the user manager running under linger?"
+  fi
+  # Reconcile: disable any loaded pin instance whose zone is no longer defined.
+  # Best-effort — a disable failure must not abort an otherwise successful apply.
+  local u z
+  while IFS= read -r u; do
+    [[ "${u}" == virtdev-firewall-pin@*.service ]] || continue
+    z="${u#virtdev-firewall-pin@}"; z="${z%.service}"
+    [[ -v "desired[${z}]" ]] && continue
+    firewall_user_systemctl "${uid}" disable --now "${u}" 2>/dev/null || true
+  done < <(firewall_user_systemctl "${uid}" list-units --all --plain --no-legend 'virtdev-firewall-pin@*.service' 2>/dev/null | awk '{print $1}')
 }
 
 # Make the holder + pin units available to systemd, then enable the holder.
@@ -236,16 +343,24 @@ firewall_install_units() {
   systemctl reset-failed "${firewall_holder_unit}" 2>/dev/null || true
 }
 
-# apply: linger gate -> install units -> start pins -> generate/validate/install
-# -> restart holder. The pins must start BEFORE generate: nft -c resolves the
-# zone-slice cgroup paths to inodes, so those dirs must already exist (verified).
-# The holder (Type=notify) records firewall.base post-load; apply does not.
+# apply: linger gate -> load+validate custom zones -> install units -> start pins
+# -> generate/validate/install -> restart holder -> write firewall.zones. Custom
+# zones are validated FIRST: a malformed zone-definition file aborts (exit 89)
+# before any system mutation. The pins must start BEFORE generate: nft -c resolves
+# the zone-slice cgroup paths to inodes, so those dirs must already exist. The
+# holder (Type=notify) records firewall.base post-load; apply records the realized
+# manifest firewall.zones (read by the rootless launch) only after the restart
+# wins, so it never claims a zone is active before the ruleset actually loaded.
 firewall_apply() {
   local base
   base="$(firewall_target_base)"            # validates SUDO_UID
   local -r uid="${SUDO_UID}"                 # validated by firewall_target_base above
 
   firewall_require_linger "${uid}"
+
+  # Parse the user's custom zones up front (root, via SUDO_UID) so a bad file
+  # aborts before we touch units, pins, or the ruleset.
+  firewall_load_custom_zones "${uid}"
 
   install -d -m 0755 -o root -g root "${firewall_etc_dir}"
 
@@ -286,7 +401,35 @@ firewall_apply() {
   # diverge behind a green service.
   systemctl restart virtdev-firewall.service \
     || error 95 <<<"installed ${firewall_nft_file} but the holder failed to load it (virtdev-firewall.service)."
+
+  # The restart returned only after the holder (Type=notify) loaded + verified the
+  # ruleset, so the realized manifest is now safe to publish for the launch side.
+  firewall_write_zones_manifest
+
   printf >&2 'host egress lockdown applied: %s\n' "${firewall_nft_file}"
+}
+
+# firewall_write_zones_manifest -> /etc/virtdev/firewall.zones, ATOMICALLY (mktemp
+# + rename, like firewall_record_baseline) so a concurrent rootless reader never
+# sees a torn write. One line "<zonename> <needs-hostmap 0|1>" per realized zone:
+# all built-ins (hostmap 0 — they never use the passt remap) and every custom zone
+# (hostmap 1 iff it declares >=1 port). Overwrites, so the set shrinks when a zone
+# is removed. Written only AFTER a successful holder load, so it reflects exactly
+# what is loaded. World-readable.
+firewall_write_zones_manifest() {
+  local tmp z hostmap b
+  tmp="$(mktemp -p "${firewall_etc_dir}" firewall.zones.XXXXXX)" \
+    || error 94 <<<"failed creating the realized-zone manifest temp file"
+  {
+    while IFS= read -r b; do printf '%s 0\n' "${b}"; done < <(firewall_zones)
+    for z in "${firewall_gen_zones[@]}"; do
+      hostmap=0; [[ -n "${firewall_gen_ports[${z}]:-}" ]] && hostmap=1
+      printf '%s %s\n' "${z}" "${hostmap}"
+    done
+  } > "${tmp}"
+  chmod 0644 "${tmp}"
+  mv -f "${tmp}" "${firewall_zones_file}" \
+    || { rm -f "${tmp}"; error 94 <<<"failed installing ${firewall_zones_file}"; }
 }
 
 # firewall_record_baseline <uid> <base>
@@ -355,13 +498,18 @@ firewall_hold() {
 
   # 2. Wait for the pin-backed zone cgroup DIRS (what nft resolves to inodes; an
   #    empty slice has no dir). Bounded ~30 s; on timeout exit 99 (distinct from
-  #    97) -> service failed -> guard reads down (fail CLOSED). Same relaxation
-  #    set the generator emits rules for, so the wait and the rules cannot drift.
+  #    97) -> service failed -> guard reads down (fail CLOSED). The set is derived
+  #    from the INSTALLED RULESET — every "<base>/virtdev-<zone>.slice" dispatch
+  #    literal — NOT from a registry enumeration: the holder is a root service with
+  #    no access to the user's custom-zone config, and deriving from the ruleset
+  #    covers exactly the slices nft will resolve (built-ins + customs), no drift.
+  #    The base-jump literal ends in "virtdev.slice" (no -<zone>), so it is not
+  #    matched here.
   local -a waitdirs=()
-  local zone
-  while IFS= read -r zone; do
-    waitdirs+=( "/sys/fs/cgroup/${base}/$(firewall_slice_for "${zone}")" )
-  done < <(firewall_relaxation_zones)
+  local s
+  while IFS= read -r s; do
+    waitdirs+=( "/sys/fs/cgroup/${s}" )
+  done < <(sed -n 's#.*"\([^"]*/virtdev-[a-z0-9_]\+\.slice\)".*#\1#p' "${firewall_nft_file}" | sort -u)
   local i d ok
   for (( i = 0; i < 150; i++ )); do
     ok=1
