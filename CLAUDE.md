@@ -84,10 +84,11 @@ Same error → same code, everywhere:
 | 86 | QEMU command not found (pre-flight before exec) | `virtdev-netexec` shim |
 | 87 | no port assigned (virtual machine not running) | `port_require` |
 | 88 | host egress lockdown not active / stale baseline / wrong user | `firewall_require` |
+| 89 | invalid zone-definition file (apply, via `firewall_zone_parse`) | `bin/virtdev-firewall` |
 | 90 | QEMU exited before active (non-passt status) | `qemu_activation_classify` |
 | 91 | unit did not become active before deadline | `qemu_activation_classify` |
 | 92 | apply: not invoked via sudo / target identity indeterminate | `bin/virtdev-firewall` |
-| 93 | apply: ruleset rejected (`nft -c`, or a registry zone lacks a policy case) | `bin/virtdev-firewall` |
+| 93 | apply: ruleset rejected by `nft -c` | `bin/virtdev-firewall` |
 | 94 | apply: unit install / daemon-reload / enable failure | `bin/virtdev-firewall` |
 | 95 | apply: ruleset installed but the holder failed to load it | `bin/virtdev-firewall` |
 | 96 | holder: ruleset file missing or uid/base underivable | `bin/virtdev-firewall` |
@@ -431,15 +432,20 @@ glob in `PKGBUILD` picks it up automatically.
   root tool + a resident holder unit and a `--user` pin template under
   `systemd/`) filters guest egress per **zone**, matched to the machines'
   systemd `--user` slice cgroups. `nftables` is a runtime dependency. The
-  ruleset is FIXED (project-agnostic): one base jump narrows to `virtdev.slice`
-  (every machine, by cgroup ancestry — scoped, catches descendants only), then
-  one jump per relaxation zone. Key invariants:
-  - **Three zones, deny-by-default.** `none` (nothing but your SSH session),
-    `wan` (the internet; host + LAN blocked), `full` (host + LAN + WAN — the
-    explicit opt-out of host isolation; host and LAN move together). The zones
-    are a registry (`firewall_zone_known`); membership is data, each zone's
-    verdict is code in the generator. The default is `none` — both an omitted
-    `--zone` and an absent/invalid project `zone` file fall to it.
+  ruleset is project-agnostic (no per-project content) and EXTENSIBLE with custom
+  zones: one base jump narrows to `virtdev.slice` (every machine, by cgroup
+  ancestry — scoped, catches descendants only), then one jump per slice-owning
+  zone (built-in relaxation + customs). Key invariants:
+  - **Four built-in zones + custom zones, deny-by-default.** `none` (nothing but
+    your SSH session), `wan` (the internet; host + LAN blocked), `lan` (host + LAN,
+    no WAN), `full` (host + LAN + WAN — the explicit opt-out of host isolation;
+    host and LAN move together), plus user-authored custom zones (a built-in base
+    + per-port host holes in `~/.config/virtdev/zones/<name>`, realized at
+    `apply`). Built-ins are a static array (`firewall_zone_known`); the realized
+    set (built-ins + customs) is the root-owned manifest
+    `/etc/virtdev/firewall.zones`, the single source the rootless launch reads.
+    The default is `none` — both an omitted `--zone` and an absent/invalid project
+    `zone` file fall to it.
   - **Every launch passes `--slice`.** `firewall_slice_for <zone>` →
     `virtdev-<zone>.slice` is the single helper producing slice names;
     `virtdev-start`, `virtdev-maintain`, and the ruleset generator all call it.
@@ -454,9 +460,10 @@ glob in `PKGBUILD` picks it up automatically.
   - **Resident pins materialise the cgroups.** A started-but-empty slice has no
     cgroup dir, so nft (which resolves cgroup paths to inodes at load) cannot
     reference it. `virtdev-firewall-pin@<zone>.service` (`sleep infinity`,
-    `Restart=always`, one per relaxation zone, enabled `--now` by `apply`) holds
-    `virtdev-{wan,full}.slice` and their parent `virtdev.slice` with stable
-    inodes. **Linger is required** so they run boot→shutdown.
+    `Restart=always`, one per relaxation zone — `wan`/`lan`/`full` and every
+    custom zone, enabled `--now` and reconciled by `apply`) holds those slices and
+    their parent `virtdev.slice` with stable inodes. **Linger is required** so they
+    run boot→shutdown.
   - **The guard is fail-closed on staleness.** `firewall_require` (and the
     shared `firewall_is_active` behind `status`/`list`) checks the holder is
     `active` AND the recorded base inode (`/etc/virtdev/firewall.base`, written

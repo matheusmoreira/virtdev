@@ -8,13 +8,20 @@
 # bin/virtdev-firewall, NOT here (mirroring the passt-lib / netexec-tool
 # split).
 #
-# Zones form a registry (firewall_zone_known). v1 members are the three scope
-# zones; each machine launches into exactly one per-zone slice, shared across
-# projects (no per-project slice). 'none' is the deny-by-default floor.
+# Zones are four BUILT-INS plus the user's CUSTOM zones; each machine launches
+# into exactly one per-zone slice, shared across projects (no per-project slice).
+# 'none' is the deny-by-default floor.
 #
 #   none   virtdev-none.slice   nothing reachable (only the host SSH session)
 #   wan    virtdev-wan.slice    + WAN (internet); host + LAN blocked
+#   lan    virtdev-lan.slice    + the local environment (host + LAN); no WAN
 #   full   virtdev-full.slice   + the local environment (host + LAN + WAN)
+#   <name> virtdev-<name>.slice a custom zone: a built-in base + per-port host holes
+#
+# The built-ins are a static array (firewall_zone_known); the realized set
+# (built-ins + customs) is the root-owned manifest /etc/virtdev/firewall.zones,
+# written by `apply` and read here. ONLY `apply` (in bin/virtdev-firewall) reads
+# the user's zones/ config; the predicates below read the manifest.
 #
 # Public:
 #   firewall_slice_for <zone>
@@ -201,8 +208,9 @@ firewall_zones_active() {
 # firewall_slice_for <zone> -> virtdev-<zone>.slice
 # The single source of truth for the per-zone slice name, shared by the launch
 # path (systemd-run --slice) and the rule generator (cgroup literal), so the two
-# can never drift. No systemd-escape: the zone vocabulary is fixed and validated,
-# never user-derived, so there is nothing to collide.
+# can never drift. Validates the zone NAME's charset — built-ins and user-derived
+# custom names alike; see the body for why the charset gate (no dashes) is
+# load-bearing now that names are user-derived.
 firewall_slice_for() {
   local -r zone="${1:?firewall_slice_for: zone required}"
   # A slice NAME is formed from any charset-valid zone (built-ins are charset-valid
@@ -215,20 +223,18 @@ firewall_slice_for() {
 }
 
 # firewall_zone_of_slice <slice-unit-name> -> the zone whose slice this is, else
-# 'none'. The inverse of firewall_slice_for, registry-driven so the forward and
-# reverse maps cannot drift: a zone added to firewall_zone_known is recognised
-# here automatically, and a stray / legacy / unknown slice yields 'none' (the
-# most restrictive — matching the rebuild paths' catch-all). Used by virtdev-list
-# (display) and virtdev-recreate / virtdev-upgrade (restore the prior zone).
+# 'none'. The inverse of firewall_slice_for: strips the virtdev-….slice affixes
+# and validates the result via firewall_zone_valid (a built-in or a custom zone
+# realized in the manifest), so a custom zone is recognised automatically and a
+# stray / legacy / unknown slice yields 'none' (the most restrictive — matching
+# the rebuild paths' catch-all). Used by virtdev-list (display) and
+# virtdev-recreate / virtdev-upgrade (restore the prior zone).
 firewall_zone_of_slice() {
   local -r slice="${1:-}"
   local zone="${slice#virtdev-}"
   zone="${zone%.slice}"
-  # Reconstruct-and-validate: the name must round-trip to the exact slice AND be a
-  # known zone (built-in, or a custom zone realized in firewall.zones). A stray /
-  # legacy / unknown slice yields 'none' (the most restrictive — matching the
-  # rebuild paths' catch-all). Registry-driven, so a custom zone added to the
-  # realized set is recognised here automatically (no drift with the launch side).
+  # Reconstruct-and-validate: the name must round-trip to the exact slice AND pass
+  # firewall_zone_valid (a built-in, or a custom zone realized in the manifest).
   if [[ "${slice}" == "virtdev-${zone}.slice" ]] && firewall_zone_valid "${zone}"; then
     printf '%s\n' "${zone}"
   else

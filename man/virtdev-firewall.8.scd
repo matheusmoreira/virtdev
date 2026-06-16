@@ -91,7 +91,7 @@ slice _virtdev-<zone>.slice_. There are four built-ins, plus any *custom zones*.
 	Adds the local environment AND the WAN: host, LAN, and internet. The explicit
 	opt-out of host isolation; host and LAN move together.
 
-A *custom zone* is a user file _$XDG_CONFIG_HOME/virtdev/zones/<name>_ declaring a
+A *custom zone* is a user file _~/.config/virtdev/zones/<name>_ declaring a
 *base* (one of the built-ins) and one or more *port* lines - e.g. _base wan_ and
 _port 1234 tcp udp_. It opens those host ports (reaching a host service the guest
 drives, such as a gdbserver) on top of the base, without granting the whole LAN.
@@ -140,9 +140,11 @@ _/etc/virtdev/firewall.zones_
 	zone and decide the host-loopback map; the user's _zones/_ config itself is
 	read only by _apply_.
 
-_$XDG_CONFIG_HOME/virtdev/zones/<name>_
+_~/.config/virtdev/zones/<name>_
 	A custom zone-definition file (a *base* line and one or more *port* lines).
-	Read by _apply_ only, via _SUDO_UID_. Commit it to your dotfiles.
+	Read by _apply_ only, resolved from the target user's home via _SUDO_UID_ — the
+	default _~/.config_ location; a non-default _XDG_CONFIG_HOME_ is *not* honored
+	for zone definitions. Commit it to your dotfiles.
 
 _/usr/lib/systemd/system/virtdev-firewall.service_
 	The resident holder. A packaged install ships it here; a source checkout's
