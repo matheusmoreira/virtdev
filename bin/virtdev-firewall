@@ -176,7 +176,7 @@ firewall_generate() {
   # Built-in base chains — reusable jump targets; custom chains compose on them.
   # zone_none is the floor (also the base for `base none` custom zones); the
   # built-in 'none' machines reach the terminal drop above, not this chain.
-  printf '  chain zone_none { drop }\n'
+  printf '  chain zone_none { drop; }\n'
   printf '  chain zone_wan {\n'
   printf '    fib daddr type local drop\n'     # the host itself (its LAN IP / 0.0.0.0 services)
   printf '    ip daddr @lan_v4 drop\n'
@@ -189,7 +189,7 @@ firewall_generate() {
   printf '    fib daddr type local accept\n'    # host + LAN
   printf '    drop\n'                            # WAN blocked
   printf '  }\n'
-  printf '  chain zone_full { accept }\n'
+  printf '  chain zone_full { accept; }\n'
   # Custom-zone chains: bind-agnostic per-port host holes (fib daddr type local
   # matches loopback AND the host's LAN IPs), THEN jump to the base policy so the
   # holes win over the base host drop.
