@@ -625,8 +625,11 @@ holder unit → `/etc/systemd/system` and the `--user` pin template →
 `/etc/systemd/user` (the split is user-vs-system, NOT by file extension), starts
 the pins AS THE USER (so the zone cgroups exist), **constructs** the cgroup base
 path from the validated uid (never searches the user-writable cgroup tree),
-generates to a temp file on the same filesystem, validates it (`nft -c`, which
-DOES resolve the cgroup paths — so the pins must be up first), atomically
+generates to a temp file on the same filesystem, validates it with `nft -c` **in a
+throwaway network namespace** (`unshare --net`: on a re-apply the live `inet
+virtdev` is owner-held by the running holder, so a plain `nft -c` of the ruleset's
+`destroy`/recreate is rejected `EPERM`; a fresh netns has no such table, while
+cgroup2 paths still resolve — so the pins must be up first), atomically
 `rename(2)`s it over `/etc/virtdev/firewall.nft`, and restarts the holder. The
 atomic install means an interrupted apply leaves the prior good ruleset intact.
 The ruleset is project-agnostic, so a project created later is covered

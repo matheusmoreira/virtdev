@@ -379,9 +379,18 @@ firewall_apply() {
 
   firewall_generate "${base}" >"${tmp}"
 
-  # Validate before installing. nft -c needs root + a live netlink socket
-  # (a hardware gate on the dev box), and the pin-backed zone slices to exist.
-  nft -c -f "${tmp}" \
+  # Validate before installing, in a THROWAWAY network namespace. The ruleset
+  # begins `destroy table inet virtdev`, but on a RE-apply the live table is
+  # owner,persist and held by the running holder — so a plain `nft -c` of that
+  # destroy/recreate is rejected EPERM ("Operation not permitted") by the owner
+  # protection, which would break every re-apply (the common case once the
+  # lockdown is up). A fresh netns has no `inet virtdev` table, so destroy/add
+  # validate cleanly; cgroup2 paths are global (not netns-scoped) so
+  # `socket cgroupv2` still resolves to the pin-backed slices. This validates the
+  # exact ruleset the holder will load — the holder's own reload succeeds for the
+  # same no-conflict reason (its predecessor's owner socket is gone before it
+  # loads). nft -c + unshare both need root, which apply has.
+  unshare --net -- nft -c -f "${tmp}" \
     || error 93 <<<"generated ruleset failed validation (nft -c). Left ${firewall_nft_file} unchanged."
 
   # Atomic install: rename(2) the validated temp over the target, then fix
