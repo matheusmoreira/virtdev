@@ -117,6 +117,10 @@ firewall_zones() {
 # the vocabulary was a fixed, trusted set.
 firewall_zone_name_valid() {
   local -r name="${1:-}"
+  # LC_ALL=C so [a-z] is byte-wise ASCII, not locale-collated: under e.g.
+  # en_US.UTF-8 a bare [a-z] also matches accented letters (café), which would
+  # then produce an invalid slice/chain name and brick apply at nft -c.
+  local LC_ALL=C
   [[ "${name}" =~ ^[a-z][a-z0-9_]*$ && "${#name}" -le "${firewall_zone_name_max}" ]]
 }
 
@@ -283,7 +287,8 @@ firewall_zone_parse() {
       base)
         (( base_seen )) && { _zp_reason="duplicate 'base' directive"; return 1; }
         base_seen=1
-        rest="${rest%%[[:space:]]*}"
+        [[ "${rest}" == *[[:space:]]* ]] \
+          && { _zp_reason="base takes exactly one zone, got '${rest}'"; return 1; }
         [[ -v "firewall_zone_known[${rest}]" ]] \
           || { _zp_reason="base must be a built-in zone (none|wan|lan|full), got '${rest}'"; return 1; }
         _zp_base="${rest}"
@@ -293,9 +298,12 @@ firewall_zone_parse() {
         local -a fields=()
         read -r -a fields <<<"${rest}"
         local pnum="${fields[0]:-}"
-        [[ "${pnum}" =~ ^[1-9][0-9]*$ ]] \
-          || { _zp_reason="port number must be a positive integer, got '${pnum:-<empty>}'"; return 1; }
-        (( 10#${pnum} <= 65535 )) || { _zp_reason="port ${pnum} out of range (1-65535)"; return 1; }
+        # 1-5 digits, no leading zero: bounds the value to <=99999 BEFORE the
+        # arithmetic compare, so a huge string cannot wrap a 64-bit bash integer
+        # back into range.
+        [[ "${pnum}" =~ ^[1-9][0-9]{0,4}$ ]] \
+          || { _zp_reason="port must be a 1-5 digit positive integer, got '${pnum:-<empty>}'"; return 1; }
+        (( pnum <= 65535 )) || { _zp_reason="port ${pnum} out of range (1-65535)"; return 1; }
         [[ "${#fields[@]}" -ge 2 ]] \
           || { _zp_reason="port ${pnum}: at least one protocol required (tcp and/or udp)"; return 1; }
         local -a protos=()
@@ -324,6 +332,9 @@ firewall_zone_parse() {
 # returns non-zero (fail-closed) if absent / unreadable / non-numeric.
 firewall_baseline() {
   local line u i
+  # LC_ALL=C so the [0-9] guards below are byte-wise ASCII (a non-ASCII "digit" must
+  # not pass as a valid uid/inode), matching the pin in port / generation_read.
+  local LC_ALL=C
   [[ -f "${firewall_base_file}" ]] || return 1
   IFS= read -r line < "${firewall_base_file}" 2>/dev/null || return 1
   read -r u i _ <<<"${line}"
