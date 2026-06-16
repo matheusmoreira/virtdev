@@ -37,6 +37,8 @@
 #                                       (^[a-z][a-z0-9_]*$, <=32, no dashes/dots).
 #   firewall_zone_realized <zone>       0 iff <zone> is in the realized manifest.
 #   firewall_zone_needs_hostmap <zone>  0 iff the manifest marks <zone> hostmap=1.
+#   firewall_zones_active               Echoes realized zone names (manifest, or
+#                                       built-ins if the manifest is absent).
 #   firewall_zone_parse <file> <base> <ports> <reason>
 #                                       Parse a zone-definition file (apply only);
 #                                       returns 0 + base/ports, or non-zero + reason.
@@ -156,6 +158,18 @@ firewall_zone_needs_hostmap() {
     [[ "${n}" == "${zone}" ]] && { [[ "${flag}" == "1" ]]; return; }
   done < "${firewall_zones_file}"
   return 1
+}
+
+# firewall_zones_active -> the names of all currently-realized zones, one per line:
+# the first field of every firewall.zones line (built-ins + customs), or — when the
+# manifest is absent (e.g. a lockdown applied by an older virtdev) — the built-ins.
+# For human-facing "active zones" lists and the launch guard's remediation message.
+firewall_zones_active() {
+  if [[ -f "${firewall_zones_file}" ]]; then
+    awk '{print $1}' "${firewall_zones_file}"
+  else
+    firewall_zones
+  fi
 }
 
 # firewall_slice_for <zone> -> virtdev-<zone>.slice

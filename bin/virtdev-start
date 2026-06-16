@@ -70,8 +70,8 @@ validate_project_name "${project}"
 # helper so a new path cannot silently skip --slice and escape the baseline.
 zone="${flags[zone]:-}"
 if [[ -n "${zone}" ]]; then
-  firewall_zone_valid "${zone}" \
-    || error 64 <<<"unknown --zone '${zone}'. Known zones: $(firewall_zones | paste -sd' ')"
+  firewall_zone_name_valid "${zone}" \
+    || error 64 <<<"invalid --zone '${zone}' (lowercase letters/digits/_, no dashes or dots)"
 else
   zone="$(firewall_zone_default "${project}")"
 fi
@@ -84,6 +84,16 @@ if (( unfiltered )); then
   firewall_require --unfiltered
 else
   firewall_require
+  # Realized-zone guard: the resolved zone (explicit --zone or the project
+  # default) must be a built-in or a custom zone present in the loaded ruleset's
+  # manifest. A charset-valid but unapplied name (a typo, or a zone-definition
+  # file not yet applied) fails HERE with guidance, instead of launching into an
+  # empty slice that silently locks. (firewall.zones absent -> built-ins only.)
+  firewall_zone_valid "${zone}" || error 22 <<MESSAGE
+zone '${zone}' is not active in the host firewall (unknown, or defined but not applied).
+Active zones: $(firewall_zones_active | paste -sd' ')
+If you just created or edited a custom zone, apply it: sudo virtdev firewall apply
+MESSAGE
 fi
 slice="$(firewall_slice_for "${zone}")"
 
@@ -264,6 +274,14 @@ qemu_command qemu_argv \
 # can query ExecMainStatus or similar post-mortem properties. virtdev-stop
 # reads those properties after the VM exits; leaving --collect off keeps
 # the unit loaded until reset-failed or the next virtdev-start clears it.
+# Host-hole zones need passt's loopback remap; firewall.zones records which zones
+# do (built-ins never). Pass the netexec flag iff so — the per-port restriction is
+# enforced by the nft rules, not passt, whose host map is all-or-nothing.
+declare -a netexec_opts=(--socket "${passt_sock}" --forward "${port}")
+if firewall_zone_needs_hostmap "${zone}"; then
+  netexec_opts+=(--allow-host-loopback)
+fi
+
 systemd-run \
     --user \
     --unit="${unit}" \
@@ -273,8 +291,7 @@ systemd-run \
     --property="TimeoutStopSec=${VIRTDEV_STOP_TIMEOUT}" \
     -- \
     "${virtdev_bin_directory}/virtdev-netexec" \
-        --socket "${passt_sock}" \
-        --forward "${port}" \
+        "${netexec_opts[@]}" \
         -- \
         "${qemu_argv[@]}"
 
