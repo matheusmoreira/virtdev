@@ -417,19 +417,29 @@ firewall_apply() {
 # is removed. Written only AFTER a successful holder load, so it reflects exactly
 # what is loaded. World-readable.
 firewall_write_zones_manifest() {
-  local tmp z hostmap b
-  tmp="$(mktemp -p "${firewall_etc_dir}" firewall.zones.XXXXXX)" \
-    || error 94 <<<"failed creating the realized-zone manifest temp file"
-  {
-    while IFS= read -r b; do printf '%s 0\n' "${b}"; done < <(firewall_zones)
-    for z in "${firewall_gen_zones[@]}"; do
-      hostmap=0; [[ -n "${firewall_gen_ports[${z}]:-}" ]] && hostmap=1
-      printf '%s %s\n' "${z}" "${hostmap}"
-    done
-  } > "${tmp}"
-  chmod 0644 "${tmp}"
-  mv -f "${tmp}" "${firewall_zones_file}" \
-    || { rm -f "${tmp}"; error 94 <<<"failed installing ${firewall_zones_file}"; }
+  local tmp z hostmap b ok=1
+  tmp="$(mktemp -p "${firewall_etc_dir}" firewall.zones.XXXXXX)" || tmp=""
+  if [[ -n "${tmp}" ]]; then
+    {
+      while IFS= read -r b; do printf '%s 0\n' "${b}"; done < <(firewall_zones)
+      for z in "${firewall_gen_zones[@]}"; do
+        hostmap=0; [[ -n "${firewall_gen_ports[${z}]:-}" ]] && hostmap=1
+        printf '%s %s\n' "${z}" "${hostmap}"
+      done
+    } > "${tmp}" && chmod 0644 "${tmp}" && mv -f "${tmp}" "${firewall_zones_file}" || ok=0
+  else
+    ok=0
+  fi
+  if (( ! ok )); then
+    # Fail CLOSED: leave NO manifest rather than a stale one. An absent manifest
+    # falls to the legacy built-in floor (custom zones refuse with "run apply"); a
+    # STALE one could mark a zone hostmap=1 against a freshly-loaded ruleset that
+    # no longer narrows the loopback accept (the last host-hole zone was removed),
+    # so a launch would enable the passt host map with no per-port nft gate — a
+    # fail-OPEN to the whole host loopback. Found by the impl security review (S1).
+    rm -f "${tmp}" "${firewall_zones_file}"
+    error 94 <<<"failed writing ${firewall_zones_file}; removed any stale manifest — re-run: sudo virtdev firewall apply"
+  fi
 }
 
 # firewall_record_baseline <uid> <base>
