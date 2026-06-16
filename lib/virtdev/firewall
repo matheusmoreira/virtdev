@@ -29,7 +29,7 @@
 #       an unknown zone.
 #   firewall_zone_of_slice <slice-unit-name>
 #       Inverse of firewall_slice_for: echoes the zone for a slice unit name, or
-#       'none' for a stray/unknown slice. Registry-driven (no drift).
+#       'none' for a stray/unknown slice. Manifest-backed (via firewall_zone_valid).
 #   firewall_zone_default <project>
 #       Echoes the project's configured default zone, read from the host-side
 #       file ${XDG_CONFIG_HOME}/virtdev/projects/<name>/zone. Fails CLOSED to
@@ -95,10 +95,11 @@ readonly firewall_zones_file="/etc/virtdev/firewall.zones"
 # so this is not the sun_path cap that bounds project names.
 readonly firewall_zone_name_max=32
 
-# Zone registry. All three are explicit, selectable zones with their own slice;
-# 'none' is the deny-by-default floor (enforced by the ruleset's terminal drop,
-# not a dedicated rule). Declared global because libraries are sourced from
-# within import(), where a bare `declare -A` would be function-local.
+# Built-in zone registry. All four are explicit, selectable zones with their own
+# slice; 'none' is the deny-by-default floor (enforced by the ruleset's terminal
+# drop, not a dedicated rule). Custom zones are NOT here — they live in the
+# realized manifest (firewall.zones). Declared global because libraries are sourced
+# from within import(), where a bare `declare -A` would be function-local.
 declare -gA firewall_zone_known=([none]=1 [wan]=1 [lan]=1 [full]=1)
 # The built-ins a PRE-MANIFEST (legacy Phase-2) lockdown has — the absent-manifest
 # floor shared by firewall_zone_valid and firewall_zones_active so they agree.
@@ -291,6 +292,10 @@ firewall_zone_parse() {
   local -n _zp_ports="${3:?firewall_zone_parse: out_ports required}"
   local -n _zp_reason="${4:?firewall_zone_parse: out_reason required}"
   _zp_base=""; _zp_ports=(); _zp_reason=""
+  # Byte-wise ASCII for every match below (the port [0-9] regex especially): under
+  # a UTF-8 locale [0-9] also collates non-ASCII digits, which would pass the regex
+  # and then choke the arithmetic compare with a misleading message.
+  local LC_ALL=C
   [[ -f "${file}" && ! -L "${file}" ]] || { _zp_reason="not a regular file"; return 1; }
   [[ "$(stat -c %s "${file}" 2>/dev/null || echo 99999)" -le 4096 ]] \
     || { _zp_reason="file too large (max 4096 bytes)"; return 1; }

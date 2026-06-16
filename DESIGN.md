@@ -561,10 +561,10 @@ table inet virtdev {
     socket cgroupv2 level 5 "…/virtdev.slice/virtdev-gdb.slice"  jump zone_gdb   # a custom zone
     drop                                # none + strays: deny by default
   }
-  chain zone_none { drop }
-  chain zone_wan  { fib daddr type local drop; ip daddr @lan_v4 drop; ip6 daddr @lan_v6 drop; accept }
-  chain zone_lan  { ip daddr @lan_v4 accept; ip6 daddr @lan_v6 accept; fib daddr type local accept; drop }
-  chain zone_full { accept }
+  chain zone_none { drop; }
+  chain zone_wan  { fib daddr type local drop; ip daddr @lan_v4 drop; ip6 daddr @lan_v6 drop; accept; }
+  chain zone_lan  { ip daddr @lan_v4 accept; ip6 daddr @lan_v6 accept; fib daddr type local accept; drop; }
+  chain zone_full { accept; }
   chain zone_gdb {                      # custom: base wan + a hole to host:1234
     fib daddr type local meta l4proto { tcp, udp } th dport 1234 accept
     jump zone_wan
