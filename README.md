@@ -17,14 +17,18 @@ enforces a per-machine **zone**:
 |--------|----------------------------------------|------------|
 | `none` | nothing (just your SSH session)        | blocked    |
 | `wan`  | the internet                           | blocked    |
+| `lan`  | your local environment, no internet    | allowed    |
 | `full` | the internet + your local environment  | allowed    |
 
-`wan` is the usual working zone (package managers, Claude Code); `full` is the
-explicit opt-out of host isolation (host and LAN move together — the host is a
-LAN device). The filter is **opt-in to install**: run `sudo virtdev firewall
-apply` once (see One-time setup); until you do, `virtdev start` refuses to launch
-(override with `--unfiltered`). A project's default zone comes from its `zone`
-dotfile; `--zone` overrides it per launch.
+`wan` is the usual working zone (package managers, Claude Code); `lan` is the
+local-only zone (a LAN mirror or NAS, no internet); `full` is the explicit opt-out
+of host isolation (host and LAN move together — the host is a LAN device). You can
+also define **custom zones** that open a single host port — e.g. a host gdbserver
+the guest drives — on top of a base, without opening the whole LAN/WAN (see
+[Custom zones](#custom-zones)). The filter is **opt-in to install**: run `sudo
+virtdev firewall apply` once (see One-time setup); until you do, `virtdev start`
+refuses to launch (override with `--unfiltered`). A project's default zone comes
+from its `zone` dotfile; `--zone` overrides it per launch.
 
 ## Getting started
 
@@ -75,9 +79,40 @@ virtdev firewall status           # 'active' once the lockdown is loaded (rootle
 
 `apply` derives the cgroup match from your own user (run it via `sudo`, not as
 bare root). The ruleset is project-agnostic and the per-zone slices are shared,
-so a project created later is covered immediately — no re-apply per project. Set
-a project's default zone by writing `none`, `wan`, or `full` to
+so a project created later is covered immediately — no re-apply per project
+(adding or editing a **custom zone** does need a re-apply, since its rules live in
+the root ruleset). Set a project's default zone by writing a zone name — `none`,
+`wan`, `lan`, `full`, or a custom zone — to
 `~/.config/virtdev/projects/<name>/zone` (absent or invalid → `none`).
+
+### Custom zones
+
+Beyond the four built-ins you can define a **custom zone** that opens one or more
+host ports on top of a base — to reach a service on the host (e.g. a gdbserver the
+guest drives) without granting the whole LAN/WAN. Create a file at
+`~/.config/virtdev/zones/<name>` (commit it to your dotfiles — solve once, reuse):
+
+```
+# ~/.config/virtdev/zones/gdb
+base wan           # none | wan | lan | full
+port 1234 tcp udp  # one or more; at least one protocol is required (tcp and/or udp)
+```
+
+Then realize it (root — its rules live in the host ruleset) and launch into it:
+
+```bash
+sudo virtdev firewall apply        # validates + loads; re-run after any zone edit
+virtdev start myproject --zone gdb
+```
+
+Inside the guest the host service is reachable at the default gateway (e.g.
+`<gateway>:1234`, found with `ip route show default`). The zone is selected per
+launch (or as a project's `zone` default) and is transient — start without
+`--zone gdb` and you are back to the project's zone. Zone names are lowercase
+`[a-z0-9_]`, no dashes or dots. A custom zone is a **deliberate hole in host
+isolation**: the untrusted guest gets whatever the host service permits (driving a
+gdbserver is host code execution), so only open services you trust the project
+with.
 
 ### Create a project
 
@@ -235,7 +270,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | Command | Description |
 |---------|-------------|
 | `virtdev-create <project>` | Derive a project VM from the sealed base |
-| `virtdev-start <project> [--zone none\|wan\|full] [--unfiltered] [port]` | Start VM as a systemd user service (zone `none` by default, or the project's `zone` file; `--zone` overrides; `--unfiltered` skips the egress lockdown) |
+| `virtdev-start <project> [--zone <zone>] [--unfiltered] [port]` | Start VM as a systemd user service. `<zone>` is `none`/`wan`/`lan`/`full` or a custom zone; default is the project's `zone` file (else `none`); `--zone` overrides; `--unfiltered` skips the egress lockdown |
 | `virtdev-stop <project>` | ACPI shutdown with SIGTERM fallback |
 | `virtdev-move <old-name> <new-name>` | Rename a project (must be stopped) |
 | `virtdev-destroy [-y] <project>` | Delete a project VM (confirmation required) |
@@ -425,12 +460,13 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
   ssh_config                          system-level SSH config for all projects
   triggers/
     pre-ssh, post-ssh                 system-level trigger scripts
+  zones/<name>                        custom firewall zone definition (base + port holes; needs `sudo virtdev firewall apply`)
   maintenance/
     provision                       auto-run by virtdev-maintain (dotfiles, tools)
     inventory                       before/after diff by virtdev-maintain
   projects/<name>/
     ssh_config                        per-project SSH config (overrides system)
-    zone                              default network zone: none|wan|full (default none)
+    zone                              default network zone: none|wan|lan|full or a custom zone (default none)
     triggers/
       pre-ssh, post-ssh              per-project trigger scripts (override system)
     manifest                       canonical backup manifest (survives nuke)

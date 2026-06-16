@@ -45,10 +45,11 @@ real LAN IP / `0.0.0.0` bindings (including the host's `sshd`) and the rest of
 the LAN. Phase 2 closes this with a **host-root nftables `inet virtdev` table**
 that filters the virtual machines' egress by destination, matched to the
 machines' systemd `--user` slice cgroups (`virtdev.slice` and below). Every
-machine launches into one of three **zone** slices and is filtered accordingly:
-`none` (the default — nothing reachable but the host→guest SSH reply), `wan`
-(WAN only; host + LAN dropped via `fib daddr type local` and the
-private/link-local/CGNAT/multicast/broadcast sets), `full` (host + LAN + WAN).
+machine launches into one of four built-in **zone** slices (or a custom host-hole
+zone) and is filtered accordingly: `none` (the default — nothing reachable but the
+host→guest SSH reply), `wan` (WAN only; host + LAN dropped via `fib daddr type
+local` and the private/link-local/CGNAT/multicast/broadcast sets), `lan` (host +
+LAN, no WAN), `full` (host + LAN + WAN).
 Host and LAN move together — the host is a LAN device, so "allow LAN, block
 host" is incoherent. The host→guest SSH forward survives in EVERY zone via a
 loopback-**destination** accept (`ip daddr 127.0.0.1`), not an interface match,
@@ -57,11 +58,13 @@ accept would be a fail-open). See **VM Runtime → Host egress lockdown** for th
 full ruleset and rationale.
 
 - **Zones (`--zone`, per invocation):** a machine starts in `none` (fully
-  locked) unless its host-side `zone` file or an explicit `--zone none|wan|full`
-  says otherwise. `wan` opens the internet; `full` additionally re-opens the
-  local environment (host + LAN). The default (no `--zone`, no `zone` file) is
-  the most restrictive policy. The guest cannot choose its own zone — the host
-  picks it at start, and the `zone` file is host-controlled.
+  locked) unless its host-side `zone` file or an explicit `--zone` says
+  otherwise. The four built-ins are `none` (nothing), `wan` (the internet; host
+  and LAN blocked), `lan` (host and LAN, no WAN), and `full` (host + LAN + WAN);
+  user **custom zones** add per-port host holes on a built-in base. The default
+  (no `--zone`, no `zone` file) is the most restrictive policy. The guest cannot
+  choose its own zone — the host picks it at start, and the `zone` file is
+  host-controlled.
 - **passt is a filter-correctness invariant, not only a rootlessness one:**
   the match surface *is* passt's host sockets (passt is a userspace process in
   the unit cgroup making ordinary host sockets). A future TAP backend would
@@ -500,36 +503,42 @@ entirely in the per-zone slice the machine launches into and a host-static,
 project-agnostic ruleset; the runtime path (`virtdev-start`, `virtdev-maintain`)
 stays rootless.
 
-**Slices.** Every machine launches with `--slice=` into one of three per-zone
-slices, all children of `virtdev.slice`:
+**Slices.** Every machine launches with `--slice=` into one per-zone slice, all
+children of `virtdev.slice`. The four BUILT-IN zones, plus one
+`virtdev-<name>.slice` per custom zone (see **Custom zones** below):
 
 ```
 virtdev.slice                lockdown handle — EVERY machine is under it (base match)
-  virtdev-none.slice         no rule; the terminal drop is its policy (the secure default)
-  virtdev-wan.slice          WAN only (jump zone_wan: host + LAN dropped)
-  virtdev-full.slice         host + LAN + WAN (accept)
+  virtdev-none.slice         no jump; the terminal drop is its policy (the secure default)
+  virtdev-wan.slice          WAN only (host + LAN dropped)
+  virtdev-lan.slice          host + LAN, no WAN
+  virtdev-full.slice         host + LAN + WAN
+  virtdev-<name>.slice       a custom zone: its base + per-port host holes
 ```
 
 The slices are **shared across projects** — there is no per-project slice and no
 `systemd-escape`. Identity stays in the unit name `virtdev-<project>.service`
-(`stop`/`list`/`status` key off it); the zone vocabulary is a fixed, validated
-set, so there is nothing to collide and nothing to escape. `firewall_slice_for
-<zone>` (in `lib/virtdev/firewall`) is the **single** helper producing these
-names; `virtdev-start`, `virtdev-maintain`, and the ruleset generator all call
-it, so a launch path cannot silently forget `--slice` and escape the baseline.
-`maintenance` launches into `virtdev-wan.slice` (it needs WAN for `pacman -Syu`;
-the base image is trusted and needs no host/LAN).
+(`stop`/`list`/`status` key off it). The zone vocabulary is the four built-ins
+plus the user's custom zones; custom names are held to a strict charset
+(`^[a-z][a-z0-9_]*$`, no dashes — a dash would nest the slice a level deeper and
+break the cgroup-level math), so there is still nothing to collide and nothing to
+escape. `firewall_slice_for <zone>` (in `lib/virtdev/firewall`) is the **single**
+helper producing these names; `virtdev-start`, `virtdev-maintain`, and the ruleset
+generator all call it, so a launch path cannot silently forget `--slice` and
+escape the baseline. `maintenance` launches into `virtdev-wan.slice` (it needs WAN
+for `pacman -Syu`; the base image is trusted and needs no host/LAN).
 
 Because nft resolves a `socket cgroupv2 "path"` to a cgroup **inode at load
 time**, a referenced slice must exist when the ruleset loads — but a
 started-but-EMPTY systemd slice has no cgroup directory. So each nft-referenced
-zone (`wan`, `full`) carries a **resident pin**:
+zone (`wan`, `lan`, `full`, and every custom zone) carries a **resident pin**:
 `virtdev-firewall-pin@<zone>.service`, a `--user` `sleep infinity`
-(`Restart=always`) launched into the slice by `apply`. The pins hold
-`virtdev-{wan,full}.slice` and their parent `virtdev.slice` present with stable
-inodes for the firewall's lifetime. `virtdev-none.slice` needs no pin (no rule
-references it). **Linger is required** so the user manager, pins, and slices run
-boot→shutdown.
+(`Restart=always`) launched into the slice by `apply`, which also **reconciles**
+— a pin whose zone no longer exists is disabled, so a removed custom zone leaves
+no immortal unit. The pins hold the relaxation slices and their parent
+`virtdev.slice` present with stable inodes for the firewall's lifetime.
+`virtdev-none.slice` needs no pin (no rule references it). **Linger is required**
+so the user manager, pins, and slices run boot→shutdown.
 
 **Ruleset.** `bin/virtdev-firewall` generates one fixed dual-stack `inet
 virtdev` table (no per-project content; illustrative):
@@ -545,36 +554,69 @@ table inet virtdev {
   }
   chain virtdev_machines {
     ip  daddr 127.0.0.1 accept          # passt's SSH-forward reply (loopback DEST, every zone)
-    ip6 daddr ::1       accept
-    socket cgroupv2 level 5 "…/virtdev.slice/virtdev-full.slice" accept    # full = host+LAN+WAN
+    ip6 daddr ::1       accept          #   (gains `ct state established` once a host-hole zone exists)
     socket cgroupv2 level 5 "…/virtdev.slice/virtdev-wan.slice"  jump zone_wan
+    socket cgroupv2 level 5 "…/virtdev.slice/virtdev-lan.slice"  jump zone_lan
+    socket cgroupv2 level 5 "…/virtdev.slice/virtdev-full.slice" jump zone_full
+    socket cgroupv2 level 5 "…/virtdev.slice/virtdev-gdb.slice"  jump zone_gdb   # a custom zone
     drop                                # none + strays: deny by default
   }
-  chain zone_wan {
-    fib daddr type local drop           # the host itself — dynamic, never stale
-    ip  daddr @lan_v4 drop
-    ip6 daddr @lan_v6 drop
-    accept                              # everything else = WAN
+  chain zone_none { drop }
+  chain zone_wan  { fib daddr type local drop; ip daddr @lan_v4 drop; ip6 daddr @lan_v6 drop; accept }
+  chain zone_lan  { ip daddr @lan_v4 accept; ip6 daddr @lan_v6 accept; fib daddr type local accept; drop }
+  chain zone_full { accept }
+  chain zone_gdb {                      # custom: base wan + a hole to host:1234
+    fib daddr type local meta l4proto { tcp, udp } th dport 1234 accept
+    jump zone_wan
   }
 }
 ```
 
-The generator iterates the zone registry's relaxation zones (everything but
-`none`): membership is data, each zone's verdict (`full`→accept, `wan`→`jump
-zone_wan`) is code. The cgroup `level` numbers above (4 for the base, 5 for the
-zones) illustrate the standard layout but are not hard-coded — the generator
-derives them from the constructed base path's depth, so the level can never
-disagree with the actual cgroup depth. Properties: dropping on `daddr` with no L4
-qualifier is
-**all-protocol** for free; one `inet` table is **dual-stack** for free; `fib
-daddr type local` solves the host's own addresses without enumeration; the
-**loopback-destination** accept (not `oifname "lo"`) preserves the host→guest
-SSH forward in every zone without accepting guest→host-LAN-IP (which also routes
-via `lo`), and needs **no conntrack** so a `notrack`-on-`lo` rule in the user's
-firewall cannot break `virtdev-ssh`. The base match is on `virtdev.slice` and
+The generator emits the four built-ins as reusable base chains
+(`zone_none/wan/lan/full`) plus one `zone_<name>` per custom zone, with a uniform
+`jump zone_<z>` dispatch for every slice-owning zone (built-in relaxation +
+customs). The cgroup `level` numbers above (4 for the base, 5 for the zones)
+illustrate the standard layout but are not hard-coded — the generator derives them
+from the constructed base path's depth, so the level can never disagree with the
+actual cgroup depth. Properties: dropping on `daddr` with no L4 qualifier is
+**all-protocol** for free; one `inet` table is **dual-stack** for free; `fib daddr
+type local` solves the host's own addresses without enumeration; the
+**loopback-destination** accept (not `oifname "lo"`) preserves the host→guest SSH
+forward in every zone without accepting guest→host-LAN-IP (which also routes via
+`lo`). That accept is **conntrack-free when no host-hole zone exists**, so a
+`notrack`-on-`lo` rule in the user's firewall cannot break `virtdev-ssh`; defining
+a host-hole zone narrows it to `ct state established` (so a guest-INITIATED new
+loopback flow falls through to the per-port holes instead of being blanket-accepted)
+and from then on virtdev-ssh DOES depend on loopback conntrack. The narrowing is
+safe because passt always `connect(2)`s for guest flows — the host-side packet is
+SYN-first → `ct new` → gated by the zone — so only the SSH-reply leg (passt as the
+accepting server) is `established`. The base match is on `virtdev.slice` and
 catches every machine by ancestry (scoped: descendants only, nothing outside —
 verified); `none` machines and anything unrecognised hit the terminal `drop`
 (fail-closed).
+
+**Custom zones.** A custom zone is a user-authored file
+`~/.config/virtdev/zones/<name>` declaring a `base` (a built-in) and one or more
+`port <number> <proto...>` host holes — e.g. `base wan` + `port 1234 tcp udp`. It
+extends the built-in set with a narrow, scoped hole to a HOST service (the
+motivating case: a guest driving a host gdbserver) without opening the whole
+LAN/WAN. Each hole becomes `fib daddr type local … th dport <port> accept` (so it
+reaches the service however it binds — loopback or the host's LAN IP), and a
+launch into that zone flips passt's host-loopback map on (the map is
+all-or-nothing, so the PER-PORT limit is nft's; the guest reaches host services at
+its default gateway). The files commit to dotfiles — author once, `git`, reuse.
+**`apply` is the ONLY context that reads the user's `zones/` config** (root, via
+`SUDO_UID` + the user's home; constructed, never searched). It validates every
+file up front (a malformed one aborts apply, exit 89), then — only after the
+holder load wins — writes the realized set to `/etc/virtdev/firewall.zones`
+(`<name> <needs-hostmap>`, atomic). The rootless launch and `list`/`recreate`/
+`upgrade` read that manifest; the holder derives its cgroup-dir wait-set from the
+installed ruleset; none of them read the user's config, so the dynamic set has a
+single root-owned source of truth. Selecting a zone that isn't applied refuses
+(`virtdev-start` exit 22, "run apply") rather than launching into an empty slice
+that silently locks. A custom zone is a deliberate, documented breach of host
+isolation: driving a host service grants the untrusted guest whatever that service
+permits (gdbserver = host code-exec).
 
 **Apply (root, one-time).** `sudo virtdev firewall apply` requires **linger**
 (exit 98; never enables it silently), validates `SUDO_UID` (numeric > 0; refuses
@@ -1014,11 +1056,13 @@ The host egress lockdown (Phase 2) stores root-owned state outside
   virtdev-firewall-pin@.service     sleep-infinity pin, one instance per relaxation zone
 /usr/lib/systemd/{system,user}/  package copies of the holder + pin (shipped by PKGBUILD)
 
-systemd --user slices (shared per zone; the pins keep wan/full resident):
+systemd --user slices (shared per zone; the pins keep the relaxation zones resident):
   virtdev.slice                     lockdown handle (every machine is under it)
   virtdev-none.slice                the secure default (no rule; terminal drop)
   virtdev-wan.slice                 WAN only (pinned)
+  virtdev-lan.slice                 host + LAN, no WAN (pinned)
   virtdev-full.slice                host + LAN + WAN (pinned)
+  virtdev-<custom>.slice            custom host-hole zone (base + per-port holes; pinned)
 ```
 
 `virtdev-backup` consults `projects/<name>/manifest` under
