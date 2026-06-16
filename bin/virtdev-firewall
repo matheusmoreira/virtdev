@@ -28,6 +28,7 @@
 #   97  holder: table did not come up, or baseline record failed
 #   98  apply: lingering not enabled for the target user
 #   99  holder: zone-slice cgroup dirs never appeared (pins not running)
+#  100  apply: refused — would strand a running machine's open host-loopback map
 #
 set -euo pipefail
 
@@ -343,6 +344,77 @@ firewall_install_units() {
   systemctl reset-failed "${firewall_holder_unit}" 2>/dev/null || true
 }
 
+# firewall_guard_running_hostmap <uid>
+# Targeted refuse (exit 100): block an apply that would STRAND an already-running
+# machine's open passt host-loopback map. A host-hole zone launches passt with the
+# guest->host 127.0.0.1 map OPEN — ALL ports, because passt's map is all-or-nothing
+# — and the nft ruleset narrows it to the declared port(s). That narrowing is the
+# conditional loopback rule in firewall_generate, which collapses to an
+# UNCONDITIONAL `ip daddr 127.0.0.1 accept` once NO host-hole zone remains
+# (any_hole=0). passt's map is fixed at machine launch and is NOT touched by apply
+# (it restarts only the holder + pins, never the machine units), so removing the
+# LAST host-hole zone while such a machine still runs would silently widen it from
+# its declared port to EVERY host loopback port — a fail-OPEN, until that machine
+# restarts. Refuse instead: the narrowing ruleset stays loaded and the machine stays
+# gated; the admin stops the named machine(s) and re-applies.
+#
+# Runs BEFORE any system mutation, so a refusal changes nothing (apply stays
+# all-or-nothing). Scope is precisely the fail-OPEN (new any_hole 1->0): removing one
+# of several host-hole zones keeps any_hole=1, so the loopback stays `ct established`
+# and a machine whose own hole vanished merely fails CLOSED (its new loopback flows
+# drop) — no refuse needed. "Door open" is read from the CURRENT (pre-reload)
+# manifest via firewall_zone_needs_hostmap, which reflects each running machine's
+# launch-time --allow-host-loopback decision.
+#
+# Not mutually exclusive with a concurrent `virtdev start` (apply is root and
+# lock-free by design; start holds the rootless lock). A machine started in the zone
+# being removed, in the window between this scan and the holder reload, is not caught
+# here — an extremely narrow case (starting a machine in a zone you are
+# simultaneously deleting); closing it would need apply to share start's lock.
+firewall_guard_running_hostmap() {
+  local -r uid="${1:?firewall_guard_running_hostmap: uid required}"
+
+  # A host-hole zone survives this apply? Then the loopback rule stays narrowed
+  # (`ct established`) for every machine, so no running map can be stranded.
+  local z
+  for z in "${firewall_gen_zones[@]}"; do
+    [[ -n "${firewall_gen_ports[${z}]:-}" ]] && return 0
+  done
+
+  # No host-hole remains: collect machines running with the host map open, i.e.
+  # whose current zone (mapped from the live slice) is hostmap=1 in the loaded
+  # manifest. Enumerate the target user's ACTIVE machine units, excluding the
+  # firewall pins (virtdev-firewall-pin@<zone>.service also matches virtdev-*.service
+  # — the same exclusion virtdev-maintain's running-machine preflight uses).
+  local unit slice zone project
+  local -a stranded=()
+  while IFS= read -r unit; do
+    [[ -n "${unit}" ]] || continue
+    slice="$(firewall_user_systemctl "${uid}" show -p Slice --value "${unit}" 2>/dev/null || true)"
+    zone="$(firewall_zone_of_slice "${slice}")"
+    if firewall_zone_needs_hostmap "${zone}"; then
+      project="${unit#virtdev-}"; project="${project%.service}"
+      stranded+=("${project}")
+    fi
+  done < <(
+    firewall_user_systemctl "${uid}" list-units --state=active --no-legend 'virtdev-*.service' 2>/dev/null \
+      | awk '{print $1}' | grep -v '^virtdev-firewall-pin@' || true
+  )
+
+  [[ ${#stranded[@]} -eq 0 ]] && return 0
+
+  local stops
+  printf -v stops '  virtdev stop %s\n' "${stranded[@]}"
+  error 100 <<MESSAGE
+apply refused: this removes the last host-hole zone, but these machines are running
+with passt's host-loopback map open (opened at launch, all ports). Reloading now
+would widen them from their declared hole to EVERY host loopback port until they
+restart. Stop them, then re-apply:
+${stops}  sudo virtdev firewall apply
+Nothing was changed.
+MESSAGE
+}
+
 # apply: linger gate -> load+validate custom zones -> install units -> start pins
 # -> generate/validate/install -> restart holder -> write firewall.zones. Custom
 # zones are validated FIRST: a malformed zone-definition file aborts (exit 89)
@@ -361,6 +433,12 @@ firewall_apply() {
   # Parse the user's custom zones up front (root, via SUDO_UID) so a bad file
   # aborts before we touch units, pins, or the ruleset.
   firewall_load_custom_zones "${uid}"
+
+  # Targeted refuse BEFORE any mutation: if this apply drops the last host-hole zone
+  # while a machine runs with passt's host map open, that machine would fail OPEN to
+  # all host loopback ports (its map outlives the nft narrowing). Refuse so the admin
+  # stops it first; nothing here has changed yet (apply stays all-or-nothing).
+  firewall_guard_running_hostmap "${uid}"
 
   install -d -m 0755 -o root -g root "${firewall_etc_dir}"
 

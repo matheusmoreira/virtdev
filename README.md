@@ -114,6 +114,13 @@ isolation**: the untrusted guest gets whatever the host service permits (driving
 gdbserver is host code execution), so only open services you trust the project
 with.
 
+Removing a custom zone is the reverse: delete the file and re-`apply`. One caveat —
+if you are removing the **last** host-hole zone while a machine is still running in
+one, stop that machine first. `apply` refuses (exit 100) and names it, because the
+guest's host-loopback access is opened at machine launch and only narrowed to the
+declared port by the live ruleset; un-narrowing it under a running machine would
+widen it to every host loopback port. Stop the named machine, then re-`apply`.
+
 ### Create a project
 
 ```bash

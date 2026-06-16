@@ -618,6 +618,19 @@ that silently locks. A custom zone is a deliberate, documented breach of host
 isolation: driving a host service grants the untrusted guest whatever that service
 permits (gdbserver = host code-exec).
 
+Adding or loosening a hole is safe to `apply` live; **removing the LAST host-hole
+zone is not, while a machine still runs in one.** passt's host-loopback map is fixed
+at machine launch and `apply` never touches running machines (it restarts only the
+holder and the pins), so the nft loopback accept un-narrows (its `ct state
+established` gate exists only while some host-hole zone does — see below) out from
+under a machine whose passt map is still wide open, widening it from its declared
+port to **every** host loopback port. So `apply` **refuses** (exit 100) when the new
+zone set has no host-hole zone but a machine is running in a zone the current
+manifest marks `hostmap=1`, naming the machines to `virtdev stop` first; nothing is
+changed on refusal. Removing a *non-last* hole keeps the gate (the machine that lost
+its hole fails *closed*), and removing the last one with no such machine running just
+proceeds.
+
 **Apply (root, one-time).** `sudo virtdev firewall apply` requires **linger**
 (exit 98; never enables it silently), validates `SUDO_UID` (numeric > 0; refuses
 bare root, never bakes a guessed uid/path), **copies** (never symlinks) the

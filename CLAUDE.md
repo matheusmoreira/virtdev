@@ -95,6 +95,7 @@ Same error → same code, everywhere:
 | 97 | holder: table did not come up / baseline record failed | `bin/virtdev-firewall` |
 | 98 | apply: lingering not enabled for the target user | `bin/virtdev-firewall` |
 | 99 | holder: zone-slice cgroup dirs never appeared (pins not running) | `bin/virtdev-firewall` |
+| 100 | apply: refused — removing the last host hole would strand a running machine's open host-loopback map | `bin/virtdev-firewall` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").
@@ -483,7 +484,12 @@ glob in `PKGBUILD` picks it up automatically.
     → `nft -c` → atomic `rename(2)`, and restarts the holder. The holder derives
     uid+base from the installed ruleset, waits for the pin-backed cgroup dirs
     (99 on timeout), loads, verifies, and records `firewall.base`. The package
-    ships `/usr/lib/systemd/{system,user}`.
+    ships `/usr/lib/systemd/{system,user}`. Before any mutation, apply also
+    **refuses** (100) if the new zone set drops the last host-hole zone while a
+    machine still runs with passt's host map open (current-manifest `hostmap=1`):
+    passt's map is fixed at launch and apply never stops machines, so the nft
+    loopback narrowing would un-gate that running machine to the whole host
+    loopback — fail-OPEN. The refusal names the machines to stop first.
   - **maintenance runs in `wan`** (needs WAN for `pacman -Syu`; trusted base, no
     host/LAN). Its running-machine preflight glob excludes the pins
     (`virtdev-firewall-pin@*.service`, permanent under linger).

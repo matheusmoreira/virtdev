@@ -42,14 +42,17 @@ This command is normally reached through the *virtdev*(1) dispatcher
 	refuses to run as bare root. The target user must have *lingering* enabled
 	(see *loginctl*(1)) so the resident units run from boot to shutdown. apply
 	parses the user's custom zone-definition files first (a malformed file aborts
-	with exit *89* before any change is made), installs the holder and the
-	per-zone _pin_ units, starts and *reconciles* the pins (materialising each
+	with exit *89* before any change is made), refuses (exit *100*) if removing
+	the last host-hole zone would strand a running machine whose passt
+	host-loopback map is open (again before any change), installs the holder and
+	the per-zone _pin_ units, starts and *reconciles* the pins (materialising each
 	zone's cgroup directory; a pin for a removed zone is disabled), generates the
 	ruleset to _/etc/virtdev/firewall.nft_, validates it with _nft -c_, installs
 	it with an atomic _rename_(2), restarts the holder to load it, and finally
 	writes the realized-zone manifest _/etc/virtdev/firewall.zones_. Re-running
 	apply is safe and idempotent, and is *required* after adding or editing a
-	custom zone.
+	custom zone. Removing the last custom host hole while a machine still runs in
+	it requires stopping that machine first (see exit *100*).
 
 *status*
 	Report whether the lockdown is active. Prints _active_ or _inactive_ to
@@ -194,6 +197,11 @@ _/usr/lib/systemd/user/virtdev-firewall-pin@.service_
 *99*
 	hold: the per-zone cgroup directories never appeared (the pins are not
 	running).
+
+*100*
+	apply: refused because removing the last custom host-hole zone would strand a
+	running machine whose passt host-loopback map is open, widening it to every
+	host loopback port. Stop the named machine(s) and re-apply. Nothing is changed.
 
 The launch guard in *virtdev-start*(1) and *virtdev-maintain*(1) returns *88*
 when the lockdown is not active; *virtdev-start*(1) returns *22* when the resolved
