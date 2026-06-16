@@ -103,7 +103,7 @@ validate_project_name "${project}"
 zone_arg="${flags[zone]:-}"
 if [[ -n "${zone_arg}" ]]; then
   firewall_zone_valid "${zone_arg}" \
-    || error 64 <<<"unknown --zone '${zone_arg}'. Known zones: $(firewall_zones | paste -sd' ')"
+    || error 64 <<<"unknown or unapplied --zone '${zone_arg}'. Active zones: $(firewall_zones_active | paste -sd' ')"
 fi
 
 unit="virtdev-${project}"
