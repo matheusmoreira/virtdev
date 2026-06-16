@@ -93,6 +93,11 @@ readonly firewall_zone_name_max=32
 # not a dedicated rule). Declared global because libraries are sourced from
 # within import(), where a bare `declare -A` would be function-local.
 declare -gA firewall_zone_known=([none]=1 [wan]=1 [lan]=1 [full]=1)
+# The built-ins a PRE-MANIFEST (legacy Phase-2) lockdown has — the absent-manifest
+# floor shared by firewall_zone_valid and firewall_zones_active so they agree.
+# Frozen: lan and custom zones postdate firewall.zones, so they are not realized
+# until a re-apply and must NOT appear in this floor.
+declare -ga firewall_legacy_builtins=(none wan full)
 
 # Destination sets (text fragments the generator splices into the ruleset).
 # Private LAN ranges plus link-local, CGNAT, multicast and broadcast —
@@ -139,10 +144,14 @@ firewall_zone_valid() {
     # silently launching into an empty slice).
     firewall_zone_realized "${zone}"
   else
-    # No manifest = a pre-manifest (legacy Phase-2) lockdown, which has exactly the
-    # original three built-ins. lan and customs require a re-apply (their rules are
-    # not in that ruleset), so they read as not-yet-applied here.
-    [[ "${zone}" == none || "${zone}" == wan || "${zone}" == full ]]
+    # No manifest = a pre-manifest (legacy Phase-2) lockdown with exactly the
+    # legacy built-ins. lan and customs require a re-apply (their rules are not in
+    # that ruleset), so they read as not-yet-applied here.
+    local b
+    for b in "${firewall_legacy_builtins[@]}"; do
+      [[ "${zone}" == "${b}" ]] && return 0
+    done
+    return 1
   fi
 }
 
@@ -182,7 +191,10 @@ firewall_zones_active() {
   if [[ -f "${firewall_zones_file}" ]]; then
     awk '{print $1}' "${firewall_zones_file}"
   else
-    firewall_zones
+    # Same legacy floor as firewall_zone_valid (NOT the full registry): without a
+    # manifest, lan/customs are not realized, so the guard's "Active zones:" list
+    # must not advertise them.
+    printf '%s\n' "${firewall_legacy_builtins[@]}"
   fi
 }
 
