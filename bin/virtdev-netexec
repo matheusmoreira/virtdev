@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
-# virtdev-netexec --socket <path> [--forward <port>] -- <qemu-command...>
+# virtdev-netexec --socket <path> [--forward <port>] [--allow-host-loopback] -- <qemu-command...>
 #
 # Internal exec-shim: sets up passt networking, then exec's the QEMU
 # command. Designed to be run as the main process of a systemd transient
@@ -38,7 +38,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 import error arguments passt port
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([socket]=required [forward]=value)
+declare -A spec=([socket]=required [forward]=value [allow-host-loopback]=bool)
 # shellcheck disable=SC2034
 declare -A spec_placeholders=([socket]=path [forward]=port)
 # shellcheck disable=SC2034
@@ -53,6 +53,13 @@ set -- "${positional[@]}"
 # syntactic — --socket= would pass it — so validate non-emptiness too.
 socket="${flags[socket]:-}"
 forward_port="${flags[forward]:-}"
+# --allow-host-loopback: presence opts this launch back into guest->host loopback
+# (host-hole zones). virtdev-start passes it iff firewall.zones marks the resolved
+# zone hostmap=1; passt_command maps "1" -> omit --map-host-loopback none.
+allow_host_loopback=0
+if [[ -n "${flags[allow-host-loopback]:-}" && "${flags[allow-host-loopback]}" != "0" ]]; then
+  allow_host_loopback=1
+fi
 
 if [[ $# -lt 1 || -z "${socket}" ]]; then
   error 64 <<<"$(arguments_usage spec)"
@@ -85,7 +92,7 @@ passt_socket_clean "${socket}"
 # so a zero exit from the foreground invocation guarantees the socket is
 # ready for QEMU to connect.
 declare -a passt_argv=()
-passt_command passt_argv "${socket}" "${forward_port}"
+passt_command passt_argv "${socket}" "${forward_port}" "${allow_host_loopback}"
 if ! "${passt_argv[@]}"; then
   # Classify the failure: forward port already bound → 85, otherwise → 84.
   if [[ -n "${forward_port}" ]] && port_in_use "${forward_port}"; then

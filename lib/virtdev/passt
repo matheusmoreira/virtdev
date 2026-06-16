@@ -4,20 +4,27 @@
 # passt library: constructor helpers for the passt network backend.
 #
 # passt replaces QEMU user-mode (SLIRP) networking for project and
-# maintenance virtual machines, blocking the guest-to-host loopback
-# and host-global-address translation paths while keeping WAN egress.
+# maintenance virtual machines. It always blocks the guest-to-host
+# global-address path (--map-guest-addr none); it blocks the guest-to-host
+# loopback path BY DEFAULT (--map-host-loopback none). A custom host-hole zone
+# opts a single launch back into loopback (allow_host_loopback=1, which OMITS
+# the none, falling back to passt's default map = the guest's default gateway ->
+# host 127.0.0.1); the per-port restriction is then enforced in nft, because
+# passt's host mapping is all-or-nothing.
 #
 # Public:
-#   passt_command <array_name> <socket> [<forward_port>]
+#   passt_command <array_name> <socket> [<forward_port>] [<allow_host_loopback>]
 #       Fills the named array with the passt argv (pure; no process
 #       spawned). Single source of truth for the flag set used by every
 #       caller. Returning an array (rather than a string the caller must
 #       re-split) keeps the socket path intact even if it contains
 #       whitespace.
-#       array_name   — caller-declared array to populate.
-#       socket       — path passt creates and listens on; QEMU connects.
-#       forward_port — if given, adds -t 127.0.0.1/<port>:22 to forward
-#                      host loopback port <port> to guest port 22.
+#       array_name          — caller-declared array to populate.
+#       socket              — path passt creates and listens on; QEMU connects.
+#       forward_port        — if given, adds -t 127.0.0.1/<port>:22 to forward
+#                             host loopback port <port> to guest port 22.
+#       allow_host_loopback — "1" omits --map-host-loopback none (host-hole
+#                             zones); anything else keeps the default block.
 #
 #   passt_socket_clean <socket>
 #       Idempotent unlink of a stale passt socket file. passt's bind()
@@ -60,6 +67,7 @@ passt_command() {
   local -n _command="${1}"
   local -r socket="${2}"
   local -r forward_port="${3:-}"
+  local -r allow_host_loopback="${4:-}"
 
   # --dns is defense-bearing, not cosmetic: by default passt advertises
   # the host's own resolver address (e.g. systemd-resolved at
@@ -73,10 +81,18 @@ passt_command() {
   _command=(
     passt
     --socket "${socket}"
-    --map-host-loopback none
     --map-guest-addr none
     --dns "${VIRTDEV_DNS}"
   )
+  # Host-loopback gate. Default: block guest->host loopback entirely. A host-hole
+  # zone launch passes allow_host_loopback=1 to OMIT the block, falling back to
+  # passt's default map (the guest's default gateway -> host 127.0.0.1). The
+  # per-port restriction is enforced by the nft `inet virtdev` table, NOT here —
+  # passt's host mapping is all-or-nothing. --map-guest-addr none stays in both
+  # cases, so the host's global/LAN-IP path remains blocked (loopback-only).
+  if [[ "${allow_host_loopback}" != "1" ]]; then
+    _command+=(--map-host-loopback none)
+  fi
   if [[ -n "${forward_port}" ]]; then
     _command+=(-t "127.0.0.1/${forward_port}:22")
   fi
