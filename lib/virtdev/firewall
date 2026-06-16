@@ -128,8 +128,18 @@ firewall_zone_name_valid() {
 firewall_zone_valid() {
   local -r zone="${1:-}"
   [[ -n "${zone}" ]] || return 1
-  [[ -v "firewall_zone_known[${zone}]" ]] && return 0
-  firewall_zone_realized "${zone}"
+  if [[ -f "${firewall_zones_file}" ]]; then
+    # Manifest present: it lists EVERY realized zone (built-ins + customs), so it
+    # is the authority — even for built-ins (a pre-`lan` ruleset will not list lan
+    # until a re-apply, so `--zone lan` correctly reads not-yet-applied instead of
+    # silently launching into an empty slice).
+    firewall_zone_realized "${zone}"
+  else
+    # No manifest = a pre-manifest (legacy Phase-2) lockdown, which has exactly the
+    # original three built-ins. lan and customs require a re-apply (their rules are
+    # not in that ruleset), so they read as not-yet-applied here.
+    [[ "${zone}" == none || "${zone}" == wan || "${zone}" == full ]]
+  fi
 }
 
 # firewall_zone_realized <zone> -> 0 iff <zone> appears in the root-owned realized
