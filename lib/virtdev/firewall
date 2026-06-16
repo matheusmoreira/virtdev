@@ -31,8 +31,16 @@
 #       Launch guard. Errors 88 unless the host egress lockdown is active AND its
 #       recorded baseline matches the live cgroup AND the caller is the firewall's
 #       user. --unfiltered bypasses it with a loud warning.
-#   firewall_zone_valid <zone>          0 iff <zone> is a registry member.
-#   firewall_zones                      Echoes the registry zone names, one per line.
+#   firewall_zone_valid <zone>          0 iff <zone> is a built-in OR a custom zone
+#                                       realized in firewall.zones.
+#   firewall_zone_name_valid <name>     0 iff <name> matches the zone-name charset
+#                                       (^[a-z][a-z0-9_]*$, <=32, no dashes/dots).
+#   firewall_zone_realized <zone>       0 iff <zone> is in the realized manifest.
+#   firewall_zone_needs_hostmap <zone>  0 iff the manifest marks <zone> hostmap=1.
+#   firewall_zone_parse <file> <base> <ports> <reason>
+#                                       Parse a zone-definition file (apply only);
+#                                       returns 0 + base/ports, or non-zero + reason.
+#   firewall_zones                      Echoes the built-in zone names, one per line.
 #   firewall_is_active
 #       Shared predicate: 0 iff the holder is active AND the recorded base inode
 #       matches the live virtdev.slice (built from the RECORDED uid, so it is
@@ -49,8 +57,10 @@
 # Constants (read by bin/virtdev-firewall's generator):
 #   firewall_table_name, firewall_lan_v4_elements, firewall_lan_v6_elements
 #
-# Reserved exit code (library-owned):
+# Reserved exit codes (library-owned):
 #   88  host egress lockdown not active / stale baseline / wrong user (firewall_require)
+#   89  invalid zone-definition file (raised by bin/virtdev-firewall apply, which
+#       calls firewall_zone_parse; the helper itself returns, never exits)
 #
 set -euo pipefail
 # No VIRTDEV_HOME / XDG defaulting at source time: the holder sources this lib as
@@ -61,9 +71,20 @@ import error
 
 readonly firewall_table_name="virtdev"
 readonly firewall_lockdown_exit_code=88
+readonly firewall_invalid_zone_exit_code=89
 # The holder records "<uid> <virtdev.slice-inode>" here after each load; the
 # rootless guard reads it. Root-written, world-readable.
 readonly firewall_base_file="/etc/virtdev/firewall.base"
+# apply records the realized zone set here AFTER the holder load succeeds: one line
+# "<zonename> <needs-hostmap 0|1>" per zone (built-ins + customs). Root-written,
+# world-readable; the guest has no path to it. The rootless launch / list /
+# recreate / upgrade read it (they never read the user's zones/ config — that is
+# apply's job alone). Static across reboots (the same ruleset reloads), unlike
+# firewall.base which the holder rewrites per-load to track the cgroup inode.
+readonly firewall_zones_file="/etc/virtdev/firewall.zones"
+# Zone-name length cap (slice unit name sanity). Names have no per-zone sockets,
+# so this is not the sun_path cap that bounds project names.
+readonly firewall_zone_name_max=32
 
 # Zone registry. All three are explicit, selectable zones with their own slice;
 # 'none' is the deny-by-default floor (enforced by the ruleset's terminal drop,
@@ -84,9 +105,57 @@ firewall_zones() {
   done
 }
 
+# firewall_zone_name_valid <name> -> 0 iff <name> is a syntactically valid zone
+# name: lowercase, leading letter, [a-z0-9_] only, <= firewall_zone_name_max. NO
+# dashes or dots. A dash makes systemd treat virtdev-<name>.slice as nested a
+# level deeper (foo-bar.slice lives under foo.slice), breaking the generator's
+# fixed cgroup level and the holder's cgroup-dir wait; a dot is illegal in a slice
+# unit. This is the validator the custom-zone vocabulary needs now that names are
+# user-derived — the three-zone redesign could delete systemd-escape only because
+# the vocabulary was a fixed, trusted set.
+firewall_zone_name_valid() {
+  local -r name="${1:-}"
+  [[ "${name}" =~ ^[a-z][a-z0-9_]*$ && "${#name}" -le "${firewall_zone_name_max}" ]]
+}
+
+# firewall_zone_valid <zone> -> 0 iff <zone> is usable: a built-in, OR a custom
+# zone realized in the loaded ruleset (present in firewall.zones). Built-ins are
+# accepted even if firewall.zones is absent/partial (a static floor). Used by the
+# launch guard and by virtdev-recreate / virtdev-upgrade (restore a captured
+# zone). NOT used to form slice names — see firewall_slice_for (charset only).
 firewall_zone_valid() {
   local -r zone="${1:-}"
-  [[ -n "${zone}" && -v "firewall_zone_known[${zone}]" ]]
+  [[ -n "${zone}" ]] || return 1
+  [[ -v "firewall_zone_known[${zone}]" ]] && return 0
+  firewall_zone_realized "${zone}"
+}
+
+# firewall_zone_realized <zone> -> 0 iff <zone> appears in the root-owned realized
+# manifest firewall.zones. Fail-closed: an absent/unreadable manifest yields
+# non-zero for every name (callers add the built-in floor where appropriate).
+# Whole-token match on the first field.
+firewall_zone_realized() {
+  local -r zone="${1:-}"
+  [[ -n "${zone}" && -f "${firewall_zones_file}" ]] || return 1
+  local n _
+  while read -r n _; do
+    [[ "${n}" == "${zone}" ]] && return 0
+  done < "${firewall_zones_file}"
+  return 1
+}
+
+# firewall_zone_needs_hostmap <zone> -> 0 iff the manifest marks <zone> as needing
+# the passt host-loopback remap (field 2 == 1). Fail-closed: absent file / missing
+# zone / any non-"1" value -> non-zero (do NOT open host loopback). The launch
+# passes --allow-host-loopback to netexec iff this returns 0.
+firewall_zone_needs_hostmap() {
+  local -r zone="${1:-}"
+  [[ -n "${zone}" && -f "${firewall_zones_file}" ]] || return 1
+  local n flag _
+  while read -r n flag _; do
+    [[ "${n}" == "${zone}" ]] && { [[ "${flag}" == "1" ]]; return; }
+  done < "${firewall_zones_file}"
+  return 1
 }
 
 # firewall_slice_for <zone> -> virtdev-<zone>.slice
@@ -96,7 +165,12 @@ firewall_zone_valid() {
 # never user-derived, so there is nothing to collide.
 firewall_slice_for() {
   local -r zone="${1:?firewall_slice_for: zone required}"
-  firewall_zone_valid "${zone}" || error 64 <<<"firewall_slice_for: unknown zone '${zone}'"
+  # A slice NAME is formed from any charset-valid zone (built-ins are charset-valid
+  # too); existence / realized-ness is the caller's concern (the generator passes
+  # apply-validated zones; the launch runs the realized guard first). The charset
+  # gate is load-bearing: a dash would make systemd nest virtdev-<zone>.slice a
+  # level deeper, breaking the generator's fixed cgroup level and the holder wait.
+  firewall_zone_name_valid "${zone}" || error 64 <<<"firewall_slice_for: invalid zone name '${zone}'"
   printf 'virtdev-%s.slice\n' "${zone}"
 }
 
@@ -108,18 +182,27 @@ firewall_slice_for() {
 # (display) and virtdev-recreate / virtdev-upgrade (restore the prior zone).
 firewall_zone_of_slice() {
   local -r slice="${1:-}"
-  local zone
-  for zone in "${!firewall_zone_known[@]}"; do
-    [[ "${slice}" == "$(firewall_slice_for "${zone}")" ]] && { printf '%s\n' "${zone}"; return 0; }
-  done
-  printf 'none\n'
+  local zone="${slice#virtdev-}"
+  zone="${zone%.slice}"
+  # Reconstruct-and-validate: the name must round-trip to the exact slice AND be a
+  # known zone (built-in, or a custom zone realized in firewall.zones). A stray /
+  # legacy / unknown slice yields 'none' (the most restrictive — matching the
+  # rebuild paths' catch-all). Registry-driven, so a custom zone added to the
+  # realized set is recognised here automatically (no drift with the launch side).
+  if [[ "${slice}" == "virtdev-${zone}.slice" ]] && firewall_zone_valid "${zone}"; then
+    printf '%s\n' "${zone}"
+  else
+    printf 'none\n'
+  fi
 }
 
 # firewall_zone_default <project> -> the project's configured zone, else 'none'.
-# Host-controlled file (the guest has no path to it). Fail CLOSED: a missing,
-# irregular (symlink/FIFO/dir), oversized, unreadable, or unknown/multi-token
-# value yields 'none'. Trims only SURROUNDING whitespace, so "w a n" stays
-# invalid -> 'none' (never emit an unvalidated token into a slice name).
+# Host-controlled file (the guest has no path to it). Fail CLOSED to 'none' for a
+# missing, irregular (symlink/FIFO/dir), oversized, unreadable, or CHARSET-invalid
+# (multi-token, dashes, ...) value. Trims only SURROUNDING whitespace, so "w a n"
+# stays invalid -> 'none'. A charset-valid but not-yet-applied custom name is
+# returned AS-IS (not 'none'): the caller's launch guard then says "run apply"
+# rather than silently locking. This helper never aborts.
 firewall_zone_default() {
   local -r project="${1:?firewall_zone_default: project required}"
   local -r cfg="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
@@ -135,11 +218,82 @@ firewall_zone_default() {
   zone="${zone#"${zone%%[![:space:]]*}"}"   # trim leading whitespace
   zone="${zone%"${zone##*[![:space:]]}"}"   # trim trailing whitespace
   zone="${zone,,}"
-  if firewall_zone_valid "${zone}"; then
+  # Charset validation only (built-ins are charset-valid). Realized-ness is the
+  # launch guard's job, so a typo'd-but-valid name surfaces as "run apply", not a
+  # silent 'none'. A malformed token still fails closed to 'none'.
+  if firewall_zone_name_valid "${zone}"; then
     printf '%s\n' "${zone}"
   else
     printf 'none\n'
   fi
+}
+
+# firewall_zone_parse <filepath> <out_base> <out_ports> <out_reason>
+# Parse a zone-definition file into a base (one of the built-ins) and a list of
+# port specs. PURE validation + return (library rule: no error/exit); the consumer
+# (bin/virtdev-firewall apply) raises error 89 with <out_reason>. Returns 0 with
+# <out_base> set and <out_ports> filled with "<port> <proto...>" entries; non-zero
+# with <out_reason> set on any malformation. Fail-closed for: irregular/symlink/
+# oversize file, unknown directive, missing/duplicate base, non-built-in base,
+# bad/out-of-range/non-numeric port, missing/unknown/duplicate protocol, too many
+# ports. ONLY apply calls this (root, via the SUDO_UID-bridged path); the rootless
+# launch never parses user files (it reads firewall.zones). Ports are matched as
+# strings first (^[1-9][0-9]*$) before any arithmetic, dodging bash octal / set -e.
+firewall_zone_parse() {
+  local -r file="${1:?firewall_zone_parse: file required}"
+  local -n _zp_base="${2:?firewall_zone_parse: out_base required}"
+  local -n _zp_ports="${3:?firewall_zone_parse: out_ports required}"
+  local -n _zp_reason="${4:?firewall_zone_parse: out_reason required}"
+  _zp_base=""; _zp_ports=(); _zp_reason=""
+  [[ -f "${file}" && ! -L "${file}" ]] || { _zp_reason="not a regular file"; return 1; }
+  [[ "$(stat -c %s "${file}" 2>/dev/null || echo 99999)" -le 4096 ]] \
+    || { _zp_reason="file too large (max 4096 bytes)"; return 1; }
+  local line directive rest base_seen=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%%#*}"                            # strip comment
+    line="${line#"${line%%[![:space:]]*}"}"       # ltrim
+    line="${line%"${line##*[![:space:]]}"}"       # rtrim
+    [[ -z "${line}" ]] && continue
+    read -r directive rest <<<"${line}"
+    case "${directive}" in
+      base)
+        (( base_seen )) && { _zp_reason="duplicate 'base' directive"; return 1; }
+        base_seen=1
+        rest="${rest%%[[:space:]]*}"
+        [[ -v "firewall_zone_known[${rest}]" ]] \
+          || { _zp_reason="base must be a built-in zone (none|wan|lan|full), got '${rest}'"; return 1; }
+        _zp_base="${rest}"
+        ;;
+      port)
+        [[ "${#_zp_ports[@]}" -lt 64 ]] || { _zp_reason="too many port lines (max 64)"; return 1; }
+        local -a fields=()
+        read -r -a fields <<<"${rest}"
+        local pnum="${fields[0]:-}"
+        [[ "${pnum}" =~ ^[1-9][0-9]*$ ]] \
+          || { _zp_reason="port number must be a positive integer, got '${pnum:-<empty>}'"; return 1; }
+        (( 10#${pnum} <= 65535 )) || { _zp_reason="port ${pnum} out of range (1-65535)"; return 1; }
+        [[ "${#fields[@]}" -ge 2 ]] \
+          || { _zp_reason="port ${pnum}: at least one protocol required (tcp and/or udp)"; return 1; }
+        local -a protos=()
+        local i tok
+        for (( i = 1; i < ${#fields[@]}; i++ )); do
+          tok="${fields[i]}"
+          case "${tok}" in
+            tcp|udp)
+              [[ " ${protos[*]} " == *" ${tok} "* ]] \
+                && { _zp_reason="port ${pnum}: duplicate protocol '${tok}'"; return 1; }
+              protos+=("${tok}") ;;
+            *) _zp_reason="port ${pnum}: unknown protocol '${tok}' (tcp|udp)"; return 1 ;;
+          esac
+        done
+        _zp_ports+=("${pnum} ${protos[*]}")
+        ;;
+      *)
+        _zp_reason="unknown directive '${directive}'"; return 1 ;;
+    esac
+  done < "${file}"
+  (( base_seen )) || { _zp_reason="missing required 'base' directive"; return 1; }
+  return 0
 }
 
 # firewall_baseline -> echoes "<uid> <inode>" from the recorded baseline, or
