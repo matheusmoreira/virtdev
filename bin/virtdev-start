@@ -97,6 +97,23 @@ MESSAGE
 fi
 slice="$(firewall_slice_for "${zone}")"
 
+# Resolve the two filtering facts ONCE here, so every downstream decision reads the
+# same values rather than re-deriving them (design-S4 D3). `filtered` is the inverse
+# of --unfiltered; `open_host_map` is whether passt opens the guest->host loopback
+# map. open_host_map is GATED on filtered: the per-port nft narrowing is the SOLE
+# confinement of passt's all-or-nothing host map, and --unfiltered switches that
+# enforcement off — so an unfiltered launch must never open the map (it would expose
+# the WHOLE host loopback, ungated). This makes --unfiltered one coherent decision
+# (launch guard, realized-zone guard, host-map, post-launch assert all key off it)
+# and keeps the exit-100 apply guard exact: an unfiltered machine's ExecStart then
+# carries no --allow-host-loopback, so apply reads its map as closed and never
+# over-refuses on it.
+filtered=$(( ! unfiltered ))
+open_host_map=0
+if (( filtered )) && firewall_zone_needs_hostmap "${zone}"; then
+  open_host_map=1
+fi
+
 # Held until after systemd confirms the transient unit is active, so
 # any other virtdev script that arrives during the critical section
 # waits for either (a) this start to complete and the unit to be
@@ -274,11 +291,12 @@ qemu_command qemu_argv \
 # can query ExecMainStatus or similar post-mortem properties. virtdev-stop
 # reads those properties after the VM exits; leaving --collect off keeps
 # the unit loaded until reset-failed or the next virtdev-start clears it.
-# Host-hole zones need passt's loopback remap; firewall.zones records which zones
-# do (built-ins never). Pass the netexec flag iff so — the per-port restriction is
-# enforced by the nft rules, not passt, whose host map is all-or-nothing.
+# Open passt's guest->host loopback map iff this is a FILTERED launch into a
+# host-hole zone (open_host_map, resolved once above). The per-port restriction is
+# enforced by the nft rules, not passt, whose host map is all-or-nothing — so the
+# map is opened only when nft is actually enforcing it.
 declare -a netexec_opts=(--socket "${passt_sock}" --forward "${port}")
-if firewall_zone_needs_hostmap "${zone}"; then
+if (( open_host_map )); then
   netexec_opts+=(--allow-host-loopback)
 fi
 
@@ -401,7 +419,7 @@ esac
 # actually sits under the frozen virtdev.slice; on mismatch error while
 # vm_started is still 0 so cleanup_failed_start stops the unit (fail CLOSED).
 # --unfiltered opted out of the lockdown entirely, so it skips this.
-if (( ! unfiltered )); then
+if (( filtered )); then
   control_group="$(systemctl --user show "${unit}" -p ControlGroup --value 2>/dev/null || true)"
   if ! firewall_assert_unit_filtered "${control_group}"; then
     error 21 <<MESSAGE
