@@ -381,25 +381,22 @@ firewall_guard_running_hostmap() {
     [[ -n "${firewall_gen_ports[${z}]:-}" ]] && return 0
   done
 
-  # No host-hole remains: collect machines running with the host map open, i.e.
-  # whose current zone (mapped from the live slice) is hostmap=1 in the loaded
-  # manifest. Enumerate the target user's ACTIVE machine units, excluding the
-  # firewall pins (virtdev-firewall-pin@<zone>.service also matches virtdev-*.service
-  # — the same exclusion virtdev-maintain's running-machine preflight uses).
+  # No host-hole remains: collect machines running with the host map open. Enumerate
+  # the target user's ALIVE machines through the shared predicate (which catches a
+  # machine in `deactivating`, whose passt host map is still open) — passing
+  # firewall_user_systemctl as the cross-privilege runner so the pin exclusion and
+  # the dot-immune parse live in one place. Map each live slice to its zone and ask
+  # whether that zone opens the host map in the loaded (pre-reload) manifest.
   local unit slice zone project
   local -a stranded=()
   while IFS= read -r unit; do
-    [[ -n "${unit}" ]] || continue
     slice="$(firewall_user_systemctl "${uid}" show -p Slice --value "${unit}" 2>/dev/null || true)"
     zone="$(firewall_zone_of_slice "${slice}")"
     if firewall_zone_needs_hostmap "${zone}"; then
       project="${unit#virtdev-}"; project="${project%.service}"
       stranded+=("${project}")
     fi
-  done < <(
-    firewall_user_systemctl "${uid}" list-units --state=active --no-legend 'virtdev-*.service' 2>/dev/null \
-      | awk '{print $1}' | grep -v '^virtdev-firewall-pin@' || true
-  )
+  done < <(firewall_running_machine_units firewall_user_systemctl "${uid}")
 
   [[ ${#stranded[@]} -eq 0 ]] && return 0
 

@@ -30,6 +30,11 @@
 #   firewall_zone_of_slice <slice-unit-name>
 #       Inverse of firewall_slice_for: echoes the zone for a slice unit name, or
 #       'none' for a stray/unknown slice. Manifest-backed (via firewall_zone_valid).
+#   firewall_running_machine_units <systemctl-user-runner...>
+#       Echoes (one per line) the project machine units whose QEMU is still alive
+#       (ActiveState not inactive/failed, so `deactivating` counts), excluding the
+#       firewall pins. The single source of "which machines are running" for the
+#       apply host-map guard and virtdev-maintain's reseal preflight.
 #   firewall_zone_default <project>
 #       Echoes the project's configured default zone, read from the host-side
 #       file ${XDG_CONFIG_HOME}/virtdev/projects/<name>/zone. Fails CLOSED to
@@ -241,6 +246,50 @@ firewall_zone_of_slice() {
   else
     printf 'none\n'
   fi
+}
+
+# firewall_running_machine_units <systemctl-user-runner...>
+# Echo (one per line) the project machine units — virtdev-<project>.service — whose
+# QEMU is still ALIVE, so a caller can refuse to act under a live machine. This is
+# the SINGLE source of "which machines are running" for both the root firewall apply
+# (the exit-100 host-map guard) and virtdev-maintain (the reseal preflight), which
+# previously each open-coded a subtly-WRONG filter (`--state=active`).
+#
+# <systemctl-user-runner...> is the command prefix that runs `systemctl --user` in
+# the caller's privilege context — virtdev-maintain passes a bare `systemctl --user`
+# (its own session); the root apply passes its sudo bridge (`sudo -u '#<uid>'
+# XDG_RUNTIME_DIR=/run/user/<uid> systemctl --user`). Keeping the privilege concern
+# at the call site and the (drift-prone) state logic here is what lets one predicate
+# serve both the rootless and the cross-privilege caller.
+#
+# ALIVE = ActiveState not in {inactive, failed}: active / activating / deactivating /
+# reloading all mean QEMU is still up — holding system.qcow2 (maintain's hazard) AND
+# passt's host map (the firewall's hazard). `--state=active` MISSED `deactivating` (a
+# machine mid-shutdown, up to TimeoutStopSec), a LIVE-PROVEN fail-open. Unknown/empty
+# states read as ALIVE (fail-CLOSED) so a future systemd state cannot slip a live
+# machine past. The firewall pins (virtdev-firewall-pin@<zone>.service) match the glob
+# too but are permanent, never machines — excluded.
+#
+# The unit name is taken by `.service`-suffix match, NOT column $1: `list-units --all`
+# prefixes a state-dependent `●` status-dot to non-running rows that shifts awk's
+# fields, so a positional parse yields `●` for the very deactivating/failed rows the
+# guard must see. Verified against a real `failed` unit.
+firewall_running_machine_units() {
+  local -a _run=("$@")
+  [[ "${#_run[@]}" -gt 0 ]] || return 0
+  local unit state
+  while IFS= read -r unit; do
+    [[ -n "${unit}" ]] || continue
+    [[ "${unit}" == virtdev-firewall-pin@* ]] && continue
+    state="$("${_run[@]}" show "${unit}" -p ActiveState --value 2>/dev/null || true)"
+    case "${state}" in
+      inactive|failed) ;;                  # QEMU gone — holds neither the file nor the map
+      *) printf '%s\n' "${unit}" ;;        # active/activating/deactivating/… or unknown → alive
+    esac
+  done < <(
+    "${_run[@]}" list-units --all --plain --no-legend 'virtdev-*.service' 2>/dev/null \
+      | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.service$/) { print $i; break } }'
+  )
 }
 
 # firewall_zone_default <project> -> the project's configured zone, else 'none'.

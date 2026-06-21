@@ -386,19 +386,16 @@ could stop the virtual machine. Terminate it, then retry:
 MESSAGE
 fi
 
-# Refuse to run if any project virtual machines are currently running.
-# They depend on system/system.qcow2 as a backing file.
-# Replacing it while a project virtual machine is running would corrupt it.
-# Exclude the firewall pins (virtdev-firewall-pin@<zone>.service): they are
-# --user units that run permanently under linger, so they always match the glob
-# and would otherwise abort every maintenance run with a spurious "machines
-# running". list-units indents the unit name (the status-dot column), so take
-# the first field before the anchored match; capture the result rather than a
-# `grep -q` tail, which could SIGPIPE the upstream stages under pipefail.
-running_machines="$(
-  systemctl --user list-units --state=active --no-legend 'virtdev-*.service' 2>/dev/null \
-    | awk '{print $1}' | grep -v '^virtdev-firewall-pin@' || true
-)"
+# Refuse to run if any project virtual machine is still alive: its QEMU holds
+# system/system.qcow2 open as a backing file, and reseal-swapping that file out
+# from under it corrupts the running delta (silent backing-file divergence). Alive
+# is read through the shared firewall_running_machine_units predicate — the single
+# source of "machine running" shared with the apply host-map guard — which reads
+# ActiveState by property, so a machine in `deactivating` (mid-shutdown via the
+# lockless ExecStop/poweroff routes, still holding the fd) still blocks the reseal.
+# The old `--state=active` filter missed that window (a LIVE-PROVEN corruption gap).
+# The firewall pins are excluded inside the helper.
+running_machines="$(firewall_running_machine_units systemctl --user)"
 if [[ -n "${running_machines}" ]]; then
   error 7 <<MESSAGE
 One or more project virtual machines are running.
