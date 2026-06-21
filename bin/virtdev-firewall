@@ -483,6 +483,19 @@ firewall_apply() {
   chmod 0644 "${firewall_nft_file}"
   trap - EXIT
 
+  # Publish the manifest LOCKSTEP with the ruleset: remove firewall.zones BEFORE the
+  # restart, so from the instant the holder may load the new ruleset until the
+  # manifest is rewritten below, no manifest exists. This enforces the invariant
+  # "firewall.zones exists <=> the loaded ruleset was published by a COMPLETED apply".
+  # Without it, any outcome that loads the new ruleset but skips the rewrite strands a
+  # stale hostmap=1 manifest against an un-narrowed loopback (a fail-OPEN to the whole
+  # host loopback): a crash in the restart->write window (robustness-S2 F1), or an
+  # exit-95 abort whose holder then self-heals via Restart=on-failure to the new
+  # ruleset (F3, no crash needed). With the manifest gone, every such outcome is
+  # fail-CLOSED — custom zones refuse "run apply", built-ins fall to the legacy floor
+  # — until the rewrite completes.
+  rm -f "${firewall_zones_file}"
+
   # (Re)load NOW by restarting the holder. Its ExecStart (hold) includes the
   # freshly-installed ruleset into a new owner session; on a re-apply it
   # destroys the old owner table and recreates it. Type=notify, so `restart`
@@ -490,10 +503,10 @@ firewall_apply() {
   # and recorded firewall.base — the on-disk file and the kernel ruleset cannot
   # diverge behind a green service.
   systemctl restart virtdev-firewall.service \
-    || error 95 <<<"installed ${firewall_nft_file} but the holder failed to load it (virtdev-firewall.service)."
+    || error 95 <<<"installed ${firewall_nft_file} but the holder restart failed. It may still load via Restart=on-failure; the manifest stays withheld (fail-closed) until a load wins. Re-run to reconcile: sudo virtdev firewall apply"
 
   # The restart returned only after the holder (Type=notify) loaded + verified the
-  # ruleset, so the realized manifest is now safe to publish for the launch side.
+  # ruleset, so the realized manifest is now safe to (re)publish for the launch side.
   firewall_write_zones_manifest
 
   printf >&2 'host egress lockdown applied: %s\n' "${firewall_nft_file}"
@@ -521,14 +534,16 @@ firewall_write_zones_manifest() {
     ok=0
   fi
   if (( ! ok )); then
-    # Fail CLOSED: leave NO manifest rather than a stale one. An absent manifest
-    # falls to the legacy built-in floor (custom zones refuse with "run apply"); a
-    # STALE one could mark a zone hostmap=1 against a freshly-loaded ruleset that
-    # no longer narrows the loopback accept (the last host-hole zone was removed),
-    # so a launch would enable the passt host map with no per-port nft gate — a
-    # fail-OPEN to the whole host loopback. Found by the impl security review (S1).
-    rm -f "${tmp}" "${firewall_zones_file}"
-    error 94 <<<"failed writing ${firewall_zones_file}; removed any stale manifest — re-run: sudo virtdev firewall apply"
+    # Fail CLOSED. firewall_apply already removed firewall.zones before the holder
+    # restart (the primary lockstep guarantee), so on the normal path it is already
+    # absent here; this is defence-in-depth that also reaps the partial temp. Decouple
+    # the rm from set -e: a parent-dir/EROFS unlink failure must NOT swallow the
+    # error 94 (that would exit a bare 1 with no diagnostic AND leave the stale
+    # hostmap=1 manifest the removal exists to delete — a fail-OPEN to the whole host
+    # loopback). Tell the admin to VERIFY removal, since a surviving stale manifest is
+    # the dangerous case.
+    rm -f "${tmp}" "${firewall_zones_file}" 2>/dev/null || true
+    error 94 <<<"failed writing ${firewall_zones_file}; attempted to remove any stale manifest — VERIFY it is gone, then re-run: sudo virtdev firewall apply"
   fi
 }
 
