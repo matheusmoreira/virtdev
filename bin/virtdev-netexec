@@ -56,6 +56,9 @@ forward_port="${flags[forward]:-}"
 # --allow-host-loopback: presence opts this launch back into guest->host loopback
 # (host-hole zones). virtdev-start passes it iff firewall.zones marks the resolved
 # zone hostmap=1; passt_command maps "1" -> omit --map-host-loopback none.
+# CROSS-REF: the firewall exit-100 guard (firewall_guard_running_hostmap) string-matches
+# this exact flag name in each machine's ExecStart to detect an open host map. Renaming
+# the flag here means updating that match too, or the guard silently fails OPEN.
 allow_host_loopback=0
 if [[ -n "${flags[allow-host-loopback]:-}" && "${flags[allow-host-loopback]}" != "0" ]]; then
   allow_host_loopback=1

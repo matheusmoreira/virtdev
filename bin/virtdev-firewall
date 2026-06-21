@@ -362,9 +362,11 @@ firewall_install_units() {
 # all-or-nothing). Scope is precisely the fail-OPEN (new any_hole 1->0): removing one
 # of several host-hole zones keeps any_hole=1, so the loopback stays `ct established`
 # and a machine whose own hole vanished merely fails CLOSED (its new loopback flows
-# drop) — no refuse needed. "Door open" is read from the CURRENT (pre-reload)
-# manifest via firewall_zone_needs_hostmap, which reflects each running machine's
-# launch-time --allow-host-loopback decision.
+# drop) — no refuse needed. "Door open" is read from each running machine's OWN unit:
+# its ExecStart carries `--allow-host-loopback` iff the launch opened passt's map.
+# That is the authoritative per-machine signal — systemd-owned (unforgeable by the
+# guest) and INDEPENDENT of firewall.zones, so a lost/stale manifest cannot blind
+# this guard, and a machine launched --unfiltered (map never opened) is not counted.
 #
 # Not mutually exclusive with a concurrent `virtdev start` (apply is root and
 # lock-free by design; start holds the rootless lock). A machine started in the zone
@@ -381,21 +383,25 @@ firewall_guard_running_hostmap() {
     [[ -n "${firewall_gen_ports[${z}]:-}" ]] && return 0
   done
 
-  # No host-hole remains: collect machines running with the host map open. Enumerate
-  # the target user's ALIVE machines through the shared predicate (which catches a
-  # machine in `deactivating`, whose passt host map is still open) — passing
-  # firewall_user_systemctl as the cross-privilege runner so the pin exclusion and
-  # the dot-immune parse live in one place. Map each live slice to its zone and ask
-  # whether that zone opens the host map in the loaded (pre-reload) manifest.
-  local unit slice zone project
+  # No host-hole remains: collect machines whose passt host map is actually OPEN,
+  # read from the AUTHORITATIVE per-machine source — the unit's own ExecStart, which
+  # carries `--allow-host-loopback` iff the launch opened the map. systemd owns that
+  # argv (the guest cannot forge it) and it is independent of firewall.zones, so a
+  # lost/stale manifest cannot blind this guard and an --unfiltered machine that
+  # never opened the map is correctly not flagged. Enumerate ALIVE machines through
+  # the shared predicate (which catches `deactivating`, whose map is still open),
+  # passing firewall_user_systemctl as the cross-privilege runner.
+  # CROSS-REF: the `--allow-host-loopback` literal matched below is virtdev's OWN
+  # netexec flag. Keep it in lockstep with its definition in virtdev-netexec (the
+  # `spec` array) and the emit in virtdev-start; renaming the flag there without
+  # updating this match silently fails the guard OPEN — no lint catches a string drift.
+  local unit exec_start project
   local -a stranded=()
   while IFS= read -r unit; do
-    slice="$(firewall_user_systemctl "${uid}" show -p Slice --value "${unit}" 2>/dev/null || true)"
-    zone="$(firewall_zone_of_slice "${slice}")"
-    if firewall_zone_needs_hostmap "${zone}"; then
-      project="${unit#virtdev-}"; project="${project%.service}"
-      stranded+=("${project}")
-    fi
+    exec_start="$(firewall_user_systemctl "${uid}" show -p ExecStart --value "${unit}" 2>/dev/null || true)"
+    [[ " ${exec_start} " == *" --allow-host-loopback "* ]] || continue
+    project="${unit#virtdev-}"; project="${project%.service}"
+    stranded+=("${project}")
   done < <(firewall_running_machine_units firewall_user_systemctl "${uid}")
 
   [[ ${#stranded[@]} -eq 0 ]] && return 0
