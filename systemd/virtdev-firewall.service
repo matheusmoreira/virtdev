@@ -32,5 +32,20 @@ ExecStart=/usr/bin/virtdev-firewall hold
 Restart=on-failure
 RestartSec=2
 
+# Sandboxing. The holder is a resident ROOT daemon, so confine it to the minimum it
+# needs: load the nft ruleset (CAP_NET_ADMIN) and write its state under /etc/virtdev.
+# Everything it touches is root-controlled, so this is defence-in-depth, not a fix for
+# a live hole — but a high-value resident root service earns the confinement.
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/virtdev
+ProtectHome=yes
+PrivateTmp=yes
+# KillMode=control-group is the default, but firewall_hold's reaping comment asserts
+# it (so the forked `nft -i` owner child dies with the unit) — state it explicitly so
+# a future unit edit cannot silently break that guarantee.
+KillMode=control-group
+
 [Install]
 WantedBy=multi-user.target
