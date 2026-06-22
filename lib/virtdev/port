@@ -47,6 +47,10 @@ readonly port_missing_exit_code=87
 _port_value_or_status() {
   local -r port_file="${VIRTDEV_HOME}/projects/${1}/port"
   [[ -f "${port_file}" ]] || return 1
+  # LC_ALL=C so [0-9] is byte-wise ASCII: under a UTF-8 locale a non-ASCII digit would
+  # pass the regex and read as a valid port, defeating the corruption guard — the same
+  # locale pin generation_read / project_list carry for their integer files.
+  local LC_ALL=C
   local port
   port="$(< "${port_file}")"
   [[ "${port}" =~ ^[0-9]+$ ]] || return "${port_corrupt_exit_code}"

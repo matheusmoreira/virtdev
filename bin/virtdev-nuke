@@ -67,6 +67,11 @@ lock_acquire
 # error from systemctl rather than the targeted message we want.
 projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
+  # LC_ALL=C so the schema regex is byte-wise ASCII (mirroring validate_project_name);
+  # a UTF-8 locale would let [a-zA-Z] also match accented dir names that would then
+  # split / confuse the systemctl running-check. nuke's remaining work is
+  # locale-insensitive, so leaving it set for the rest is harmless.
+  LC_ALL=C
   while IFS= read -r project; do
     [[ "${project}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
     if project_is_running "${project}"; then
