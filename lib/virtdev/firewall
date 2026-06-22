@@ -30,6 +30,15 @@
 #   firewall_zone_of_slice <slice-unit-name>
 #       Inverse of firewall_slice_for: echoes the zone for a slice unit name, or
 #       'none' for a stray/unknown slice. Manifest-backed (via firewall_zone_valid).
+#   firewall_slice_of_unit <unit>
+#       Echoes a live unit's systemd Slice (the single `show -p Slice` query).
+#   firewall_zone_of_unit <unit>
+#       Echoes the zone a running unit is in (live Slice -> firewall_zone_of_slice);
+#       for display (virtdev-list).
+#   firewall_zone_to_restore <slice>
+#       Echoes the zone to restore a rebuilt machine to from its captured slice, or
+#       empty (omit --zone) for an absent/unrecognised slice. Shared by
+#       virtdev-recreate and virtdev-upgrade so they handle the empty case alike.
 #   firewall_running_machine_units <systemctl-user-runner...>
 #       Echoes (one per line) the project machine units whose QEMU is still alive
 #       (ActiveState not inactive/failed, so `deactivating` counts), excluding the
@@ -228,24 +237,60 @@ firewall_slice_for() {
   printf 'virtdev-%s.slice\n' "${zone}"
 }
 
-# firewall_zone_of_slice <slice-unit-name> -> the zone whose slice this is, else
-# 'none'. The inverse of firewall_slice_for: strips the virtdev-….slice affixes
-# and validates the result via firewall_zone_valid (a built-in or a custom zone
-# realized in the manifest), so a custom zone is recognised automatically and a
-# stray / legacy / unknown slice yields 'none' (the most restrictive — matching
-# the rebuild paths' catch-all). Used by virtdev-list (display) and
-# virtdev-recreate / virtdev-upgrade (restore the prior zone).
-firewall_zone_of_slice() {
+# firewall_zone_from_slice <slice-unit-name> -> the zone whose slice this is on stdout,
+# returning 0, IFF the name round-trips to the exact `virtdev-<zone>.slice` AND passes
+# firewall_zone_valid (a built-in, or a custom zone realized in the manifest); otherwise
+# prints nothing and returns 1. The SINGLE owner of the slice-name <-> zone format: its
+# two callers below (firewall_zone_of_slice, firewall_zone_to_restore) differ ONLY in
+# how they handle the unrecognised miss, so the strip-and-round-trip lives here once and
+# cannot drift between them. The inverse of firewall_slice_for.
+firewall_zone_from_slice() {
   local -r slice="${1:-}"
-  local zone="${slice#virtdev-}"
-  zone="${zone%.slice}"
-  # Reconstruct-and-validate: the name must round-trip to the exact slice AND pass
-  # firewall_zone_valid (a built-in, or a custom zone realized in the manifest).
-  if [[ "${slice}" == "virtdev-${zone}.slice" ]] && firewall_zone_valid "${zone}"; then
-    printf '%s\n' "${zone}"
-  else
-    printf 'none\n'
-  fi
+  local zone="${slice#virtdev-}"; zone="${zone%.slice}"
+  [[ -n "${slice}" && "${slice}" == "virtdev-${zone}.slice" ]] && firewall_zone_valid "${zone}" \
+    || return 1
+  printf '%s\n' "${zone}"
+}
+
+# firewall_zone_of_slice <slice-unit-name> -> the zone whose slice this is, else 'none'
+# (the most restrictive — matching the rebuild paths' catch-all). Thin none-fallback
+# wrapper over firewall_zone_from_slice, so a custom zone is recognised automatically and
+# a stray / legacy / unknown slice yields 'none'. Used by virtdev-list (display) and the
+# live-zone display.
+firewall_zone_of_slice() {
+  firewall_zone_from_slice "${1:-}" || printf 'none\n'
+}
+
+# firewall_slice_of_unit <unit> -> the unit's live systemd Slice (empty if the unit is
+# gone or the query fails). The single source of the `show -p Slice` query, shared by
+# the live-zone display and the rebuild zone-capture below so they cannot drift.
+firewall_slice_of_unit() {
+  local -r unit="${1:?firewall_slice_of_unit: unit required}"
+  systemctl --user show -p Slice --value "${unit}" 2>/dev/null || true
+}
+
+# firewall_zone_of_unit <unit> -> the zone a RUNNING machine unit is in: its live Slice
+# mapped through firewall_zone_of_slice (a stray/legacy/unknown slice -> the most
+# restrictive 'none'). For DISPLAY of a live unit (virtdev-list).
+firewall_zone_of_unit() {
+  local -r unit="${1:?firewall_zone_of_unit: unit required}"
+  firewall_zone_of_slice "$(firewall_slice_of_unit "${unit}")"
+}
+
+# firewall_zone_to_restore <slice> -> the zone to RESTORE a machine to across a
+# destroy/rebuild, given the slice captured while it ran; EMPTY if the slice is absent
+# or unrecognised. The two rebuilders, virtdev-recreate and virtdev-upgrade, both call
+# this so the empty/unrecognised-slice case is handled IDENTICALLY (they used to
+# diverge: recreate forced --zone none, upgrade omitted --zone). Empty -> the caller
+# omits --zone and lets virtdev-start resolve the project's zone file — the right
+# recovery when the capture raced the machine's stop: we do not know the zone, so fall
+# to the configured default rather than force the most restrictive 'none'. A
+# recognised, realized virtdev-<zone>.slice returns its zone (incl. 'none' for
+# virtdev-none.slice, a deliberate explicit zone).
+firewall_zone_to_restore() {
+  # Thin empty-fallback wrapper over firewall_zone_from_slice: a recognised slice ->
+  # its zone (incl. 'none' for virtdev-none.slice); absent/unrecognised -> empty.
+  firewall_zone_from_slice "${1:-}" || return 0
 }
 
 # firewall_running_machine_units <systemctl-user-runner...>

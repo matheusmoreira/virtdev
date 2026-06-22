@@ -91,9 +91,7 @@ zone_display() {
   local -r project="${1}" running="${2}"
   [[ "${running}" == "1" ]] || { printf -- '-'; return; }
   [[ "${firewall_up}" == "1" ]] || { printf 'UNFILTERED'; return; }
-  local slice
-  slice="$(systemctl --user show -p Slice --value "virtdev-${project}.service" 2>/dev/null || true)"
-  printf '%s' "$(firewall_zone_of_slice "${slice}")"
+  printf '%s' "$(firewall_zone_of_unit "virtdev-${project}.service")"
 }
 
 for project in "${projects[@]}"; do

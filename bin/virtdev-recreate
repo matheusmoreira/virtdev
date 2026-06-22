@@ -120,25 +120,24 @@ if project_is_running "${project}"; then
   unit_active=1
 fi
 
-# Capture the live zone BEFORE the stop below clears it (the Slice property
-# reads empty once the unit is gone), so a running machine can be restored to
-# the zone it was in. Map the slice unit name to its zone EXACTLY; a stray,
-# legacy, or unreadable slice maps to the most restrictive 'none', preserving
-# the old "fail to most locked" intent.
+# Capture the live SLICE BEFORE the stop below clears it (the Slice property reads
+# empty once the unit is gone), so a running machine can be restored to the zone it
+# was in. The slice is mapped to a zone at resolution time via the shared
+# firewall_zone_to_restore (identical to virtdev-upgrade).
 prior_slice=""
-prior_zone=""
 if (( unit_active )); then
-  prior_slice="$(systemctl --user show -p Slice --value "${unit}" 2>/dev/null || true)"
-  prior_zone="$(firewall_zone_of_slice "${prior_slice}")"
+  prior_slice="$(firewall_slice_of_unit "${unit}")"
 fi
 
-# The zone to relaunch into: explicit --zone wins; else a running machine's
-# restored zone; else empty -> omit --zone so virtdev-start reads the project's
-# zone file (synthesizing --zone none here would ignore that file).
+# The zone to relaunch into: explicit --zone wins; else the zone a running machine was
+# in, via firewall_zone_to_restore — which returns empty for an absent/unrecognised
+# slice so we omit --zone and let virtdev-start read the project zone file (rather than
+# force the most restrictive 'none', the old behaviour that diverged from upgrade);
+# else empty.
 if [[ -n "${zone_arg}" ]]; then
   zone="${zone_arg}"
 elif (( unit_active )); then
-  zone="${prior_zone}"
+  zone="$(firewall_zone_to_restore "${prior_slice}")"
 else
   zone=""
 fi

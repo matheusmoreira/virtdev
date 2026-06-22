@@ -343,7 +343,7 @@ for p in "${included[@]}"; do
   was_running=0
   if project_is_running "${p}"; then
     was_running=1
-    prior_slices["${p}"]="$(systemctl --user show -p Slice --value "virtdev-${p}.service" 2>/dev/null || true)"
+    prior_slices["${p}"]="$(firewall_slice_of_unit "virtdev-${p}.service")"
   fi
 
   if (( ! was_running )); then
@@ -418,7 +418,10 @@ for p in "${included[@]}"; do
   if [[ -n "${zone_arg}" ]]; then
     recreate_opts+=(--zone "${zone_arg}")
   elif [[ -n "${prior_slices[${p}]:-}" ]]; then
-    recreate_opts+=(--zone "$(firewall_zone_of_slice "${prior_slices[${p}]}")")
+    # Shared restore mapping (identical to virtdev-recreate): an unrecognised slice
+    # maps to empty -> omit --zone so recreate -> virtdev-start reads the zone file.
+    restore_zone="$(firewall_zone_to_restore "${prior_slices[${p}]}")"
+    [[ -n "${restore_zone}" ]] && recreate_opts+=(--zone "${restore_zone}")
   fi
   (( flags[unfiltered] )) && recreate_opts+=(--unfiltered)
 
