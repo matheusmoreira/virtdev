@@ -146,7 +146,12 @@ if [[ ! "${VIRTDEV_VM_CPUS}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 readonly maintenance_port=2222
-readonly unit=virtdev-maintenance
+# NOT readonly: shared library functions (ssh_poll_until_ready, the qemu helper,
+# firewall_*_of_unit, firewall_running_machine_units) declare `local unit`. A readonly
+# global here blocks that shadow with "readonly variable" and breaks their reads — most
+# visibly firewall_running_machine_units' `read -r unit` loop, which silently enumerates
+# nothing (a fail-open of the reseal preflight). virtdev-start uses a plain `unit=` too.
+unit=virtdev-maintenance
 
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
