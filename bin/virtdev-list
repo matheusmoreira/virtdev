@@ -11,8 +11,9 @@
 #   STATUS    running | stopped
 #   ZONE      Network zone of a running virtual machine, derived from its
 #             live systemd slice AND the host egress lockdown being active:
-#             none | wan | full | UNFILTERED (the lockdown is down, so the
-#             machine is not actually filtered) | - (stopped).
+#             a built-in (none | wan | lan | full) or a custom zone name;
+#             UNFILTERED (the lockdown is down, so the machine is not actually
+#             filtered); - (stopped).
 #   GENERATION  Base generation the project was created against,
 #               or 'detached' for standalone projects
 #

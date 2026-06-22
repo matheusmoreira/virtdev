@@ -424,6 +424,11 @@ esac
 # vm_started is still 0 so cleanup_failed_start stops the unit (fail CLOSED).
 # --unfiltered opted out of the lockdown entirely, so it skips this.
 if (( filtered )); then
+  # Single ControlGroup read (no poll, unlike virtdev-maintain's retry): safe because
+  # qemu_activation_classify above already polled the unit to `active`, which populates
+  # ControlGroup. The poll-first ordering is the precondition — a future refactor that
+  # moved this assert before the activation poll could see an empty ControlGroup and
+  # fail CLOSED (a spurious exit 21).
   control_group="$(systemctl --user show "${unit}" -p ControlGroup --value 2>/dev/null || true)"
   if ! firewall_assert_unit_filtered "${control_group}"; then
     error 21 <<MESSAGE

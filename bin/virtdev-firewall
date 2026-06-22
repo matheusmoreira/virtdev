@@ -65,7 +65,11 @@ firewall_load_custom_zones() {
   local -r uid="${1:?firewall_load_custom_zones: uid required}"
   firewall_gen_zones=(); firewall_gen_base=(); firewall_gen_ports=()
   local home
-  home="$(getent passwd "${uid}" | cut -d: -f6)"
+  # `|| home=""` neutralises the set -e abort: under pipefail a passwd miss makes
+  # `getent | cut` non-zero, and as a plain assignment that would abort apply with a
+  # bare exit 2 (colliding with validate's reserved code) BEFORE the graceful-skip
+  # guard below. A missing passwd entry means "no custom zones", not an error.
+  home="$(getent passwd "${uid}" | cut -d: -f6)" || home=""
   [[ -n "${home}" && -d "${home}" ]] || return 0
   local -r zones_dir="${home}/.config/virtdev/zones"
   [[ -d "${zones_dir}" ]] || return 0
@@ -139,6 +143,8 @@ firewall_generate() {
   printf '    type filter hook output priority 0; policy accept;\n'
   # Narrow to virtdev FIRST so the host's own egress is untouched; jump
   # only for sockets in virtdev.slice (every machine, by ancestry).
+  # CROSS-REF: the holder's uid/base sed (firewall_hold step 1) parses this exact
+  # `…virtdev.slice" jump virtdev_machines` literal — keep the two shapes in lockstep.
   printf '    socket cgroupv2 level %s "%s" jump virtdev_machines\n' "${base_level}" "${base}"
   printf '  }\n'
   printf '  chain virtdev_machines {\n'
@@ -171,6 +177,9 @@ firewall_generate() {
   # terminal drop is its policy. Slices are named through firewall_slice_for (the
   # single source of truth), so launch (systemd-run --slice) and rule can't drift.
   # Uniform `jump zone_<z>`; each target chain is emitted below.
+  # CROSS-REF: the holder's cgroup-dir-wait sed (firewall_hold step 2) parses these
+  # `…/virtdev-<zone>.slice" jump zone_<z>` literals to derive its wait-set — keep the
+  # two shapes in lockstep.
   local slice
   for z in $(firewall_relaxation_zones) "${firewall_gen_zones[@]}"; do
     slice="$(firewall_slice_for "${z}")"
@@ -687,6 +696,9 @@ firewall_hold() {
   #    literal ends in `virtdev.slice"` (the relaxation jumps end in
   #    `-<zone>.slice"`), so the substitution matches exactly that one line; the
   #    uid is identical across all three literals, so head -1 is a safe guard.
+  #    CROSS-REF: this parses firewall_generate's base-jump emit (its
+  #    `… jump virtdev_machines` printf); a change to that literal's shape needs a
+  #    matching change here (no lint catches the drift).
   local uid base
   read -r uid base < <(
     sed -n 's#.*"\(user\.slice/user-\([0-9]\+\)\.slice/[^"]*virtdev\.slice\)".*#\2 \1#p' \
@@ -703,7 +715,8 @@ firewall_hold() {
   #    no access to the user's custom-zone config, and deriving from the ruleset
   #    covers exactly the slices nft will resolve (built-ins + customs), no drift.
   #    The base-jump literal ends in "virtdev.slice" (no -<zone>), so it is not
-  #    matched here.
+  #    matched here. CROSS-REF: this parses firewall_generate's per-zone dispatch
+  #    emit (its `… "%s/%s" jump zone_%s` printf); keep the two shapes in lockstep.
   local -a waitdirs=()
   local s
   while IFS= read -r s; do
