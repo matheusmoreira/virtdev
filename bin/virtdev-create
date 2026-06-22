@@ -46,25 +46,12 @@ project="${1}"
 
 validate_project_name "${project}"
 
-case "${project}" in
-  maintenance)
-    error 3 <<<"Project name 'maintenance' is reserved by virtdev-maintain" ;;
-  base)
-    # 'base' is a virtdev-path pseudo-target for the sealed base dir;
-    # a real project named 'base' would shadow it.
-    error 3 <<<"Project name 'base' is reserved for the sealed base system" ;;
-  none|wan|lan|full)
-    # The built-in zone vocabulary is reserved as a project name to avoid
-    # command/vocabulary confusion (`virtdev start wan` — project or zone?). Only
-    # the BUILT-INS are reserved: a custom zone's name need not be, because a
-    # project's zone comes from its zone file / --zone, never its name, so a
-    # project sharing a name with a custom zone carries no isolation gap.
-    error 3 <<<"Project name '${project}' is reserved for the network zone of the same name" ;;
-  firewall)
-    # 'firewall' would launch as the --user unit virtdev-firewall.service,
-    # confusingly shadowing the system holder unit of the same name.
-    error 3 <<<"Project name 'firewall' is reserved (the host egress lockdown unit)" ;;
-esac
+# Reject reserved names (maintenance, base, firewall, and the built-in zone
+# vocabulary) via the shared validator, so create and virtdev-move enforce one
+# reserved set and cannot drift.
+if reserved_reason="$(validate_project_name_reserved "${project}")"; then
+  error 3 <<<"${reserved_reason}"
+fi
 
 lock_acquire
 

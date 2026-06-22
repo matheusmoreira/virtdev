@@ -2,13 +2,18 @@
 #
 # validate library: input validation helpers.
 # Public:
-#   validate_project_name <name>
+#   validate_project_name <name>           charset + length (every consumer)
+#   validate_project_name_reserved <name>  reserved as a project name? (minters only)
 # Exit codes:
 #   2  invalid project name
 #
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
-import error
+# firewall is imported so the reserved-name set can fold in the built-in zone
+# vocabulary (firewall_zone_known) and stay single-sourced. firewall is
+# side-effect-free at source time (functions + constants only), so the import is safe
+# for every validate consumer.
+import error firewall
 
 validate_project_name() {
   local -r name="${1}"
@@ -72,4 +77,35 @@ Maximum ${max_length} characters with current VIRTDEV_HOME.
 ${limit_reason}
 MESSAGE
   fi
+}
+
+# validate_project_name_reserved <name>
+# Echo a human-readable reason and return 0 if <name> is a RESERVED project name —
+# one that would collide with a virtdev-managed unit (maintenance, firewall), the
+# sealed base ('base'), or the built-in firewall zone vocabulary. Return 1 (no echo)
+# if the name is free. This is the SINGLE reserved-name authority for the two name
+# minters, virtdev-create and virtdev-move: a name one refuses but the other accepts
+# is a destroy-then-fail data-loss trap (`move x wan && recreate wan`). The built-in
+# zones are folded in from firewall_zone_known, so adding a built-in zone reserves it
+# here automatically. Custom zone names are NOT reserved — a project's zone comes from
+# its zone file / --zone, never its name. Pure check (no exit); each consumer raises
+# its own code with the reason (create: 3, move: 6).
+validate_project_name_reserved() {
+  local -r name="${1:-}"
+  case "${name}" in
+    maintenance)
+      printf "Project name 'maintenance' is reserved by virtdev-maintain"; return 0 ;;
+    base)
+      printf "Project name 'base' is reserved for the sealed base system"; return 0 ;;
+    firewall)
+      printf "Project name 'firewall' is reserved (the host egress lockdown unit)"; return 0 ;;
+  esac
+  # Built-in firewall zone: a project named for one makes `virtdev start <name>`
+  # ambiguous (project or zone?). The quoted-subscript -v form is injection-safe and
+  # reads false for any non-key.
+  if [[ -v "firewall_zone_known[${name}]" ]]; then
+    printf "Project name '%s' is reserved for the network zone of the same name" "${name}"
+    return 0
+  fi
+  return 1
 }

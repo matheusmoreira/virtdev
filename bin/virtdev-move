@@ -58,13 +58,13 @@ if [[ "${source_name}" == "${target_name}" ]]; then
   error 7 <<<"Source and target are the same: ${source_name}"
 fi
 
+# Reject reserved names for BOTH endpoints via the shared validator (the same set
+# virtdev-create enforces). move previously reserved only maintenance/base, so
+# `move x wan && recreate wan` destroyed the disks then failed at create.
 for name in "${source_name}" "${target_name}"; do
-  case "${name}" in
-    maintenance)
-      error 6 <<<"Project name 'maintenance' is reserved by virtdev-maintain" ;;
-    base)
-      error 6 <<<"Project name 'base' is reserved for the sealed base system" ;;
-  esac
+  if reserved_reason="$(validate_project_name_reserved "${name}")"; then
+    error 6 <<<"${reserved_reason}"
+  fi
 done
 
 lock_acquire
