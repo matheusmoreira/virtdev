@@ -299,6 +299,12 @@ cleanup_partial() {
   (( backup_succeeded )) || rm -rf "${partial}"
   [[ -n "${rsync_log}" ]] && rm -f "${rsync_log}"
   [[ -n "${rsync_wrapper}" ]] && rm -f "${rsync_wrapper}"
+  # The trap's last statement must succeed: a short-circuited `[[ … ]] && rm` above
+  # returns 1, and under set -e that becomes the script's exit code, clobbering the real
+  # error in early-exit windows (e.g. the base-generation exit 12, raised after this
+  # trap installs but before rsync_wrapper is set, -> 1). Same fix as the virtdev-ssh
+  # cleanup trap; preserve the discriminable exit code.
+  return 0
 }
 trap cleanup_partial EXIT
 
