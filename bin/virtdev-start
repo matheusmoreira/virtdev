@@ -415,6 +415,16 @@ systemd-run reported success but systemctl does not see the unit active.
 Investigate: systemctl --user status ${unit}
 MESSAGE
     ;;
+  *)
+    # Defensive: qemu_activation_classify returns a fixed discriminant set, so this is
+    # unreachable today — but without a catch-all an unrecognised value would fall
+    # through the case and reach vm_started=1, marking a non-active unit as started.
+    error 14 <<MESSAGE
+Unexpected activation result '${classify}' for ${unit} (ActiveState: ${state:-unknown}).
+This is a bug: qemu_activation_classify returned an unrecognised discriminant.
+Investigate: systemctl --user status ${unit}
+MESSAGE
+    ;;
 esac
 
 # Close the firewall TOCTOU: the guard ran before the lock + systemd-run, so a

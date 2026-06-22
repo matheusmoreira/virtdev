@@ -502,8 +502,8 @@ Install or repair it:  sudo virtdev firewall apply
 Or launch deliberately unprotected by passing --unfiltered.
 MESSAGE
   fi
-  local uid inode
-  read -r uid inode < <(firewall_baseline) || error "${firewall_lockdown_exit_code}" <<<"host egress lockdown baseline is unreadable; run: sudo virtdev firewall apply"
+  local uid
+  read -r uid _ < <(firewall_baseline) || error "${firewall_lockdown_exit_code}" <<<"host egress lockdown baseline is unreadable; run: sudo virtdev firewall apply"
   if [[ "${uid}" != "$(id -u)" ]]; then
     error "${firewall_lockdown_exit_code}" <<MESSAGE
 host egress lockdown belongs to uid ${uid}, but you are $(id -u). Launch as that user, or re-run: sudo virtdev firewall apply
