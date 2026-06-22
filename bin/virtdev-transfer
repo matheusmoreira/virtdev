@@ -136,4 +136,11 @@ rsync_wrapper=""
 ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 trap 'rm -f "${rsync_wrapper}"' EXIT
 
-rsync -a -e "${ssh_command}" "${rsync_src}" "${rsync_dest}"
+# --safe-links on a DOWNLOAD (guest -> host): a compromised guest could otherwise
+# plant symlinks pointing outside the destination (../../, /etc/...) that rsync would
+# faithfully recreate on the HOST. --safe-links drops symlinks that escape the
+# transfer. Omitted for uploads (the host is the trusted side), so a legitimate
+# outside-pointing symlink in your own tree still uploads.
+rsync_opts=(-a)
+(( src_is_remote )) && rsync_opts+=(--safe-links)
+rsync "${rsync_opts[@]}" -e "${ssh_command}" "${rsync_src}" "${rsync_dest}"
