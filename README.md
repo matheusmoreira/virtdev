@@ -77,8 +77,12 @@ sudo virtdev firewall apply       # generate + load the nftables filter, install
 virtdev firewall status           # 'active' once the lockdown is loaded (rootless)
 ```
 
-`apply` derives the cgroup match from your own user (run it via `sudo`, not as
-bare root). The ruleset is project-agnostic and the per-zone slices are shared,
+`apply` derives the cgroup match from your own user, so run it as yourself, not as
+bare root. Plain `virtdev firewall apply` (no `sudo`) **self-elevates** — it
+re-runs itself under `sudo`, forwarding your `VIRTDEV_HOME` explicitly as
+`--virtdev-home` (sudo strips the environment) — and is the simplest form; the
+explicit `sudo virtdev firewall apply` above works too. The ruleset is
+project-agnostic and the per-zone slices are shared,
 so a project created later is covered immediately — no re-apply per project
 (adding or editing a **custom zone** does need a re-apply, since its rules live in
 the root ruleset). Set a project's default zone by writing a zone name — `none`,

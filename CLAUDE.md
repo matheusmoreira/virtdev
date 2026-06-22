@@ -96,6 +96,7 @@ Same error → same code, everywhere:
 | 98 | apply: lingering not enabled for the target user | `bin/virtdev-firewall` |
 | 99 | holder: zone-slice cgroup dirs never appeared (pins not running) | `bin/virtdev-firewall` |
 | 100 | apply: refused — removing the last host hole would strand a running machine's open host-loopback map | `bin/virtdev-firewall` |
+| 101 | apply: timed out acquiring the user lock (another virtdev op in progress) | `bin/virtdev-firewall` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").
@@ -476,20 +477,37 @@ glob in `PKGBUILD` picks it up automatically.
     `virtdev-maintain`; both then re-verify post-launch via the unit's live
     `ControlGroup` (`firewall_assert_unit_filtered`) to close the guard→launch
     TOCTOU, tearing the unit down on a mismatch (start exit 21 / maintain 25).
-  - **`apply` is root, runtime is rootless.** `sudo virtdev firewall apply`
-    requires linger (98), validates `SUDO_UID` (never bakes a guessed uid),
-    **copies** (never symlinks) the holder → `/etc/systemd/system` and the pin →
-    `/etc/systemd/user` (user-vs-system, NOT by file extension) and starts the
-    pins AS THE USER, then constructs (never searches) the cgroup base, generates
-    → `nft -c` → atomic `rename(2)`, and restarts the holder. The holder derives
-    uid+base from the installed ruleset, waits for the pin-backed cgroup dirs
-    (99 on timeout), loads, verifies, and records `firewall.base`. The package
-    ships `/usr/lib/systemd/{system,user}`. Before any mutation, apply also
+  - **`apply` is root, runtime is rootless.** `virtdev firewall apply` (no sudo)
+    **self-elevates**: run rootless it re-execs `sudo <self> apply --virtdev-home
+    <VIRTDEV_HOME>`, forwarding the user's `VIRTDEV_HOME` explicitly across the
+    sudo boundary (sudo strips the env) — the cleanest invocation. A direct `sudo
+    virtdev firewall apply` still works (no flag → falls back to the default home
+    built from the user's home dir). apply requires linger (98), validates
+    `SUDO_UID` (never bakes a guessed uid), **copies** (never symlinks) the holder
+    → `/etc/systemd/system` and the pin → `/etc/systemd/user` (user-vs-system, NOT
+    by file extension) and starts the pins AS THE USER, then constructs (never
+    searches) the cgroup base, generates → `nft -c` → atomic `rename(2)`, and
+    restarts the holder. The holder derives uid+base from the installed ruleset,
+    waits for the pin-backed cgroup dirs (99 on timeout), loads, verifies, and
+    records `firewall.base`. The package ships `/usr/lib/systemd/{system,user}`.
+    apply takes the user's **rootless lock** (`firewall_lock_user`, the SAME
+    `${VIRTDEV_HOME}/lock` the launches hold) around its scan→reload→manifest-write
+    to serialize against a concurrent `virtdev start` (the start-vs-apply race), so
+    it is NOT purely lock-free; `--virtdev-home` is the ONLY input derived from
+    `VIRTDEV_HOME`, used solely to LOCATE that lock — every SECURITY decision still
+    derives from `SUDO_UID`, so a wrong value only skips coordination (fail-safe).
+    Timing out on the lock (60 s) is exit 101. Before any mutation, apply also
     **refuses** (100) if the new zone set drops the last host-hole zone while a
-    machine still runs with passt's host map open (current-manifest `hostmap=1`):
-    passt's map is fixed at launch and apply never stops machines, so the nft
-    loopback narrowing would un-gate that running machine to the whole host
-    loopback — fail-OPEN. The refusal names the machines to stop first.
+    machine still runs with passt's host map open — read from each running machine's
+    own `ExecStart` (`--allow-host-loopback`, the authoritative, guest-unforgeable,
+    manifest-INDEPENDENT per-machine signal), counting `active` AND `deactivating`
+    machines via the shared `firewall_running_machine_units` predicate: passt's map
+    is fixed at launch and apply never stops machines, so the nft loopback narrowing
+    would un-gate that running machine to the whole host loopback — fail-OPEN. The
+    refusal names the machines to stop first. apply removes `firewall.zones` BEFORE
+    the holder restart (lockstep) and (re)writes it only after a successful load, so
+    "`firewall.zones` exists ⟺ the loaded ruleset was published by a completed
+    apply" (a load that wins but skips the rewrite stays fail-CLOSED).
   - **maintenance runs in `wan`** (needs WAN for `pacman -Syu`; trusted base, no
     host/LAN). Its running-machine preflight glob excludes the pins
     (`virtdev-firewall-pin@*.service`, permanent under linger).

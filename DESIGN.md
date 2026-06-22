@@ -625,13 +625,25 @@ holder and the pins), so the nft loopback accept un-narrows (its `ct state
 established` gate exists only while some host-hole zone does — see below) out from
 under a machine whose passt map is still wide open, widening it from its declared
 port to **every** host loopback port. So `apply` **refuses** (exit 100) when the new
-zone set has no host-hole zone but a machine is running in a zone the current
-manifest marks `hostmap=1`, naming the machines to `virtdev stop` first; nothing is
-changed on refusal. Removing a *non-last* hole keeps the gate (the machine that lost
-its hole fails *closed*), and removing the last one with no such machine running just
-proceeds.
+zone set has no host-hole zone but a machine is still running with its passt map
+open, naming the machines to `virtdev stop` first; nothing is changed on refusal.
+"Map open" is read from each running machine's **own** `ExecStart` — it carries
+`--allow-host-loopback` iff the launch opened the map — which is the authoritative
+per-machine signal: systemd-owned (the guest cannot forge it) and INDEPENDENT of
+`firewall.zones`, so a lost or stale manifest cannot blind the guard, and an
+`--unfiltered` machine (map never opened) is correctly not counted. Running machines
+are enumerated through the shared `firewall_running_machine_units` predicate, which
+counts `active` AND `deactivating` (a machine mid-shutdown still holds its map open)
+— the same predicate `virtdev-maintain`'s reseal preflight uses. Removing a
+*non-last* hole keeps the gate (the machine that lost its hole fails *closed*), and
+removing the last one with no such machine running just proceeds.
 
-**Apply (root, one-time).** `sudo virtdev firewall apply` requires **linger**
+**Apply (root, one-time).** `virtdev firewall apply` (no sudo) **self-elevates**:
+run rootless it re-execs `sudo <self> apply --virtdev-home <VIRTDEV_HOME>`,
+forwarding the invoking user's `VIRTDEV_HOME` explicitly across the sudo boundary
+(sudo strips the env), so the no-sudo form is the cleanest invocation. A direct
+`sudo virtdev firewall apply` also works — with no flag it falls back to the
+default home built from the user's home dir. Either way apply requires **linger**
 (exit 98; never enables it silently), validates `SUDO_UID` (numeric > 0; refuses
 bare root, never bakes a guessed uid/path), **copies** (never symlinks) the
 holder unit → `/etc/systemd/system` and the `--user` pin template →
@@ -647,6 +659,25 @@ cgroup2 paths still resolve — so the pins must be up first), atomically
 atomic install means an interrupted apply leaves the prior good ruleset intact.
 The ruleset is project-agnostic, so a project created later is covered
 immediately — no re-apply.
+
+To serialize against a concurrent `virtdev start`, apply takes the invoking
+user's **rootless lock** (`firewall_lock_user` opens the SAME
+`${VIRTDEV_HOME}/lock` the launches hold) around its running-machine scan, the
+holder reload, and the manifest write — the structural close of the start-vs-apply
+race (a launch must not read the old manifest, open passt's map, then have apply's
+reload un-narrow the loopback under it). This is the ONLY reason apply needs the
+user's `VIRTDEV_HOME` (forwarded via `--virtdev-home`): solely to LOCATE that lock,
+never for a security decision — every security input still derives from `SUDO_UID`,
+so a wrong/forged home only skips coordination (fail-safe). Timing out (60 s) is
+exit 101. The realized-zone manifest `/etc/virtdev/firewall.zones` is published
+**lockstep** with the ruleset: apply removes it BEFORE the holder restart and
+(re)writes it only after the restart confirms a successful load, enforcing
+"`firewall.zones` exists ⟺ the loaded ruleset was published by a COMPLETED apply".
+Any outcome that loads the new ruleset but skips the rewrite (a crash in the
+restart→write window, or an exit-95 abort whose holder self-heals via
+`Restart=on-failure`) therefore stays fail-CLOSED — the manifest is absent, so
+custom zones refuse with "run apply" and built-ins fall to the legacy floor — until
+the rewrite completes.
 
 **Holder.** One resident unit, `virtdev-firewall.service` (root, `Type=notify`),
 loads the ruleset into the `owner,persist` table via an `nft -i` include and

@@ -90,6 +90,8 @@
 #   22  passt failed to initialise (Boot 1 activation)
 #   23  QEMU command not found (Boot 1 activation)
 #   24  Boot 2 (inventory) ended unclean; reseal refused to protect the base
+#   25  host egress lockdown baseline changed during launch (post-activation
+#       TOCTOU re-check failed); machine stopped, reseal refused
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -100,6 +102,8 @@
 #   77  SSH key not found — ssh_key_validate
 #   78  SSH key permissions too open — ssh_key_validate
 #   82  corrupt base generation file — generation_read
+#   88  host egress lockdown not active / stale baseline / wrong user —
+#       firewall_require (the pre-copy guard and maintenance_boot)
 #
 # Configuration via environment variables:
 #

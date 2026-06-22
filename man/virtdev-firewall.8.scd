@@ -6,7 +6,7 @@ virtdev-firewall - host egress lockdown for virtdev virtual machines
 
 # SYNOPSIS
 
-*sudo virtdev firewall apply*++
+*virtdev firewall apply* [*--virtdev-home* _path_]++
 *virtdev firewall status*
 
 # DESCRIPTION
@@ -36,23 +36,32 @@ This command is normally reached through the *virtdev*(1) dispatcher
 # COMMANDS
 
 *apply*
-	Generate, validate, atomically install, and load the ruleset. Requires
-	*root* via *sudo*, run as your normal user: it reads *SUDO_UID* to learn
-	whose machines to protect (and to find that user's custom-zone files) and
-	refuses to run as bare root. The target user must have *lingering* enabled
-	(see *loginctl*(1)) so the resident units run from boot to shutdown. apply
-	parses the user's custom zone-definition files first (a malformed file aborts
-	with exit *89* before any change is made), refuses (exit *100*) if removing
-	the last host-hole zone would strand a running machine whose passt
-	host-loopback map is open (again before any change), installs the holder and
-	the per-zone _pin_ units, starts and *reconciles* the pins (materialising each
-	zone's cgroup directory; a pin for a removed zone is disabled), generates the
-	ruleset to _/etc/virtdev/firewall.nft_, validates it with _nft -c_, installs
-	it with an atomic _rename_(2), restarts the holder to load it, and finally
-	writes the realized-zone manifest _/etc/virtdev/firewall.zones_. Re-running
-	apply is safe and idempotent, and is *required* after adding or editing a
-	custom zone. Removing the last custom host hole while a machine still runs in
-	it requires stopping that machine first (see exit *100*).
+	Generate, validate, atomically install, and load the ruleset. Runs as
+	*root*, but *self-elevates*: plain _virtdev firewall apply_ re-execs itself
+	under *sudo*, forwarding your _VIRTDEV_HOME_ as *--virtdev-home* (sudo strips
+	the environment), so the no-sudo form is the simplest invocation; an explicit
+	_sudo virtdev firewall apply_ also works. It reads *SUDO_UID* to learn whose
+	machines to protect (and to find that user's custom-zone files) and refuses to
+	run as bare root. The target user must have *lingering* enabled (see
+	*loginctl*(1)) so the resident units run from boot to shutdown. apply parses
+	the user's custom zone-definition files first (a malformed file aborts with
+	exit *89* before any change is made), then takes that user's rootless lock to
+	serialize against a concurrent _virtdev start_ (timing out is exit *101*),
+	refuses (exit *100*) if removing the last host-hole zone would strand a running
+	machine whose passt host-loopback map is open (again before any change),
+	installs the holder and the per-zone _pin_ units, starts and *reconciles* the
+	pins (materialising each zone's cgroup directory; a pin for a removed zone is
+	disabled), generates the ruleset to _/etc/virtdev/firewall.nft_, validates it
+	with _nft -c_, installs it with an atomic _rename_(2), restarts the holder to
+	load it, and finally writes the realized-zone manifest
+	_/etc/virtdev/firewall.zones_ (withheld across the restart, so its presence
+	means a completed apply published the loaded ruleset). The *--virtdev-home*
+	flag (apply only) names the lock home and is the only input derived from
+	_VIRTDEV_HOME_; every security decision derives from *SUDO_UID*, so a wrong
+	value only skips coordination. Re-running apply is safe and idempotent, and is
+	*required* after adding or editing a custom zone. Removing the last custom host
+	hole while a machine still runs in it requires stopping that machine first (see
+	exit *100*).
 
 *status*
 	Report whether the lockdown is active. Prints _active_ or _inactive_ to
@@ -202,6 +211,10 @@ _/usr/lib/systemd/user/virtdev-firewall-pin@.service_
 	apply: refused because removing the last custom host-hole zone would strand a
 	running machine whose passt host-loopback map is open, widening it to every
 	host loopback port. Stop the named machine(s) and re-apply. Nothing is changed.
+
+*101*
+	apply: timed out (60 s) acquiring the user's rootless lock; another virtdev
+	operation is in progress. Retry once it finishes.
 
 The launch guard in *virtdev-start*(1) and *virtdev-maintain*(1) returns *88*
 when the lockdown is not active; *virtdev-start*(1) returns *22* when the resolved
