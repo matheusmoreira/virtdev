@@ -22,6 +22,7 @@
 #   5   source virtual machine is running
 #   6   reserved project name
 #   7   source and target are the same
+#   8   backup snapshots already exist for the target name
 #
 
 set -euo pipefail
@@ -94,6 +95,19 @@ fi
 
 source_backups="${VIRTDEV_HOME}/backups/${source_name}"
 target_backups="${VIRTDEV_HOME}/backups/${target_name}"
+
+# Refuse a backups/<target> collision BEFORE the critical section: moving the source
+# snapshots into an existing target backups dir would nest them and relabel a dead
+# project's snapshots (the project-dir collision is already refused at error 4 above).
+# Skipped when recovering — a crash between the project-dir and backups moves leaves
+# target_backups absent, so a resume never reaches this case.
+if (( ! recovering )) && [[ -e "${target_backups}" ]]; then
+  error 8 <<MESSAGE
+Backup snapshots already exist for the target name: ${target_backups}
+Renaming ${source_name} would nest its snapshots inside them. Move or remove
+that directory first.
+MESSAGE
+fi
 
 # Recovery: detect interrupted previous run via leftover target with
 # missing source. This means the project dir was renamed but the

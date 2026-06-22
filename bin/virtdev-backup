@@ -81,6 +81,7 @@
 #   10  partial snapshot directory already exists
 #   11  no files captured (all manifest paths absent on guest)
 #   12  base generation file missing
+#   13  a snapshot with this timestamp already exists
 #   15  manifest contains absolute paths
 #   16  manifest has malformed path entries
 #   17  rsync transport failure (SSH connection lost)
@@ -433,6 +434,17 @@ Every manifest entry was skipped — most commonly because the
 referenced paths do not exist on the guest. The partial snapshot
 has been removed.
 Verify the manifest against the guest: virtdev-ssh ${project} ls -la
+MESSAGE
+fi
+
+# Refuse rather than mv INTO an existing final/: a second backup within the same UTC
+# second would nest partial/ inside final/ — a silent double, invisible to
+# snapshot_list (which matches the exact <date>/<time> depth). The EXIT trap removes
+# partial/.
+if [[ -e "${final}" ]]; then
+  error 13 <<MESSAGE
+A snapshot already exists at this timestamp: ${final}
+Another backup of ${project} completed within the same second. Wait a moment and retry.
 MESSAGE
 fi
 

@@ -42,8 +42,9 @@
 #
 # Failure semantics: fail-fast at any non-zero subcommand exit. The
 # exit code identifies which step failed (20 backup, 21 stop, 22
-# destroy, 23 create, 24 start, 25 wait, 27 restore); the message names
-# the recovery command for that boundary.
+# destroy, 23 create, 24 start, 25 wait, 27 restore; 28 = the resolved
+# zone was removed before the destroy step); the message names the
+# recovery command for that boundary.
 #
 # Provision is the exception: the VM is already up, so a failed
 # provision script is non-fatal — recreate finishes and exits 26
@@ -318,6 +319,26 @@ latest_snapshot() {
   snapshot_latest "${project}"
 }
 
+# Resume-command builders for the failure hints. They reproduce the zone/unfiltered
+# the chain used, so a copy-pasted resume relaunches into the SAME egress zone instead
+# of whatever the project zone file now resolves to.
+#   start_resume    — the resolved zone (explicit or captured) the fresh machine needs.
+#   recreate_resume — only the EXPLICIT --zone (a captured/default zone re-resolves
+#                     naturally when recreate re-runs).
+start_resume() {
+  local h="virtdev-start"
+  [[ -n "${zone}" ]] && h+=" --zone ${zone}"
+  (( flags[unfiltered] )) && h+=" --unfiltered"
+  printf '%s %s' "${h}" "${project}"
+}
+recreate_resume() {            # $1 (optional): extra flags, e.g. --no-backup
+  local h="virtdev-recreate"
+  [[ -n "${1:-}" ]] && h+=" ${1}"
+  [[ -n "${zone_arg}" ]] && h+=" --zone ${zone_arg}"
+  (( flags[unfiltered] )) && h+=" --unfiltered"
+  printf '%s %s' "${h}" "${project}"
+}
+
 # Chain execution. Each step prints its banner first so the user can
 # see where they are in the plan; on failure the matching error block
 # tells them what state the project is in now and which command to
@@ -333,7 +354,7 @@ if (( do_backup )); then
 backup failed (virtdev-backup exited non-zero).
 Project ${project} is unchanged. Investigate the rsync output above
 and rerun:
-    virtdev-recreate ${project}
+    $(recreate_resume)
 MESSAGE
   fi
 fi
@@ -353,9 +374,24 @@ The virtual machine may be in an indeterminate state. Inspect with:
 Stop it manually, then rerun with --no-backup (the snapshot is
 already on disk):
     virtdev-stop ${project}
-    virtdev-recreate --no-backup ${project}${snap_hint}
+    $(recreate_resume --no-backup)${snap_hint}
 MESSAGE
   fi
+fi
+
+# Re-validate the resolved zone immediately before the IRREVERSIBLE destroy. An
+# explicit --zone was checked at parse time and a captured zone at capture time, but a
+# concurrent `firewall apply` could have removed a custom zone since — re-check here so
+# a vanished zone fails BEFORE the disks are wiped, not at the start step after destroy
+# (which would leave a fresh machine that cannot launch into its zone).
+if [[ -n "${zone}" ]] && ! firewall_zone_valid "${zone}"; then
+  error 28 <<MESSAGE
+zone '${zone}' is no longer active (removed since this recreate began).
+${project} is backed up and stopped but NOT destroyed — nothing is lost.
+Re-apply the zone (or pass --zone), then rerun:
+    sudo virtdev firewall apply
+    $(recreate_resume --no-backup)
+MESSAGE
 fi
 
 (( ++step ))
@@ -368,7 +404,7 @@ Snapshot is preserved at: ${backups_project_dir}/${snap}/"
   error 22 <<MESSAGE
 destroy failed (virtdev-destroy exited non-zero).
 The project still exists. Inspect, fix, and rerun with --no-backup:
-    virtdev-recreate --no-backup ${project}${snap_hint}
+    $(recreate_resume --no-backup)${snap_hint}
 MESSAGE
 fi
 
@@ -381,9 +417,12 @@ if ! create; then
 Snapshot is preserved at: ${backups_project_dir}/${snap}/"
   error 23 <<MESSAGE
 create failed (virtdev-create exited non-zero).
-Project directory was destroyed but the new one was not built.
-Investigate, then rerun with --no-backup:
-    virtdev-recreate --no-backup ${project}${snap_hint}
+The project directory was destroyed and the new one was not built, so a
+recreate resume would dead-end at "Project not found". Rebuild by hand:
+    virtdev-create ${project}
+    $(start_resume)
+    virtdev-wait ${project}
+    virtdev-restore ${project}${snap_hint}
 MESSAGE
 fi
 
@@ -398,7 +437,7 @@ Snapshot path: ${backups_project_dir}/${snap}/"
 start failed (virtdev-start exited non-zero).
 A fresh project exists for ${project} but is not running.
 Resume manually:
-    virtdev-start ${project}
+    $(start_resume)
     virtdev-wait ${project}
     virtdev-restore ${project}${snap_hint}
 MESSAGE

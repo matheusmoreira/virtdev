@@ -336,6 +336,23 @@ abort_backup() {
   error 20 <<<"Aborting."
 }
 
+# The recreate resume hint for a failed rebuild, carrying the zone this upgrade used
+# for that project (explicit --zone, else the machine's captured zone) so a
+# copy-pasted resume rebuilds into the SAME zone, not whatever the project zone file
+# now resolves to. Mirrors virtdev-recreate's own resume hints.
+upgrade_resume() {
+  local -r p="${1}"
+  local h="virtdev-recreate --no-backup"
+  if [[ -n "${zone_arg}" ]]; then
+    h+=" --zone ${zone_arg}"
+  elif [[ -n "${prior_slices[${p}]:-}" ]]; then
+    local rz; rz="$(firewall_zone_to_restore "${prior_slices[${p}]}")"
+    [[ -n "${rz}" ]] && h+=" --zone ${rz}"
+  fi
+  (( flags[unfiltered] )) && h+=" --unfiltered"
+  printf '%s %s' "${h}" "${p}"
+}
+
 printf '\n%s\n' "$(terminal_write bold "[Phase 1/${total_phases}] Backing up project virtual machines..." reset)" >&2
 
 for p in "${included[@]}"; do
@@ -438,12 +455,13 @@ for p in "${included[@]}"; do
       failed+=("${p}")
       fail_codes["${p}"]="${exit_code}"
       case "${exit_code}" in
-        22) fail_reasons["${p}"]="destroy"    ;;
-        23) fail_reasons["${p}"]="create"     ;;
-        24) fail_reasons["${p}"]="start"      ;;
-        25) fail_reasons["${p}"]="wait"       ;;
-        27) fail_reasons["${p}"]="restore"    ;;
-        *)  fail_reasons["${p}"]="unknown"    ;;
+        22) fail_reasons["${p}"]="destroy"      ;;
+        23) fail_reasons["${p}"]="create"       ;;
+        24) fail_reasons["${p}"]="start"        ;;
+        25) fail_reasons["${p}"]="wait"         ;;
+        27) fail_reasons["${p}"]="restore"      ;;
+        28) fail_reasons["${p}"]="zone removed" ;;
+        *)  fail_reasons["${p}"]="unknown"      ;;
       esac
     fi
   fi
@@ -489,7 +507,7 @@ if [[ ${#failed[@]} -gt 0 ]]; then
     printf >&2 '    Failed at: %s\n' "${fail_reasons[${p}]}"
     printf >&2 '    Exit code: %s\n' "${fail_codes[${p}]}"
     printf >&2 '    Resume with:\n'
-    printf >&2 '        virtdev-recreate --no-backup %s\n' "${p}"
+    printf >&2 '        %s\n' "$(upgrade_resume "${p}")"
     printf >&2 '\n'
   done
 fi
