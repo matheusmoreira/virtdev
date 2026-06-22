@@ -110,9 +110,11 @@ virtdev start myproject --zone gdb
 ```
 
 Inside the guest the host service is reachable at the default gateway (e.g.
-`<gateway>:1234`, found with `ip route show default`). The zone is selected per
-launch (or as a project's `zone` default) and is transient — start without
-`--zone gdb` and you are back to the project's zone. Zone names are lowercase
+`<gateway>:1234`, found with `ip route show default`). One exception: a `port 53`
+hole won't reach the host's resolver when the host's resolver address is also the
+guest's gateway — passt routes that address to its own DNS proxy instead of host
+loopback. The zone is selected per launch (or as a project's `zone` default) and is
+transient — start without `--zone gdb` and you are back to the project's zone. Zone names are lowercase
 `[a-z0-9_]`, no dashes or dots. A custom zone is a **deliberate hole in host
 isolation**: the untrusted guest gets whatever the host service permits (driving a
 gdbserver is host code execution), so only open services you trust the project

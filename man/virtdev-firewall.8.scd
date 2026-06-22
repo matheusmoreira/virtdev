@@ -108,7 +108,11 @@ A *custom zone* is a user file _~/.config/virtdev/zones/<name>_ declaring a
 _port 1234 tcp udp_. It opens those host ports (reaching a host service the guest
 drives, such as a gdbserver) on top of the base, without granting the whole LAN.
 The launch enables passt's host-loopback map for the zone, so the guest reaches
-the host at its default gateway; the per-port limit is enforced in nft. Names are
+the host at its default gateway; the per-port limit is enforced in nft. One
+exception: a *port 53* hole does not reach the host's resolver when the guest's
+default gateway is also the host's resolver address - passt routes that address to
+its own DNS forwarder instead of host loopback (it works where the host resolver
+differs from the gateway, the common case). Names are
 lowercase letters, digits, and underscore (no dashes or dots). A custom zone takes
 effect only after
 *apply* (its rules live in the root ruleset) and is a deliberate breach of host
