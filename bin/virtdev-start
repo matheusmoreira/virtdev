@@ -97,28 +97,32 @@ MESSAGE
 fi
 slice="$(firewall_slice_for "${zone}")"
 
-# Resolve the two filtering facts ONCE here, so every downstream decision reads the
-# same values rather than re-deriving them (design-S4 D3). `filtered` is the inverse
-# of --unfiltered; `open_host_map` is whether passt opens the guest->host loopback
-# map. open_host_map is GATED on filtered: the per-port nft narrowing is the SOLE
-# confinement of passt's all-or-nothing host map, and --unfiltered switches that
-# enforcement off — so an unfiltered launch must never open the map (it would expose
-# the WHOLE host loopback, ungated). This makes --unfiltered one coherent decision
-# (launch guard, realized-zone guard, host-map, post-launch assert all key off it)
-# and keeps the exit-100 apply guard exact: an unfiltered machine's ExecStart then
-# carries no --allow-host-loopback, so apply reads its map as closed and never
-# over-refuses on it.
+# `filtered` is the inverse of --unfiltered and keys every firewall decision in this
+# script (launch guard, realized-zone guard, host-map, post-launch assert), so they
+# move together (design-S4 D3). The host-map decision (open_host_map) reads the
+# firewall manifest, so it is resolved later UNDER the lock — see below.
 filtered=$(( ! unfiltered ))
-open_host_map=0
-if (( filtered )) && firewall_zone_needs_hostmap "${zone}"; then
-  open_host_map=1
-fi
 
 # Held until after systemd confirms the transient unit is active, so
 # any other virtdev script that arrives during the critical section
 # waits for either (a) this start to complete and the unit to be
 # visible via 'systemctl is-active', or (b) this start to fail cleanly.
 lock_acquire
+
+# Resolve the host-map decision UNDER the lock. open_host_map says whether passt opens
+# the guest->host loopback map; it reads the firewall manifest, which a concurrent
+# `virtdev firewall apply` reload rewrites. apply holds THIS SAME lock across its
+# scan->reload->manifest-write, so reading the manifest here cannot race a last-hole-
+# removing apply: either this launch wins the lock and apply's later scan sees this
+# machine's open map via its ExecStart marker and refuses (exit 100), or apply wins
+# and this reads the already-updated manifest. Gated on filtered: an unfiltered launch
+# never opens the map (the per-port nft narrowing is the map's sole confinement, and
+# --unfiltered switches it off), which also keeps the exit-100 guard exact — no
+# --allow-host-loopback in the ExecStart, so apply reads the map closed.
+open_host_map=0
+if (( filtered )) && firewall_zone_needs_hostmap "${zone}"; then
+  open_host_map=1
+fi
 
 project_directory="${VIRTDEV_HOME}"/projects/"${project}"
 

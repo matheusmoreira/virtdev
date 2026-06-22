@@ -29,6 +29,7 @@
 #   98  apply: lingering not enabled for the target user
 #   99  holder: zone-slice cgroup dirs never appeared (pins not running)
 #  100  apply: refused — would strand a running machine's open host-loopback map
+#  101  apply: timed out acquiring the user lock (another virtdev op in progress)
 #
 set -euo pipefail
 
@@ -37,9 +38,12 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
 import error arguments firewall
 
-# No VIRTDEV_HOME / HOME defaulting here: the firewall tool never reads it, and
-# the holder runs `hold` as a root system service where HOME is unset — under
-# set -u that default would crash the holder at source time.
+# No VIRTDEV_HOME / HOME defaulting at SOURCE TIME: the holder runs `hold` as a root
+# system service where HOME is unset, so a top-level default would crash it under
+# set -u. The one reader is the rootless self-elevation path in firewall_apply, which
+# defaults VIRTDEV_HOME in-function to forward it across the sudo boundary; the root
+# apply then reads it from the --virtdev-home flag, never from its own env (which sudo
+# stripped anyway) — preserving "the root apply never trusts its environment".
 
 # Custom-zone generation state, populated by firewall_load_custom_zones and read
 # by firewall_generate / firewall_start_pins / firewall_write_zones_manifest. The
@@ -250,13 +254,20 @@ firewall_target_base() {
   printf 'user.slice/user-%s.slice/user@%s.service/virtdev.slice\n' "${uid}" "${uid}"
 }
 
-# Run `systemctl --user ...` for the target user from a root apply. The user
-# manager is live (linger is required and checked first), so its private bus is
-# reachable at the well-known runtime-dir path. One place to get the
-# cross-privilege environment right.
+# Run a command AS the target user from a root apply, with the user-manager runtime
+# dir in the environment (the user manager is live — linger is required and checked
+# first — so its private bus is reachable there). One place to get the cross-privilege
+# environment right; firewall_user_systemctl and the coordination-lock setup both
+# route through it.
+firewall_user_run() {
+  local -r uid="${1:?firewall_user_run: uid required}"; shift
+  sudo -u "#${uid}" XDG_RUNTIME_DIR="/run/user/${uid}" "$@"
+}
+
+# Run `systemctl --user ...` for the target user from a root apply.
 firewall_user_systemctl() {
   local -r uid="${1:?firewall_user_systemctl: uid required}"; shift
-  sudo -u "#${uid}" XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user "$@"
+  firewall_user_run "${uid}" systemctl --user "$@"
 }
 
 # apply requires the target user to have lingering enabled: the resident pins
@@ -270,6 +281,57 @@ firewall_require_linger() {
   linger="$(loginctl show-user "${uid}" -p Linger --value 2>/dev/null || true)"
   [[ "${linger}" == "yes" ]] \
     || error 98 <<<"lingering is not enabled for uid ${uid}; the firewall pins must run boot->shutdown. Enable it:  loginctl enable-linger ${uid}"
+}
+
+# firewall_lock_user <uid> <forwarded_home>
+# Acquire the target user's rootless virtdev lock (the SAME ${VIRTDEV_HOME}/lock that
+# virtdev-start and the other rootless tools hold) on fd 8, making apply mutually
+# exclusive with a concurrent launch for its whole scan->reload->manifest window —
+# the structural close of the start-vs-apply race (a launch must not read the old
+# manifest, open passt's map, then have our reload un-narrow the loopback under it).
+#
+# The lock HOME is the user's VIRTDEV_HOME, forwarded explicitly across the sudo
+# boundary by the self-elevating apply (sudo strips the env); a direct
+# `sudo virtdev firewall apply` with no flag falls back to the default built from the
+# user's home dir. This is the ONLY apply input derived from VIRTDEV_HOME, and only to
+# LOCATE the lock — a wrong/forged value cannot affect any security decision, only
+# skip coordination (fail-safe).
+#
+# The lock file MUST stay user-owned: rootless lock_acquire append-opens it, so a
+# root-owned one would lock out every rootless op. Ensure it exists via the SUDO_UID
+# bridge, then open it READ-ONLY as root (DAC_OVERRIDE — no write, so no truncation of
+# an arbitrary forwarded path) and flock. fd 8 stays open for the rest of the apply
+# process, so the lock releases on exit. If the home is absent/unwritable, no rootless
+# op has ever run there, so there is nothing to serialize against — warn and proceed.
+firewall_lock_user() {
+  local -r uid="${1:?firewall_lock_user: uid required}"
+  local home="${2:-}"
+  if [[ -z "${home}" ]]; then
+    home="$(getent passwd "${uid}" | cut -d: -f6)" || home=""
+    [[ -n "${home}" ]] && home="${home}/.local/share/virtdev"
+  fi
+  if [[ -z "${home}" ]]; then
+    printf >&2 'firewall apply: could not resolve the user lock home; proceeding without start/apply coordination.\n'
+    return 0
+  fi
+  local -r lockfile="${home}/lock"
+  # Idempotently ensure the lock file exists USER-owned (best-effort).
+  firewall_user_run "${uid}" mkdir -p -m 0700 "${home}" 2>/dev/null || true
+  firewall_user_run "${uid}" touch "${lockfile}" 2>/dev/null || true
+  # Require a real, non-symlink regular file before the read-open. A FIFO at this path
+  # would make `exec 8<` block on open(2) unbounded — defeating the flock -w 60 ceiling
+  # and wedging the root process — and a symlink could redirect it. A non-regular path
+  # -> skip coordination (fail-safe), never hang. Matches the read guards in
+  # firewall_zone_default / firewall_zone_parse.
+  if [[ ! -f "${lockfile}" || -L "${lockfile}" ]]; then
+    printf >&2 'firewall apply: no usable rootless lock at %s; proceeding without start/apply coordination.\n' "${lockfile}"
+    return 0
+  fi
+  exec 8<"${lockfile}"
+  # Block briefly: a launch holds the lock only through activation (a few seconds); a
+  # 60 s hold means another virtdev op is wedged.
+  flock -w 60 8 \
+    || error 101 <<<"another virtdev operation has held the lock for 60s (${lockfile}); retry: virtdev firewall apply"
 }
 
 # Enable + start the resident pins AS THE USER, then RECONCILE. This materialises
@@ -368,11 +430,13 @@ firewall_install_units() {
 # guest) and INDEPENDENT of firewall.zones, so a lost/stale manifest cannot blind
 # this guard, and a machine launched --unfiltered (map never opened) is not counted.
 #
-# Not mutually exclusive with a concurrent `virtdev start` (apply is root and
-# lock-free by design; start holds the rootless lock). A machine started in the zone
-# being removed, in the window between this scan and the holder reload, is not caught
-# here — an extremely narrow case (starting a machine in a zone you are
-# simultaneously deleting); closing it would need apply to share start's lock.
+# Serialized against a concurrent `virtdev start`: apply holds the rootless lock
+# (firewall_lock_user) across its whole scan->reload->manifest window, and start reads
+# the host-map state and launches under that SAME lock. So a machine cannot start into
+# the zone being removed in the window between this scan and the holder reload — the
+# launch either wins the lock (and its open map is then seen here via the ExecStart
+# marker) or waits for apply. (Before firewall_lock_user that window was an unclosed
+# narrow race; the lock closes it structurally — see firewall_apply / firewall_lock_user.)
 firewall_guard_running_hostmap() {
   local -r uid="${1:?firewall_guard_running_hostmap: uid required}"
 
@@ -427,6 +491,19 @@ MESSAGE
 # manifest firewall.zones (read by the rootless launch) only after the restart
 # wins, so it never claims a zone is active before the ruleset actually loaded.
 firewall_apply() {
+  local -r forwarded_home="${1:-}"
+
+  # apply must run as root but needs the INVOKING user's identity (SUDO_UID) and, for
+  # the start/apply coordination lock, that user's VIRTDEV_HOME. sudo strips the env,
+  # so when run rootless (`virtdev firewall apply`) self-elevate and forward
+  # VIRTDEV_HOME EXPLICITLY as a flag — the only way the user's runtime VIRTDEV_HOME
+  # crosses the privilege boundary intact. A direct `sudo virtdev firewall apply`
+  # (already root, no flag) falls back to the default built from the user's home dir.
+  if [[ "$(id -u)" -ne 0 ]]; then
+    : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+    exec sudo "$(readlink -f "${BASH_SOURCE[0]}")" apply --virtdev-home "${VIRTDEV_HOME}"
+  fi
+
   local base
   base="$(firewall_target_base)"            # validates SUDO_UID
   local -r uid="${SUDO_UID}"                 # validated by firewall_target_base above
@@ -436,6 +513,13 @@ firewall_apply() {
   # Parse the user's custom zones up front (root, via SUDO_UID) so a bad file
   # aborts before we touch units, pins, or the ruleset.
   firewall_load_custom_zones "${uid}"
+
+  # Serialize the rest of apply against a concurrent `virtdev start`: hold the user's
+  # rootless lock across the scan, the reload, and the manifest write, so a launch
+  # cannot read the old manifest, open passt's map, and then have our reload un-narrow
+  # the loopback under it (the start-vs-apply race). Acquired AFTER the config reads
+  # above (which do not race a launch), so the hold is as short as possible.
+  firewall_lock_user "${uid}" "${forwarded_home}"
 
   # Targeted refuse BEFORE any mutation: if this apply drops the last host-hole zone
   # while a machine runs with passt's host map open, that machine would fail OPEN to
@@ -680,7 +764,9 @@ firewall_status() {
 
 # ── main: subcommand dispatch (apply|status) ────────────────────────
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=()
+declare -A spec=([virtdev-home]=value)
+# shellcheck disable=SC2034
+declare -A spec_placeholders=([virtdev-home]=path)
 # shellcheck disable=SC2034
 declare -a spec_positionals=("subcommand?" "args*")
 # shellcheck disable=SC2034
@@ -689,8 +775,11 @@ declare -a positional=()
 arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
 
+# --virtdev-home is an apply-only coordination input: the self-elevating rootless
+# apply forwards the user's VIRTDEV_HOME through it across the sudo boundary so the
+# root apply can take the SAME rootless lock the launches hold. Ignored by status/hold.
 case "${1:-status}" in
-  apply)  firewall_apply ;;
+  apply)  firewall_apply "${flags[virtdev-home]:-}" ;;
   status) firewall_status ;;
   hold)   firewall_hold ;;
   *)      error 64 <<<"$(arguments_usage spec); subcommands: apply status hold" ;;
