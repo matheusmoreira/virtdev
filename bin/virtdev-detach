@@ -43,9 +43,10 @@
 #   8   user aborted at confirmation prompt
 #   10  rebase failed for system disk (--in-place)
 #   11  rebase failed for home disk (--in-place)
-#   12  verification failed
+#   12  verification failed (convert mode — project unchanged)
 #   13  convert failed for system disk
 #   14  convert failed for home disk
+#   15  in-place: detached but verification failed (images may be corrupt)
 #
 # Configuration via environment variables:
 #
@@ -105,6 +106,42 @@ Stop it first: virtdev-stop ${project}
 MESSAGE
 fi
 
+system_bak="${system_disk}.bak"
+home_bak="${home_disk}.bak"
+
+# ── Interrupted-detach recovery (BEFORE the guards below) ───────────
+# A prior detach interrupted mid-swap leaves .bak files AND a state the
+# detached/has-backing guards below would mis-reject: a half-swapped project has
+# standalone disks (no backing -> err 6), and a completed-but-uncleaned swap has
+# generation=detached (-> err 5). So recover HERE — ahead of those guards — then
+# exit. Recovery mutates disks, so it takes the lock and refuses a running VM.
+# Re-run virtdev-detach afterward to detach a freshly-recovered (coupled) project.
+if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
+  lock_acquire
+  # TOCTOU re-check under the lock: a concurrent start may have booted the VM.
+  if project_is_running "${project}"; then
+    error 4 <<MESSAGE
+Virtual machine is running: ${project}
+Stop it first: virtdev-stop ${project}
+MESSAGE
+  fi
+  if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
+    if project_is_detached "${project}"; then
+      printf >&2 '%s\n' "$(terminal_write fg=yellow 'Cleaning up .bak files from a completed previous detach...' reset)"
+      rm -f "${system_bak}" "${home_bak}"
+      printf >&2 '%s\n' "$(terminal_write fg=green "Project is already detached: ${project}" reset)"
+    else
+      printf >&2 '%s\n' "$(terminal_write fg=yellow 'Detected an interrupted detach swap. Recovering...' reset)"
+      [[ -f "${system_bak}" ]] && mv -f "${system_bak}" "${system_disk}"
+      [[ -f "${home_bak}" ]]   && mv -f "${home_bak}" "${home_disk}"
+      rm -f "${system_disk}.detach" "${home_disk}.detach"
+      printf >&2 '%s\n' "$(terminal_write fg=green 'Recovery complete. Project restored to its pre-detach (coupled) state.' reset)"
+      printf >&2 'Re-run virtdev-detach to detach it.\n'
+    fi
+  fi
+  exit 0
+fi
+
 if project_is_detached "${project}"; then
   error 5 <<<"Already detached: ${project}"
 fi
@@ -141,44 +178,13 @@ fi
 
 lock_acquire
 
-system_bak="${system_disk}.bak"
-home_bak="${home_disk}.bak"
-
-# Auto-recover from an interrupted convert-then-swap. This block runs
-# before any pre-condition re-checks because an interrupted swap can
-# leave the project in a state where those checks would wrongly reject
-# re-entry (e.g., standalone disks with no backing file, or generation
-# already written as 'detached').
-#
-# Two recovery cases:
-#   1. generation == 'detached' + .bak files present: the swap completed
-#      but cleanup was interrupted. The project IS detached. Clean up
-#      the orphaned .bak files and let the post-lock detached check
-#      report "already detached."
-#   2. generation != 'detached' + .bak files present: the swap was
-#      interrupted mid-way. Roll back to the pre-detach state.
-if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
-  if project_is_detached "${project}"; then
-    printf >&2 '%s\n' "$(terminal_write fg=yellow 'Cleaning up .bak files from completed previous detach...' reset)"
-    rm -f "${system_bak}" "${home_bak}"
-  else
-    printf >&2 '%s\n' "$(terminal_write fg=yellow 'Detected interrupted detach swap. Recovering...' reset)"
-    [[ -f "${system_bak}" ]] && mv -f "${system_bak}" "${system_disk}"
-    [[ -f "${home_bak}" ]]   && mv -f "${home_bak}" "${home_disk}"
-    rm -f "${system_disk}.detach" "${home_disk}.detach"
-    printf >&2 '%s\n\n' "$(terminal_write fg=green 'Recovery complete. Project restored to pre-detach state.' reset)"
-  fi
-else
-  # No .bak means the swap never began, so the originals are intact. A
-  # SIGKILL during the convert phase can still leave orphaned .detach
-  # temp files that the .bak-keyed recovery above does not touch; sweep
-  # them. Not required for correctness — the next convert overwrites any
-  # stale .detach — but a leftover .detach is a full base-sized copy, so
-  # this is disk-space and orphan hygiene. The convert's own EXIT trap
-  # covers ordinary signals; this covers a SIGKILL or power loss between
-  # runs.
-  rm -f "${system_disk}.detach" "${home_disk}.detach"
-fi
+# No .bak here — the interrupted-detach recovery near the top handles that case
+# and exits, so the originals are intact. A SIGKILL during a prior convert can
+# still leave orphaned .detach temp files (a full base-sized copy each, not
+# touched by the .bak-keyed recovery); sweep them for disk-space/orphan hygiene.
+# The convert's own EXIT trap covers ordinary signals; this covers a SIGKILL or
+# power loss between runs.
+rm -f "${system_disk}.detach" "${home_disk}.detach"
 
 # Post-lock re-checks: close the TOCTOU window between the pre-lock
 # checks and lock acquisition. A concurrent virtdev-start could have
@@ -237,9 +243,16 @@ MESSAGE
   chmod 644 "${generation_file}"
 
   if (( verify_failed )); then
-    printf >&2 '\n%s\n' "$(terminal_write fg=yellow "Project detached: ${project} (with verification warnings)" reset)"
-    printf >&2 'Check the images or restore from backup.\n'
-    exit 12
+    # The in-place rebase already removed the backing file (irreversible), so the
+    # disks ARE standalone — the 'detached' marker above keeps the metadata
+    # consistent with on-disk reality (gating it would leave a standalone project
+    # wrongly marked coupled, which virtdev-start could then refuse to boot).
+    # Exit 15, distinct from convert mode's exit 12 ("verify failed, project
+    # UNCHANGED"), so a caller can tell "committed but maybe corrupt" from "safely
+    # rolled back".
+    printf >&2 '\n%s\n' "$(terminal_write fg=yellow "Project detached: ${project}, but verification FAILED — images may be corrupt." reset)"
+    printf >&2 'Restore from backup if the images are bad.\n'
+    exit 15
   fi
 
 else
