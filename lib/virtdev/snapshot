@@ -69,6 +69,10 @@ snapshot_directory() {
 
 snapshot_validate_format() {
   local -r snapshot="${1}"
+  # LC_ALL=C so the regex's [0-9] is byte-wise ASCII, matching the other
+  # validators (validate_project_name, generation_read): under a UTF-8 locale a
+  # non-ASCII digit could pass and slip a malformed snapshot past the check.
+  local LC_ALL=C
   if [[ ! "${snapshot}" =~ ${snapshot_format_regex} ]]; then
     error "${snapshot_invalid_format_exit_code}" \
       <<<"Invalid snapshot format: '${snapshot}' (expected YYYY-MM-DD/HH-MM-SS)"
