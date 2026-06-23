@@ -103,8 +103,17 @@ validate_project_name "${project}"
 #      file — never synthesize --zone none, which would ignore that file.
 zone_arg="${flags[zone]:-}"
 if [[ -n "${zone_arg}" ]]; then
-  firewall_zone_valid "${zone_arg}" \
-    || error 64 <<<"unknown or unapplied --zone '${zone_arg}'. Active zones: $(firewall_zones_active | paste -sd' ')"
+  # Charset is validated UNCONDITIONALLY (matching virtdev-start): a malformed
+  # --zone must fail up-front — even under --unfiltered — not be deferred to the
+  # start step, which for recreate is AFTER the irreversible destroy. The
+  # realized-zone (manifest) check IS skipped under --unfiltered: the lockdown is
+  # not enforced (and may not be applied at all), so the zone need not exist there.
+  firewall_zone_name_valid "${zone_arg}" \
+    || error 64 <<<"invalid --zone '${zone_arg}' (lowercase letters/digits/_, no dashes or dots)"
+  if (( ! flags[unfiltered] )); then
+    firewall_zone_valid "${zone_arg}" \
+      || error 64 <<<"unknown or unapplied --zone '${zone_arg}'. Active zones: $(firewall_zones_active | paste -sd' ')"
+  fi
 fi
 
 unit="virtdev-${project}"
@@ -384,7 +393,8 @@ fi
 # concurrent `firewall apply` could have removed a custom zone since — re-check here so
 # a vanished zone fails BEFORE the disks are wiped, not at the start step after destroy
 # (which would leave a fresh machine that cannot launch into its zone).
-if [[ -n "${zone}" ]] && ! firewall_zone_valid "${zone}"; then
+# Skipped under --unfiltered (the lockdown is not enforced for this relaunch).
+if (( ! flags[unfiltered] )) && [[ -n "${zone}" ]] && ! firewall_zone_valid "${zone}"; then
   error 28 <<MESSAGE
 zone '${zone}' is no longer active (removed since this recreate began).
 ${project} is backed up and stopped but NOT destroyed — nothing is lost.

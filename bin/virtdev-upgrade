@@ -91,9 +91,24 @@ fi
 # falls to its project zone file (resolved down in virtdev-start).
 zone_arg="${flags[zone]:-}"
 if [[ -n "${zone_arg}" ]]; then
-  firewall_zone_valid "${zone_arg}" \
-    || error 64 <<<"unknown or unapplied --zone '${zone_arg}'. Active zones: $(firewall_zones_active | paste -sd' ')"
+  # Charset is validated UNCONDITIONALLY (matching virtdev-start): a malformed
+  # --zone must fail up-front — even under --unfiltered — not be deferred to
+  # Phase 3 recreate (after every backup + the maintain). The realized-zone
+  # (manifest) check IS skipped under --unfiltered: the lockdown is not enforced
+  # (and may not be applied at all), so the zone need not exist there.
+  firewall_zone_name_valid "${zone_arg}" \
+    || error 64 <<<"invalid --zone '${zone_arg}' (lowercase letters/digits/_, no dashes or dots)"
+  if (( ! flags[unfiltered] )); then
+    firewall_zone_valid "${zone_arg}" \
+      || error 64 <<<"unknown or unapplied --zone '${zone_arg}'. Active zones: $(firewall_zones_active | paste -sd' ')"
+  fi
 fi
+
+# Forward the firewall escape hatch to the lockdown-enforcing sub-invocations
+# (Phase 1 start, Phase 2 maintain; Phase 3 recreate appends its own below), so
+# `upgrade --unfiltered` works on a host whose firewall is not applied.
+unfiltered_opt=()
+(( flags[unfiltered] )) && unfiltered_opt=(--unfiltered)
 
 # ── Parse --only / --except into arrays ──────────────────────────────
 
@@ -365,7 +380,7 @@ for p in "${included[@]}"; do
 
   if (( ! was_running )); then
     printf '    Starting...\n' >&2
-    if ! "${virtdev_bin_directory}/virtdev-start" "${p}"; then
+    if ! "${virtdev_bin_directory}/virtdev-start" "${unfiltered_opt[@]}" "${p}"; then
       abort_backup "Backup failed: could not start ${p}."
     fi
     if ! "${virtdev_bin_directory}/virtdev-wait" "${p}"; then
@@ -399,7 +414,7 @@ printf '\n%s\n' "$(terminal_write bold "[Phase 2/${total_phases}] Maintaining ba
 printf 'This is the interactive phase. SSH into the maintenance virtual machine,\n' >&2
 printf 'perform updates, and power off when done.\n\n' >&2
 
-if ! "${virtdev_bin_directory}/virtdev-maintain"; then
+if ! "${virtdev_bin_directory}/virtdev-maintain" "${unfiltered_opt[@]}"; then
   {
     printf '\nMaintain did not complete successfully.\n'
     printf 'Base is unchanged. All project virtual machines are stopped.\n'
