@@ -192,11 +192,13 @@ Snapshots are project-scoped; cross-project restoration is refused.
 MESSAGE
 fi
 
-# Read and validate the project's current base generation. A project
-# whose VM is running was created against some sealed base, and the
-# generation file is the audit trail for which one. The file must be a
-# single non-negative integer per the convention in virtdev-start,
-# virtdev-create, and virtdev-maintain (see commit 4b82a64).
+# The project's base generation records which sealed base it was created
+# against (the convention: a single non-negative integer; see virtdev-start,
+# virtdev-create, virtdev-maintain, commit 4b82a64). Its PRESENCE is required —
+# a project missing it is structurally incomplete (error 13) — but the VALUE is
+# only displayed below, so read it leniently: a corrupt generation must not
+# abort a restore, which recovers DATA and should not fail on unreadable
+# metadata. Matches the snapshot-generation reader a few lines down.
 project_generation_file="${project_directory}/generation"
 if [[ ! -f "${project_generation_file}" ]]; then
   error 13 <<MESSAGE
@@ -204,7 +206,7 @@ Project generation file missing: '${project_generation_file}'
 The project's audit trail is incomplete; refusing to proceed.
 MESSAGE
 fi
-project_generation="$(generation_read "${project_generation_file}")"
+project_generation="$(generation_read_lenient "${project_generation_file}")"
 
 # Read the snapshot's recorded base generation for display.
 # Empty/absent is displayed as '-'; corrupt content is non-fatal here
