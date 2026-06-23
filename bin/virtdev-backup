@@ -339,6 +339,19 @@ ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 # skipped — the backup reports success while capturing nothing.
 rsync_opts=(-a -r --no-D --ignore-missing-args --stats --safe-links)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
+# KNOWN LIMITATION (left unfixed): --safe-links filters symlinks found DURING
+# traversal, not a --files-from root that is itself a trailing-slash directory
+# symlink (the manifest convention, e.g. '.claude/projects/'). A compromised
+# guest that swaps such a root for a symlink to an out-of-tree path
+# (`ln -sfn / ~/.claude/projects`) makes rsync follow it and pull an unbounded
+# subtree — a host disk-exhaustion DoS (no host-file disclosure). No rsync flag
+# fixes it (tested --munge-links / --copy-unsafe-links on 3.4.4; making
+# --safe-links cover --files-from roots would be an upstream change). Dropping the
+# trailing slash blocks the follow but also stops capturing legitimate
+# symlinked-dir entries, so it is NOT applied: a guest compromised enough to plant
+# this already controls its own backed-up content, so the bounded-snapshot
+# guarantee is moot for that guest anyway.
+#
 # --copy-links is appended AFTER --safe-links and overrides it: rsync
 # dereferences symlinks on the sender (guest) side, so a guest symlink
 # to an out-of-tree path has its target's content copied into the
