@@ -79,9 +79,19 @@ snapshot_list_days() {
   local -r project="${1}"
   local -r dir="${VIRTDEV_HOME}/backups/${project}"
   [[ -d "${dir}" ]] || return 0
-  find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
-    | grep -E "${snapshot_date_regex}" \
-    | sort || true
+  # NUL-delimited read + regex test (not -printf %f\n | grep): a day directory
+  # whose name contains a newline would otherwise split into phantom entries
+  # under the line-based grep. Mirrors project_list's idiom; keeps the constant.
+  # LC_ALL=C: byte-wise ASCII [0-9] (bash =~ matches non-ASCII digits under a
+  # UTF-8 locale), parity with project_list / snapshot_validate_format.
+  local LC_ALL=C name
+  while IFS= read -r -d '' name; do
+    [[ "${name}" =~ ${snapshot_date_regex} ]] && printf '%s\n' "${name}"
+  done < <(find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' 2>/dev/null | sort -z)
+  # return 0: the while loop's status is the last regex test, which is non-zero
+  # when the lexicographically-last dir fails it (a stray non-date dir). Without
+  # this it leaks as failure and aborts set -e callers (virtdev-restore).
+  return 0
 }
 
 snapshot_list_times() {
@@ -89,9 +99,12 @@ snapshot_list_times() {
   local -r day="${2}"
   local -r dir="${VIRTDEV_HOME}/backups/${project}/${day}"
   [[ -d "${dir}" ]] || return 0
-  find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
-    | grep -E "${snapshot_time_regex}" \
-    | sort || true
+  local LC_ALL=C name
+  while IFS= read -r -d '' name; do
+    [[ "${name}" =~ ${snapshot_time_regex} ]] && printf '%s\n' "${name}"
+  done < <(find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' 2>/dev/null | sort -z)
+  # return 0 + LC_ALL=C: see snapshot_list_days (same loop-status and locale pins).
+  return 0
 }
 
 snapshot_list() {
@@ -100,7 +113,9 @@ snapshot_list() {
   [[ -d "${dir}" ]] || return 0
   # find -regex matches the full path; -printf %P prints with the
   # start point removed, so callers see "YYYY-MM-DD/HH-MM-SS" rather
-  # than "${dir}/YYYY-MM-DD/HH-MM-SS".
+  # than "${dir}/YYYY-MM-DD/HH-MM-SS". The full-path -regex also makes this
+  # lister immune to newline-bearing dir names (the day/time listers NUL-delimit
+  # for the same reason); do NOT "simplify" it to -printf %f without the regex.
   # `|| true`: a find error (e.g. the dir vanishing mid-scan during a concurrent
   # lock-free backup) must not abort the consumer under set -e — matching the
   # snapshot_list_days/times siblings. snapshot_count and snapshot_latest pipe

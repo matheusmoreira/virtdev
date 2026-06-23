@@ -67,11 +67,15 @@ project_list() {
   local -r projects_dir="${VIRTDEV_HOME}/projects"
   [[ -d "${projects_dir}" ]] || return 0
   local name
-  while IFS= read -r name; do
+  # NUL-delimited (-printf %f\0 + read -d '' + sort -z) so a directory name
+  # containing a newline is read as ONE entry and rejected by the regex below,
+  # instead of splitting into phantom project names (an owner-creatable dir
+  # would otherwise feed bogus names into upgrade/recreate iteration).
+  while IFS= read -r -d '' name; do
     [[ "${name}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
     [[ "${name}" == "maintenance" ]] && continue
     printf '%s\n' "${name}"
-  done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort)
+  done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' | sort -z)
 }
 
 project_is_running() {
