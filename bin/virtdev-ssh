@@ -137,6 +137,7 @@ ssh                                    \
   -F "${config_file}"                  \
   -i "${VIRTDEV_SSH_KEY}"              \
   -p "${port}"                         \
+  -o IdentitiesOnly=yes                \
   -o StrictHostKeyChecking=no          \
   -o UserKnownHostsFile=/dev/null      \
   -o LogLevel=ERROR                    \

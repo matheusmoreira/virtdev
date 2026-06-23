@@ -51,9 +51,11 @@ ssh_rsync_command() {
   # -F /dev/null: ignore the user's ~/.ssh/config. These rsync transports
   # connect to an UNTRUSTED guest; a host-side 'Host *' stanza
   # (ForwardAgent, ProxyCommand, ControlMaster, LocalForward) must not
-  # leak in — the same isolation ssh_poll_until_ready and virtdev-ssh
-  # already enforce. IdentitiesOnly=yes offers only the given key (not
-  # agent identities); BatchMode=yes never blocks on a prompt mid-rsync.
+  # leak in. IdentitiesOnly=yes offers only the given key, not the
+  # operator's ssh-agent identities (which would otherwise be disclosed to
+  # the untrusted guest); BatchMode=yes never blocks on a prompt mid-rsync.
+  # virtdev-ssh and ssh_poll_until_ready apply the same isolation: no
+  # ~/.ssh/config (-F an assembled config / /dev/null) + IdentitiesOnly=yes.
   local wrapper
   wrapper="$(mktemp)"
   chmod 700 "${wrapper}"
@@ -92,6 +94,7 @@ ssh_poll_until_ready() {
         -F /dev/null \
         -i "${key}" \
         -p "${port}" \
+        -o IdentitiesOnly=yes \
         -o BatchMode=yes \
         -o ConnectTimeout=3 \
         -o StrictHostKeyChecking=no \
