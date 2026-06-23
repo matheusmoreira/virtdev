@@ -172,7 +172,7 @@ if (( flags[list] )); then
     mapfile -t time_dirs < <(snapshot_list_times "${project}" "${d}")
     for t in "${time_dirs[@]}"; do
       snapshot="${backups_project_dir}/${d}/${t}"
-      size="$(du -sh "${snapshot}" 2>/dev/null | cut -f1)"
+      size="$(du -sh "${snapshot}" 2>/dev/null | cut -f1 || true)"
       # Display the snapshot's recorded base generation ('-' if absent,
       # '<corrupt>' if unreadable). Shared lenient reader; snapshot
       # generations are always integers in practice.

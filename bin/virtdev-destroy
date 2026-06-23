@@ -59,7 +59,7 @@ printf >&2 '\t%s\n' "${project_directory}"
 find "${project_directory}" -type f \
   | sort \
   | while IFS= read -r f; do
-      printf >&2 '\t\t%s\t%s\n' "$(du -sh "${f}" | cut -f1)" "$(basename "${f}")"
+      printf >&2 '\t\t%s\t%s\n' "$(du -sh "${f}" 2>/dev/null | cut -f1 || true)" "$(basename "${f}")"
     done
 
 backups_project_dir="$(snapshot_directory "${project}")"

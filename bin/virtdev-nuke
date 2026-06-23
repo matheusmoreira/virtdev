@@ -88,7 +88,7 @@ printf >&2 'This will permanently delete all virtdev data:\n\n'
 
 for path in "${VIRTDEV_HOME}" "${VIRTDEV_CACHE}"; do
   if [[ -e "${path}" ]]; then
-    printf >&2 '\t%s\t%s\n' "$(du -sh "${path}" 2>/dev/null | cut -f1)" "${path}"
+    printf >&2 '\t%s\t%s\n' "$(du -sh "${path}" 2>/dev/null | cut -f1 || true)" "${path}"
   fi
 done
 
@@ -103,7 +103,7 @@ if [[ -d "${backups_root}" ]]; then
     for bp in "${backup_projects[@]}"; do
       bp_dir="${backups_root}/${bp}"
       count="$(snapshot_count "${bp}")"
-      size="$(du -sh "${bp_dir}" 2>/dev/null | cut -f1)"
+      size="$(du -sh "${bp_dir}" 2>/dev/null | cut -f1 || true)"
       printf >&2 '\t%s\t%s\t(%d snapshots)\n' "${size}" "${bp_dir}" "${count}"
     done
   fi

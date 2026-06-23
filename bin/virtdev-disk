@@ -58,7 +58,7 @@ disk_info() {
     return
   fi
   local actual virtual backing info_text bytes backing_path
-  actual="$(du -sh "${path}" 2>/dev/null | cut -f1)"
+  actual="$(du -sh "${path}" 2>/dev/null | cut -f1 || true)"
   # Parse qemu-img's human output, NOT --output=json: modern qemu-img
   # nests a children->file node that also carries "virtual-size", so a
   # flat grep over the JSON matched twice and printed the wrong
@@ -97,5 +97,5 @@ printf '\n'
 disk_info "${system_disk}" "system"
 disk_info "${home_disk}" "home"
 
-total="$(du -sh "${project_directory}" 2>/dev/null | cut -f1)"
+total="$(du -sh "${project_directory}" 2>/dev/null | cut -f1 || true)"
 printf '\n  total: %s\n' "${total}"
