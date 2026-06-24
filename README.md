@@ -102,6 +102,13 @@ base wan           # none | wan | lan | full
 port 1234 tcp udp  # one or more; at least one protocol is required (tcp and/or udp)
 ```
 
+The **base decides how much host the hole exposes.** Use `base none` or `base wan`
+for a *per-port* hole: those bases deny the host by default, so the listed `port`s
+are the only host access the guest gets. `base lan` and `base full` already grant
+the host wholesale, so on those bases the `port` lines are redundant and the guest
+reaches the **entire** host loopback, not just the listed ports — choose them only
+when you intend full host access.
+
 Then realize it (root — its rules live in the host ruleset) and launch into it:
 
 ```bash

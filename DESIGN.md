@@ -604,7 +604,12 @@ LAN/WAN. Each hole becomes `fib daddr type local … th dport <port> accept` (so
 reaches the service however it binds — loopback or the host's LAN IP), and a
 launch into that zone flips passt's host-loopback map on (the map is
 all-or-nothing, so the PER-PORT limit is nft's; the guest reaches host services at
-its default gateway). The files commit to dotfiles — author once, `git`, reuse.
+its default gateway). The per-port limit holds only for `base none`/`base wan`,
+whose chains drop the host after the holes; `base lan`/`base full` accept all
+host-destined traffic, so on those bases the holes are inert and the guest reaches
+the WHOLE host loopback (the zone is still marked `hostmap=1`) — by design, since
+`lan`/`full` already mean host-reachable. Use `none`/`wan` for a scoped per-port
+hole. The files commit to dotfiles — author once, `git`, reuse.
 **`apply` is the ONLY context that reads the user's `zones/` config** (root, via
 `SUDO_UID` + the user's home; constructed, never searched). It validates every
 file up front (a malformed one aborts apply, exit 89), then — only after the

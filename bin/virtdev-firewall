@@ -205,8 +205,12 @@ firewall_generate() {
   printf '  }\n'
   printf '  chain zone_full { accept; }\n'
   # Custom-zone chains: bind-agnostic per-port host holes (fib daddr type local
-  # matches loopback AND the host's LAN IPs), THEN jump to the base policy so the
-  # holes win over the base host drop.
+  # matches loopback AND the host's LAN IPs), THEN jump to the base policy. The
+  # per-port holes are the SOLE host access only under base none/wan, whose chains
+  # drop the host after the holes; base lan/full accept the host wholesale, so on
+  # those bases the holes are inert and the guest reaches the whole host loopback
+  # — by design (lan/full mean "host open"; see DESIGN "Custom zones"). The zone
+  # is marked hostmap=1 either way, so passt's host map opens for the launch.
   local spec pnum protos protoset
   local -a specs
   for z in "${firewall_gen_zones[@]}"; do
