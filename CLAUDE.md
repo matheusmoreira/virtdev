@@ -445,7 +445,7 @@ glob in `PKGBUILD` picks it up automatically.
     + per-port host holes in `~/.config/virtdev/zones/<name>`, realized at
     `apply`). Built-ins are a static array (`firewall_zone_known`); the realized
     set (built-ins + customs) is the root-owned manifest
-    `/etc/virtdev/firewall.zones`, the single source the rootless launch reads.
+    `/etc/virtdev/firewall/zones`, the single source the rootless launch reads.
     The default is `none` — both an omitted `--zone` and an absent/invalid project
     `zone` file fall to it.
   - **Every launch passes `--slice`.** `firewall_slice_for <zone>` →
@@ -468,7 +468,7 @@ glob in `PKGBUILD` picks it up automatically.
     run boot→shutdown.
   - **The guard is fail-closed on staleness.** `firewall_require` (and the
     shared `firewall_is_active` behind `status`/`list`) checks the holder is
-    `active` AND the recorded base inode (`/etc/virtdev/firewall.base`, written
+    `active` AND the recorded base inode (`/etc/virtdev/firewall/cgroupv2`, written
     by the HOLDER post-load) still matches the live `virtdev.slice` — a
     `user@<uid>.service` teardown churns that inode and reads down. No `nft list`
     (root-only); the `owner,persist` holder asserts the table transitively. The
@@ -489,7 +489,7 @@ glob in `PKGBUILD` picks it up automatically.
     searches) the cgroup base, generates → `nft -c` → atomic `rename(2)`, and
     restarts the holder. The holder derives uid+base from the installed ruleset,
     waits for the pin-backed cgroup dirs (99 on timeout), loads, verifies, and
-    records `firewall.base`. The package ships `/usr/lib/systemd/{system,user}`.
+    records `firewall/cgroupv2`. The package ships `/usr/lib/systemd/{system,user}`.
     apply takes the user's **rootless lock** (`firewall_lock_user`, the SAME
     `${VIRTDEV_HOME}/lock` the launches hold) around its scan→reload→manifest-write
     to serialize against a concurrent `virtdev start` (the start-vs-apply race), so
@@ -504,9 +504,9 @@ glob in `PKGBUILD` picks it up automatically.
     machines via the shared `firewall_running_machine_units` predicate: passt's map
     is fixed at launch and apply never stops machines, so the nft loopback narrowing
     would un-gate that running machine to the whole host loopback — fail-OPEN. The
-    refusal names the machines to stop first. apply removes `firewall.zones` BEFORE
+    refusal names the machines to stop first. apply removes `firewall/zones` BEFORE
     the holder restart (lockstep) and (re)writes it only after a successful load, so
-    "`firewall.zones` exists ⟺ the loaded ruleset was published by a completed
+    "`firewall/zones` exists ⟺ the loaded ruleset was published by a completed
     apply" (a load that wins but skips the rewrite stays fail-CLOSED).
   - **maintenance runs in `wan`** (needs WAN for `pacman -Syu`; trusted base, no
     host/LAN). Its running-machine preflight glob excludes the pins

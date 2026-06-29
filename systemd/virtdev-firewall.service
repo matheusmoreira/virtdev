@@ -7,7 +7,7 @@
 # dies, persist keeps the rules in place but the guard reports down until it is
 # restarted (Restart=on-failure re-establishes ownership). On each load the
 # holder records the frozen cgroup baseline (<uid> <inode>) to
-# /etc/virtdev/firewall.base; the guard compares it to the live slice to fail
+# /etc/virtdev/firewall/cgroupv2; the guard compares it to the live slice to fail
 # closed after a user-manager teardown churns the inode.
 #
 # ExecStart is the INSTALLED tool (/usr/bin/virtdev-firewall), never a dev-tree

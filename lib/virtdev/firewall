@@ -19,7 +19,7 @@
 #   <name> virtdev-<name>.slice a custom zone: a built-in base + per-port host holes
 #
 # The built-ins are a static array (firewall_zone_known); the realized set
-# (built-ins + customs) is the root-owned manifest /etc/virtdev/firewall.zones,
+# (built-ins + customs) is the root-owned manifest /etc/virtdev/firewall/zones,
 # written by `apply` and read here. ONLY `apply` (in bin/virtdev-firewall) reads
 # the user's zones/ config; the predicates below read the manifest.
 #
@@ -53,7 +53,7 @@
 #       recorded baseline matches the live cgroup AND the caller is the firewall's
 #       user. --unfiltered bypasses it with a loud warning.
 #   firewall_zone_valid <zone>          0 iff <zone> is a built-in OR a custom zone
-#                                       realized in firewall.zones.
+#                                       realized in firewall/zones.
 #   firewall_zone_name_valid <name>     0 iff <name> matches the zone-name charset
 #                                       (^[a-z][a-z0-9_]*$, <=32, no dashes/dots).
 #   firewall_zone_realized <zone>       0 iff <zone> is in the realized manifest.
@@ -97,14 +97,14 @@ readonly firewall_lockdown_exit_code=88
 readonly firewall_invalid_zone_exit_code=89
 # The holder records "<uid> <virtdev.slice-inode>" here after each load; the
 # rootless guard reads it. Root-written, world-readable.
-readonly firewall_base_file="/etc/virtdev/firewall.base"
+readonly firewall_cgroupv2_file="/etc/virtdev/firewall/cgroupv2"
 # apply records the realized zone set here AFTER the holder load succeeds: one line
 # "<zonename> <needs-hostmap 0|1>" per zone (built-ins + customs). Root-written,
 # world-readable; the guest has no path to it. The rootless launch / list /
 # recreate / upgrade read it (they never read the user's zones/ config — that is
 # apply's job alone). Static across reboots (the same ruleset reloads), unlike
-# firewall.base which the holder rewrites per-load to track the cgroup inode.
-readonly firewall_zones_file="/etc/virtdev/firewall.zones"
+# firewall/cgroupv2 which the holder rewrites per-load to track the cgroup inode.
+readonly firewall_zones_file="/etc/virtdev/firewall/zones"
 # Zone-name length cap (slice unit name sanity). Names have no per-zone sockets,
 # so this is not the sun_path cap that bounds project names.
 readonly firewall_zone_name_max=32
@@ -112,12 +112,12 @@ readonly firewall_zone_name_max=32
 # Built-in zone registry. All four are explicit, selectable zones with their own
 # slice; 'none' is the deny-by-default floor (enforced by the ruleset's terminal
 # drop, not a dedicated rule). Custom zones are NOT here — they live in the
-# realized manifest (firewall.zones). Declared global because libraries are sourced
+# realized manifest (firewall/zones). Declared global because libraries are sourced
 # from within import(), where a bare `declare -A` would be function-local.
 declare -gA firewall_zone_known=([none]=1 [wan]=1 [lan]=1 [full]=1)
 # The built-ins a PRE-MANIFEST (legacy Phase-2) lockdown has — the absent-manifest
 # floor shared by firewall_zone_valid and firewall_zones_active so they agree.
-# Frozen: lan and custom zones postdate firewall.zones, so they are not realized
+# Frozen: lan and custom zones postdate firewall/zones, so they are not realized
 # until a re-apply and must NOT appear in this floor.
 declare -ga firewall_legacy_builtins=(none wan full)
 
@@ -152,8 +152,8 @@ firewall_zone_name_valid() {
 }
 
 # firewall_zone_valid <zone> -> 0 iff <zone> is usable: a built-in, OR a custom
-# zone realized in the loaded ruleset (present in firewall.zones). Built-ins are
-# accepted even if firewall.zones is absent/partial (a static floor). Used by the
+# zone realized in the loaded ruleset (present in firewall/zones). Built-ins are
+# accepted even if firewall/zones is absent/partial (a static floor). Used by the
 # launch guard and by virtdev-recreate / virtdev-upgrade (restore a captured
 # zone). NOT used to form slice names — see firewall_slice_for (charset only).
 firewall_zone_valid() {
@@ -178,7 +178,7 @@ firewall_zone_valid() {
 }
 
 # firewall_zone_realized <zone> -> 0 iff <zone> appears in the root-owned realized
-# manifest firewall.zones. Fail-closed: an absent/unreadable manifest yields
+# manifest firewall/zones. Fail-closed: an absent/unreadable manifest yields
 # non-zero for every name (callers add the built-in floor where appropriate).
 # Whole-token match on the first field.
 firewall_zone_realized() {
@@ -206,7 +206,7 @@ firewall_zone_needs_hostmap() {
 }
 
 # firewall_zones_active -> the names of all currently-realized zones, one per line:
-# the first field of every firewall.zones line (built-ins + customs), or — when the
+# the first field of every firewall/zones line (built-ins + customs), or — when the
 # manifest is absent (e.g. a lockdown applied by an older virtdev) — the built-ins.
 # For human-facing "active zones" lists and the launch guard's remediation message.
 firewall_zones_active() {
@@ -378,7 +378,7 @@ firewall_zone_default() {
 # oversize file, unknown directive, missing/duplicate base, non-built-in base,
 # bad/out-of-range/non-numeric port, missing/unknown/duplicate protocol, too many
 # ports. ONLY apply calls this (root, via the SUDO_UID-bridged path); the rootless
-# launch never parses user files (it reads firewall.zones). Ports are matched as
+# launch never parses user files (it reads firewall/zones). Ports are matched as
 # strings first (^[1-9][0-9]*$) before any arithmetic, dodging bash octal / set -e.
 firewall_zone_parse() {
   local -r file="${1:?firewall_zone_parse: file required}"
@@ -452,8 +452,8 @@ firewall_baseline() {
   # LC_ALL=C so the [0-9] guards below are byte-wise ASCII (a non-ASCII "digit" must
   # not pass as a valid uid/inode), matching the pin in port / generation_read.
   local LC_ALL=C
-  [[ -f "${firewall_base_file}" ]] || return 1
-  IFS= read -r line < "${firewall_base_file}" 2>/dev/null || return 1
+  [[ -f "${firewall_cgroupv2_file}" ]] || return 1
+  IFS= read -r line < "${firewall_cgroupv2_file}" 2>/dev/null || return 1
   read -r u i _ <<<"${line}"
   # uid must be >= 1 (matching the writer firewall_target_base's ^[1-9][0-9]*$);
   # a recorded uid 0 is never written, so reject it rather than trust it.
@@ -469,7 +469,7 @@ firewall_baseline() {
 #      firewall protects the host's egress), and being active means the
 #      owner,persist table is loaded and unflushable; AND
 #   2. the live virtdev.slice cgroup inode still equals the one the holder froze
-#      the ruleset against (recorded in firewall.base). The path is built from
+#      the ruleset against (recorded in firewall/cgroupv2). The path is built from
 #      the RECORDED uid, NOT the caller's id -u, so a non-owner caller (root, a
 #      second user running status/list) reads the true state rather than a
 #      false 'inactive'. nft freezes cgroup paths to inodes at load; a

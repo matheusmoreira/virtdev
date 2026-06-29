@@ -51,10 +51,10 @@ This command is normally reached through the *virtdev*(1) dispatcher
 	machine whose passt host-loopback map is open (again before any change),
 	installs the holder and the per-zone _pin_ units, starts and *reconciles* the
 	pins (materialising each zone's cgroup directory; a pin for a removed zone is
-	disabled), generates the ruleset to _/etc/virtdev/firewall.nft_, validates it
+	disabled), generates the ruleset to _/etc/virtdev/firewall/nft_, validates it
 	with _nft -c_, installs it with an atomic _rename_(2), restarts the holder to
 	load it, and finally writes the realized-zone manifest
-	_/etc/virtdev/firewall.zones_ (withheld across the restart, so its presence
+	_/etc/virtdev/firewall/zones_ (withheld across the restart, so its presence
 	means a completed apply published the loaded ruleset). The *--virtdev-home*
 	flag (apply only) names the lock home and is the only input derived from
 	_VIRTDEV_HOME_; every security decision derives from *SUDO_UID*, so a wrong
@@ -144,16 +144,16 @@ silently lock the machine down.
 
 # FILES
 
-_/etc/virtdev/firewall.nft_
+_/etc/virtdev/firewall/nft_
 	The generated ruleset. Admin state, kept under _/etc_, never the
 	package-managed _/usr/lib_. Installed atomically, so the previous good file
 	survives a failed apply.
 
-_/etc/virtdev/firewall.base_
+_/etc/virtdev/firewall/cgroupv2_
 	The recorded baseline, _<uid> <virtdev.slice-inode>_, written by the holder
 	after each load. The rootless guard and _status_ read it.
 
-_/etc/virtdev/firewall.zones_
+_/etc/virtdev/firewall/zones_
 	The realized-zone manifest: one _<zonename> <needs-hostmap>_ line per zone
 	(built-ins and customs), written by _apply_ after the holder load succeeds.
 	The rootless launch and _list_/_recreate_/_upgrade_ read it to validate a

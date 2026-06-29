@@ -613,7 +613,7 @@ hole. The files commit to dotfiles — author once, `git`, reuse.
 **`apply` is the ONLY context that reads the user's `zones/` config** (root, via
 `SUDO_UID` + the user's home; constructed, never searched). It validates every
 file up front (a malformed one aborts apply, exit 89), then — only after the
-holder load wins — writes the realized set to `/etc/virtdev/firewall.zones`
+holder load wins — writes the realized set to `/etc/virtdev/firewall/zones`
 (`<name> <needs-hostmap>`, atomic). The rootless launch and `list`/`recreate`/
 `upgrade` read that manifest; the holder derives its cgroup-dir wait-set from the
 installed ruleset; none of them read the user's config, so the dynamic set has a
@@ -635,7 +635,7 @@ open, naming the machines to `virtdev stop` first; nothing is changed on refusal
 "Map open" is read from each running machine's **own** `ExecStart` — it carries
 `--allow-host-loopback` iff the launch opened the map — which is the authoritative
 per-machine signal: systemd-owned (the guest cannot forge it) and INDEPENDENT of
-`firewall.zones`, so a lost or stale manifest cannot blind the guard, and an
+`firewall/zones`, so a lost or stale manifest cannot blind the guard, and an
 `--unfiltered` machine (map never opened) is correctly not counted. Running machines
 are enumerated through the shared `firewall_running_machine_units` predicate, which
 counts `active` AND `deactivating` (a machine mid-shutdown still holds its map open)
@@ -660,7 +660,7 @@ throwaway network namespace** (`unshare --net`: on a re-apply the live `inet
 virtdev` is owner-held by the running holder, so a plain `nft -c` of the ruleset's
 `destroy`/recreate is rejected `EPERM`; a fresh netns has no such table, while
 cgroup2 paths still resolve — so the pins must be up first), atomically
-`rename(2)`s it over `/etc/virtdev/firewall.nft`, and restarts the holder. The
+`rename(2)`s it over `/etc/virtdev/firewall/nft`, and restarts the holder. The
 atomic install means an interrupted apply leaves the prior good ruleset intact.
 The ruleset is project-agnostic, so a project created later is covered
 immediately — no re-apply.
@@ -674,10 +674,10 @@ reload un-narrow the loopback under it). This is the ONLY reason apply needs the
 user's `VIRTDEV_HOME` (forwarded via `--virtdev-home`): solely to LOCATE that lock,
 never for a security decision — every security input still derives from `SUDO_UID`,
 so a wrong/forged home only skips coordination (fail-safe). Timing out (60 s) is
-exit 101. The realized-zone manifest `/etc/virtdev/firewall.zones` is published
+exit 101. The realized-zone manifest `/etc/virtdev/firewall/zones` is published
 **lockstep** with the ruleset: apply removes it BEFORE the holder restart and
 (re)writes it only after the restart confirms a successful load, enforcing
-"`firewall.zones` exists ⟺ the loaded ruleset was published by a COMPLETED apply".
+"`firewall/zones` exists ⟺ the loaded ruleset was published by a COMPLETED apply".
 Any outcome that loads the new ruleset but skips the rewrite (a crash in the
 restart→write window, or an exit-95 abort whose holder self-heals via
 `Restart=on-failure`) therefore stays fail-CLOSED — the manifest is absent, so
@@ -692,7 +692,7 @@ derives the uid + cgroup base from the installed ruleset, waits for the
 pin-backed cgroup dirs to appear (exit 99 on timeout → guard reads down → fail
 CLOSED; also resolves boot ordering, since a system unit cannot `After=` a
 `--user` unit), loads + verifies the table, and records `<uid>
-<virtdev.slice-inode>` to `/etc/virtdev/firewall.base` atomically. Recording the
+<virtdev.slice-inode>` to `/etc/virtdev/firewall/cgroupv2` atomically. Recording the
 inode it actually froze against means a reboot re-records and never bricks the
 guard.
 
@@ -717,7 +717,7 @@ baseline (`firewall_assert_unit_filtered`), tearing the unit down on a mismatch
 guard→`systemd-run` TOCTOU.
 
 **Migration:** no reseal or generation bump, but `apply` is now mandatory before
-launches (the guard reads `/etc/virtdev/firewall.base`, which only the holder
+launches (the guard reads `/etc/virtdev/firewall/cgroupv2`, which only the holder
 writes). When the new ruleset first loads, a machine still in an OLD slice name
 matches no zone jump and falls to the terminal `drop` (loses all network) until
 relaunched — fail CLOSED; `recreate`/`upgrade` relaunch to migrate it.
@@ -1097,11 +1097,13 @@ The host egress lockdown (Phase 2) stores root-owned state outside
 `${VIRTDEV_HOME}`, established by `sudo virtdev firewall apply`:
 
 ```
-/etc/virtdev/
-  firewall.nft            generated nftables ruleset (not shipped; mode 0644).
+/etc/virtdev/firewall/
+  nft                     generated nftables ruleset (not shipped; mode 0644).
                           Loaded by the holder below; regenerated atomically.
-  firewall.base           "<uid> <virtdev.slice-inode>" recorded by the holder
+  cgroupv2                "<uid> <virtdev.slice-inode>" recorded by the holder
                           post-load; the launch guard's staleness reference.
+  zones                   realized-zone manifest ("<zone> <needs-hostmap>" per
+                          line); published by apply after the holder load wins.
 /etc/systemd/system/      admin copy written by `virtdev firewall apply`
   virtdev-firewall.service          resident owner,persist holder (Type=notify); is-active signal
 /etc/systemd/user/        admin copy of the --user pin template

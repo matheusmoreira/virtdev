@@ -88,7 +88,7 @@ else
   # default) must be a built-in or a custom zone present in the loaded ruleset's
   # manifest. A charset-valid but unapplied name (a typo, or a zone-definition
   # file not yet applied) fails HERE with guidance, instead of launching into an
-  # empty slice that silently locks. (firewall.zones absent -> built-ins only.)
+  # empty slice that silently locks. (firewall/zones absent -> built-ins only.)
   firewall_zone_valid "${zone}" || error 22 <<MESSAGE
 zone '${zone}' is not active in the host firewall (unknown, or defined but not applied).
 Active zones: $(firewall_zones_active | paste -sd' ')

@@ -239,7 +239,8 @@ firewall_generate() {
 # holder is a system unit, the pin a --user unit — the split is user-vs-system,
 # not by file extension.
 readonly firewall_etc_dir="/etc/virtdev"
-readonly firewall_nft_file="${firewall_etc_dir}/firewall.nft"
+readonly firewall_state_dir="${firewall_etc_dir}/firewall"
+readonly firewall_nft_file="${firewall_state_dir}/nft"
 readonly firewall_systemd_dir="/etc/systemd/system"
 readonly firewall_user_systemd_dir="/etc/systemd/user"
 readonly firewall_pkg_systemd_dir="/usr/lib/systemd/system"
@@ -440,7 +441,7 @@ firewall_install_units() {
 # drop) — no refuse needed. "Door open" is read from each running machine's OWN unit:
 # its ExecStart carries `--allow-host-loopback` iff the launch opened passt's map.
 # That is the authoritative per-machine signal — systemd-owned (unforgeable by the
-# guest) and INDEPENDENT of firewall.zones, so a lost/stale manifest cannot blind
+# guest) and INDEPENDENT of firewall/zones, so a lost/stale manifest cannot blind
 # this guard, and a machine launched --unfiltered (map never opened) is not counted.
 #
 # Serialized against a concurrent `virtdev start`: apply holds the rootless lock
@@ -463,7 +464,7 @@ firewall_guard_running_hostmap() {
   # No host-hole remains: collect machines whose passt host map is actually OPEN,
   # read from the AUTHORITATIVE per-machine source — the unit's own ExecStart, which
   # carries `--allow-host-loopback` iff the launch opened the map. systemd owns that
-  # argv (the guest cannot forge it) and it is independent of firewall.zones, so a
+  # argv (the guest cannot forge it) and it is independent of firewall/zones, so a
   # lost/stale manifest cannot blind this guard and an --unfiltered machine that
   # never opened the map is correctly not flagged. Enumerate ALIVE machines through
   # the shared predicate (which catches `deactivating`, whose map is still open),
@@ -496,12 +497,12 @@ MESSAGE
 }
 
 # apply: linger gate -> load+validate custom zones -> install units -> start pins
-# -> generate/validate/install -> restart holder -> write firewall.zones. Custom
+# -> generate/validate/install -> restart holder -> write firewall/zones. Custom
 # zones are validated FIRST: a malformed zone-definition file aborts (exit 89)
 # before any system mutation. The pins must start BEFORE generate: nft -c resolves
 # the zone-slice cgroup paths to inodes, so those dirs must already exist. The
-# holder (Type=notify) records firewall.base post-load; apply records the realized
-# manifest firewall.zones (read by the rootless launch) only after the restart
+# holder (Type=notify) records firewall/cgroupv2 post-load; apply records the realized
+# manifest firewall/zones (read by the rootless launch) only after the restart
 # wins, so it never claims a zone is active before the ruleset actually loaded.
 firewall_apply() {
   local -r forwarded_home="${1:-}"
@@ -540,7 +541,7 @@ firewall_apply() {
   # stops it first; nothing here has changed yet (apply stays all-or-nothing).
   firewall_guard_running_hostmap "${uid}"
 
-  install -d -m 0755 -o root -g root "${firewall_etc_dir}"
+  install -d -m 0755 -o root -g root "${firewall_state_dir}"
 
   # Units first (holder -> system dir, pin -> user dir; both managers reloaded),
   # then start the pins so the virtdev-<zone>.slice cgroup dirs exist before the
@@ -551,7 +552,7 @@ firewall_apply() {
   # Generate to a temp file ON THE SAME FILESYSTEM as the target so the
   # rename(2) below cannot fail EXDEV (a cross-fs $TMPDIR would).
   local tmp
-  tmp="$(mktemp -p "${firewall_etc_dir}" firewall.nft.XXXXXX)"
+  tmp="$(mktemp -p "${firewall_state_dir}" nft.XXXXXX)"
   # shellcheck disable=SC2064  # expand tmp now: the trap must name this exact file
   trap "rm -f '${tmp}'" EXIT
 
@@ -580,10 +581,10 @@ firewall_apply() {
   chmod 0644 "${firewall_nft_file}"
   trap - EXIT
 
-  # Publish the manifest LOCKSTEP with the ruleset: remove firewall.zones BEFORE the
+  # Publish the manifest LOCKSTEP with the ruleset: remove firewall/zones BEFORE the
   # restart, so from the instant the holder may load the new ruleset until the
   # manifest is rewritten below, no manifest exists. This enforces the invariant
-  # "firewall.zones exists <=> the loaded ruleset was published by a COMPLETED apply".
+  # "firewall/zones exists <=> the loaded ruleset was published by a COMPLETED apply".
   # Without it, any outcome that loads the new ruleset but skips the rewrite strands a
   # stale hostmap=1 manifest against an un-narrowed loopback (a fail-OPEN to the whole
   # host loopback): a crash in the restart->write window (robustness-S2 F1), or an
@@ -597,7 +598,7 @@ firewall_apply() {
   # freshly-installed ruleset into a new owner session; on a re-apply it
   # destroys the old owner table and recreates it. Type=notify, so `restart`
   # returns success only once the holder waited for the pins, loaded, verified,
-  # and recorded firewall.base — the on-disk file and the kernel ruleset cannot
+  # and recorded firewall/cgroupv2 — the on-disk file and the kernel ruleset cannot
   # diverge behind a green service.
   systemctl restart virtdev-firewall.service \
     || error 95 <<<"installed ${firewall_nft_file} but the holder restart failed. It may still load via Restart=on-failure; the manifest stays withheld (fail-closed) until a load wins. Re-run to reconcile: sudo virtdev firewall apply"
@@ -609,7 +610,7 @@ firewall_apply() {
   printf >&2 'host egress lockdown applied: %s\n' "${firewall_nft_file}"
 }
 
-# firewall_write_zones_manifest -> /etc/virtdev/firewall.zones, ATOMICALLY (mktemp
+# firewall_write_zones_manifest -> /etc/virtdev/firewall/zones, ATOMICALLY (mktemp
 # + rename, like firewall_record_baseline) so a concurrent rootless reader never
 # sees a torn write. One line "<zonename> <needs-hostmap 0|1>" per realized zone:
 # all built-ins (hostmap 0 — they never use the passt remap) and every custom zone
@@ -618,7 +619,7 @@ firewall_apply() {
 # what is loaded. World-readable.
 firewall_write_zones_manifest() {
   local tmp z hostmap b ok=1
-  tmp="$(mktemp -p "${firewall_etc_dir}" firewall.zones.XXXXXX)" || tmp=""
+  tmp="$(mktemp -p "${firewall_state_dir}" zones.XXXXXX)" || tmp=""
   if [[ -n "${tmp}" ]]; then
     {
       while IFS= read -r b; do printf '%s 0\n' "${b}"; done < <(firewall_zones)
@@ -631,7 +632,7 @@ firewall_write_zones_manifest() {
     ok=0
   fi
   if (( ! ok )); then
-    # Fail CLOSED. firewall_apply already removed firewall.zones before the holder
+    # Fail CLOSED. firewall_apply already removed firewall/zones before the holder
     # restart (the primary lockstep guarantee), so on the normal path it is already
     # absent here; this is defence-in-depth that also reaps the partial temp. Decouple
     # the rm from set -e: a parent-dir/EROFS unlink failure must NOT swallow the
@@ -645,7 +646,7 @@ firewall_write_zones_manifest() {
 }
 
 # firewall_record_baseline <uid> <base>
-# Write "<uid> <virtdev.slice-inode>" to firewall.base ATOMICALLY (mktemp in the
+# Write "<uid> <virtdev.slice-inode>" to firewall/cgroupv2 ATOMICALLY (mktemp in the
 # same dir + rename(2)), so a guard reading concurrently never catches a torn
 # write (-> spurious exit-88 / a one-frame UNFILTERED read). <base> is the
 # cgroup2-root-relative virtdev.slice path; its inode is the one the ruleset was
@@ -658,12 +659,12 @@ firewall_record_baseline() {
   local inode
   inode="$(stat -c %i "/sys/fs/cgroup/${base}" 2>/dev/null || true)"
   [[ "${inode}" =~ ^[0-9]+$ ]] || return 1
-  install -d -m 0755 -o root -g root "${firewall_etc_dir}" || return 1
+  install -d -m 0755 -o root -g root "${firewall_state_dir}" || return 1
   local tmp
-  tmp="$(mktemp -p "${firewall_etc_dir}" firewall.base.XXXXXX)" || return 1
+  tmp="$(mktemp -p "${firewall_state_dir}" cgroupv2.XXXXXX)" || return 1
   { printf '%s %s\n' "${uid}" "${inode}" >"${tmp}" \
       && chmod 0644 "${tmp}" \
-      && mv -f "${tmp}" "${firewall_base_file}"; } \
+      && mv -f "${tmp}" "${firewall_cgroupv2_file}"; } \
     || { rm -f "${tmp}"; return 1; }
 }
 
@@ -761,7 +762,7 @@ firewall_hold() {
   #    failure the EXIT trap tears down the owning session so the guard reads
   #    down (fail CLOSED) rather than running with no recorded baseline.
   firewall_record_baseline "${uid}" "${base}" \
-    || error 97 <<<"holder: failed recording ${firewall_base_file}"
+    || error 97 <<<"holder: failed recording ${firewall_cgroupv2_file}"
 
   systemd-notify --ready 2>/dev/null || true
   wait "${holder}"
