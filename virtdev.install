@@ -1,0 +1,47 @@
+# shellcheck shell=bash  # pacman .install scriptlet: sourced, no shebang by design
+# virtdev pacman scriptlet — host egress lockdown teardown on removal.
+#
+# The lockdown units are enabled by `sudo virtdev firewall apply`, not by the
+# package, so there is no post_install/post_upgrade enable here. On removal we
+# undo what apply established: stop and disable the system holder, best-effort
+# stop the per-user pins (the recorded baseline names the uid that ran apply),
+# destroy the live nftables table, and remove the generated ruleset, the
+# baseline, and the admin unit copies apply wrote under /etc. Every step is
+# best-effort so a partial install never blocks removal.
+
+post_remove() {
+  systemctl disable --now virtdev-firewall.service 2>/dev/null || true
+
+  # Best-effort stop of the per-user pins: firewall/cgroupv2 records the uid apply
+  # ran as. apply enables ONE pin per relaxation zone (wan/lan/full) AND per custom
+  # zone, so the set is DYNAMIC — enumerate every loaded pin instance and disable it,
+  # rather than a hardcoded {wan,full} subset (which leaked the lan + custom pins).
+  # Without the holder the pins are harmless (empty cgroups, no table to back), but
+  # stop them so removal leaves nothing resident. The unit name is taken by
+  # `.service`-suffix match (dot-immune to list-units' status column).
+  local _uid="" _
+  if [[ -r /etc/virtdev/firewall/cgroupv2 ]]; then
+    read -r _uid _ < /etc/virtdev/firewall/cgroupv2 2>/dev/null || true
+  fi
+  if [[ "${_uid}" =~ ^[0-9]+$ ]]; then
+    local _pin
+    while IFS= read -r _pin; do
+      [[ -n "${_pin}" ]] || continue
+      sudo -u "#${_uid}" XDG_RUNTIME_DIR="/run/user/${_uid}" \
+        systemctl --user disable --now "${_pin}" 2>/dev/null || true
+    done < <(
+      sudo -u "#${_uid}" XDG_RUNTIME_DIR="/run/user/${_uid}" \
+        systemctl --user list-units --all --plain --no-legend 'virtdev-firewall-pin@*.service' 2>/dev/null \
+        | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.service$/) { print $i; break } }'
+    )
+  fi
+
+  nft destroy table inet virtdev 2>/dev/null || true
+  # Remove every generated state file (the manifest firewall/zones was orphaned),
+  # then the firewall/ dir and /etc/virtdev itself if now empty.
+  rm -f /etc/virtdev/firewall/nft /etc/virtdev/firewall/cgroupv2 /etc/virtdev/firewall/zones
+  rmdir /etc/virtdev/firewall 2>/dev/null || true
+  rmdir /etc/virtdev 2>/dev/null || true
+  rm -f /etc/systemd/system/virtdev-firewall.service
+  rm -f /etc/systemd/user/virtdev-firewall-pin@.service
+}

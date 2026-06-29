@@ -13,6 +13,7 @@ depends=(
   'edk2-ovmf'
   'openssh'
   'passt'
+  'nftables'
   'socat'
 )
 optdepends=(
@@ -22,6 +23,7 @@ optdepends=(
 makedepends=('git')
 provides=("${pkgname%-git}")
 conflicts=("${pkgname%-git}")
+install="${pkgname%-git}.install"
 source=("${pkgname}::git+${url}.git")
 sha256sums=('SKIP')
 
@@ -51,6 +53,21 @@ package() {
   # Install shared bash libraries (sourced via the bin/ scripts'
   # bootstrap; not executable).
   install -Dm644 -t "${pkgdir}/usr/lib/${pkgname%-git}/" lib/virtdev/*
+
+  # Install the host egress lockdown systemd units. virtdev-firewall's `apply`
+  # writes admin copies under /etc/systemd/{system,user}; the package owns the
+  # canonical copies under /usr/lib/systemd/{system,user}. The units are enabled
+  # by `sudo virtdev firewall apply` (the .install scriptlet only tears them down
+  # on removal), not by the package, because the ruleset they load
+  # (/etc/virtdev/firewall/nft) does not exist until apply runs.
+  #
+  # Split user-vs-system, NOT by file extension: the holder is a system unit but
+  # the resident pin is a --user unit, so an extension glob would misfile the pin
+  # into the system dir.
+  install -Dm644 systemd/virtdev-firewall.service \
+    "${pkgdir}/usr/lib/systemd/system/virtdev-firewall.service"
+  install -Dm644 systemd/virtdev-firewall-pin@.service \
+    "${pkgdir}/usr/lib/systemd/user/virtdev-firewall-pin@.service"
 
   # Install ISO profile
   local _profiledir="${pkgdir}/usr/share/${pkgname%-git}/profile"
