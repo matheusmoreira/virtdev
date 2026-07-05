@@ -221,7 +221,9 @@ maintenance_boot() {
   chmod 0700 "${maintenance_project}"
   printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
   # Sweep stale sockets ONLY (runtime_clean_sockets): the port was just
-  # written above and must survive. Mirrors virtdev-start's pre-launch sweep.
+  # written above and must survive. This diverges from virtdev-start, which
+  # writes its port LAST (after the QMP liveness + firewall checks) and so
+  # full-cleans (runtime_clean) at its pre-launch sweep.
   runtime_clean_sockets "${maintenance_project}"
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
 

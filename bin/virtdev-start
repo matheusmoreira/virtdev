@@ -12,8 +12,10 @@
 # actually running by probing its QMP control socket (query-status) before
 # writing the port "running" signal or printing success; a passt/QEMU launch
 # failure that lands after the fork fails here with exit 13 and leaves NO
-# stale port file, rather than a false green. This confirms the launch only
-# (sub-second) — start stays ASYNC and does not wait for guest boot/SSH.
+# stale port file, rather than a false green. (On a host missing the declared
+# socat dependency the QMP confirm is skipped with a warning — the machine
+# still starts.) This confirms the launch only (sub-second) — start stays
+# ASYNC and does not wait for guest boot/SSH.
 #
 # Lifecycle:
 #

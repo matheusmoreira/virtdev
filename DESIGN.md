@@ -911,7 +911,8 @@ constants only, header comment format) are documented in
 
 SSH forwarding ports are assigned at virtual-machine start time and recorded
 in `projects/<name>/port`. The port file is written LAST, only after QEMU is
-confirmed running (the QMP `query-status` liveness probe) and, for a filtered
+confirmed running (the QMP `query-status` liveness probe; skipped with a
+warning on a host missing the declared `socat` dependency) and, for a filtered
 launch, the machine is proven to sit under the frozen `virtdev.slice` — so
 `port file exists ⟹ the machine was confirmed running`, never a false green
 from a launch that failed after the unit went active. A foreground

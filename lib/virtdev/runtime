@@ -3,7 +3,7 @@
 # runtime library: the per-machine ephemeral runtime artifact set.
 #
 # One source of truth for a project (or maintenance) virtual machine's
-# transient host-side files: the monitor/console/passt sockets and the
+# transient host-side files: the monitor/console/passt/qmp sockets and the
 # `port` file that signals "this machine is running". The socket set, the
 # argv path accessors, the cleanup helpers, and validate's sun_path
 # length feed all derive from the name constants below, so the argv QEMU
