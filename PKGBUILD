@@ -7,7 +7,7 @@ arch=('x86_64')
 url='https://github.com/matheusmoreira/virtdev'
 license=('AGPL-3.0-or-later')
 depends=(
-  'bash>=5.2'
+  'bash>=5.3'
   'qemu-img'
   'qemu-system-x86'
   'edk2-ovmf'
