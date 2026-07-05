@@ -122,7 +122,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm terminal port passt qemu firewall
+import error lock arguments ssh project confirm terminal port passt qemu firewall runtime
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -220,7 +220,9 @@ maintenance_boot() {
   mkdir -p "${maintenance_project}"
   chmod 0700 "${maintenance_project}"
   printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
-  rm -f "${monitor_sock}" "${console_sock}" "${passt_sock}"
+  # Sweep stale sockets ONLY (runtime_clean_sockets): the port was just
+  # written above and must survive. Mirrors virtdev-start's pre-launch sweep.
+  runtime_clean_sockets "${maintenance_project}"
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
   # The QEMU argv (everything after the netexec `--` boundary) is owned by
@@ -320,7 +322,8 @@ maintenance_wait_exit() {
 
 maintenance_cleanup() {
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
-  rm -f "${maintenance_project}/port" "${monitor_sock}" "${console_sock}" "${passt_sock}"
+  # Full teardown: sockets + the port running-signal (lib/virtdev/runtime).
+  runtime_clean "${maintenance_project}"
   rmdir "${maintenance_project}" 2>/dev/null || true
 }
 
@@ -459,9 +462,12 @@ chmod 644 "${system_disk}" "${home_disk}" "${nvram}"
 staging_ready=1
 trap - EXIT
 
-monitor_sock="${maintenance_project}/monitor.sock"
-console_sock="${maintenance_project}/console.sock"
-passt_sock="${maintenance_project}/passt.sock"
+# The monitor/console/passt sockets live in projects/maintenance/; the set
+# and the cleanup are owned by lib/virtdev/runtime. Only passt_sock is still
+# spelled out here, for maintenance_boot's netexec --socket argument; it comes
+# from the same runtime source so it cannot drift from the qemu_command /
+# cleanup set.
+passt_sock="$(runtime_passt_sock "${maintenance_project}")"
 
 # ── Boot 1: interactive maintenance session ─────────────────────────
 

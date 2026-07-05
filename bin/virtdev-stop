@@ -30,7 +30,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal project
+import error validate lock arguments terminal project runtime
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
@@ -100,10 +100,8 @@ stop_finalize() {
   if [[ "${project}" != "maintenance" ]]; then
     systemctl --user reset-failed "${unit}" 2>/dev/null || true
   fi
-  rm -f "${project_directory}"/port \
-       "${project_directory}"/monitor.sock \
-       "${project_directory}"/console.sock \
-       "${project_directory}"/passt.sock
+  # Full teardown: sockets + the port running-signal (lib/virtdev/runtime).
+  runtime_clean "${project_directory}"
   printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
 }
 

@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project terminal port passt qemu firewall
+import error validate lock arguments project terminal port passt qemu firewall runtime
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -234,11 +234,11 @@ else
 fi
 
 # The disk/nvram paths are derived inside qemu_command from
-# project_directory; only the sockets are still referenced here (cleanup
-# trap, stale-socket sweep, and the netexec --socket argument).
-monitor_sock="${project_directory}"/monitor.sock
-console_sock="${project_directory}"/console.sock
-passt_sock="${project_directory}"/passt.sock
+# project_directory; the socket set (cleanup trap, stale-socket sweep) is
+# owned by lib/virtdev/runtime. Only passt_sock is still spelled out here,
+# for the netexec --socket argument; it comes from the same runtime source
+# so it cannot drift from the qemu_command / cleanup set.
+passt_sock="$(runtime_passt_sock "${project_directory}")"
 
 # Cleanup-on-failure: every error path between here and the wait-loop
 # success marker must leave the host in the same shape it found it.
@@ -257,14 +257,17 @@ cleanup_failed_start() {
   if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
     systemctl --user stop "${unit}" 2>/dev/null || true
   fi
-  rm -f "${port_file}" "${monitor_sock}" "${console_sock}" "${passt_sock}"
+  # Full teardown: sockets + the port running-signal (runtime_clean).
+  runtime_clean "${project_directory}"
 }
 trap cleanup_failed_start EXIT
 
 printf '%d\n' "${port}" > "${port_file}"
 
-# Remove stale sockets from a previous unclean shutdown
-rm -f "${monitor_sock}" "${console_sock}" "${passt_sock}"
+# Remove stale sockets from a previous unclean shutdown. Sockets ONLY
+# (runtime_clean_sockets): the port file was just written above and is
+# the running-signal — runtime_clean here would delete it.
+runtime_clean_sockets "${project_directory}"
 
 # Clear any residual failed state from a previous start attempt. Without
 # --collect (see below), a unit that exited with error persists as
