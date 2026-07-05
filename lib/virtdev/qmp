@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+#
+# qmp library: a minimal QMP (QEMU Machine Protocol) control client.
+#
+# QMP is the JSON control channel QEMU exposes on the host-side qmp.sock
+# wired by qemu_command (-mon chardev=qmp,mode=control). It lives in the
+# 0700 per-project directory alongside monitor.sock; the guest has no path
+# to it — same exposure class as the HMP monitor. All use here is
+# host↔QEMU only.
+#
+# This is intentionally the smallest client that serves the one current
+# consumer (virtdev-start's post-launch liveness probe). It owns the
+# socat + handshake mechanics in one place so future QMP work (pause/
+# resume, snapshots, event waits) builds on the same primitive rather than
+# re-deriving the framing.
+#
+# Public:
+#   qmp_query_running <qmp_sock> <deadline_seconds>
+#       Poll until QEMU reports the virtual machine RUNNING, or the
+#       deadline passes. Loops (like ssh_poll_until_ready): until SECONDS
+#       reaches the deadline, when qmp_sock exists it runs a query-status
+#       exchange and returns 0 the moment the reply carries
+#       "running": true (CPUs executing); otherwise it sleeps briefly and
+#       retries. Returns 1 if the deadline passes without that reply
+#       (socket never appeared, QEMU exited, or the VM never ran).
+#
+#       Runs in the caller's shell and returns via `return` — the caller
+#       maps the boolean to its own exit code (virtdev-start: 13).
+#
+#       The reply is QEMU's own fixed-format JSON on a host-only,
+#       guest-unreachable socket, so a fixed grep for the running field is
+#       sufficient — this is not untrusted-input parsing. The match
+#       tolerates JSON spacing: "running"[[:space:]]*:[[:space:]]*true.
+#
+# Internal:
+#   _qmp_exchange <sock> <timeout> <json...>
+#       Connect to <sock>, read the QMP greeting, negotiate with
+#       {"execute":"qmp_capabilities"}, send each <json> command, and echo
+#       the RAW concatenated response. Parsing stays OUT — the caller greps
+#       the raw reply. The whole exchange is bounded two ways so a wedged
+#       or half-open QMP socket can never hang the caller (mirrors
+#       ssh_poll_until_ready's banner-stall hardening): coreutils `timeout`
+#       caps the wall clock, and socat's inactivity timeout (-t) closes the
+#       connection if QEMU stalls mid-reply. Returns non-zero if the socket
+#       is absent or the connect fails.
+#
+# No exit codes reserved: every function returns a status; nothing here
+# calls error(). Requires socat and coreutils timeout (both already
+# virtdev runtime dependencies, used by virtdev-monitor/-stop and ssh).
+#
+set -euo pipefail
+
+# Inactivity timeout (seconds) handed to socat's -t: how long socat waits
+# with no data flowing before it half-closes and exits. Kept well under
+# _qmp_exchange's own `timeout` budget so, on a stalled reply, socat's -t
+# ends the exchange cleanly (non-zero, retried by the poll) rather than the
+# outer SIGTERM having to fire.
+readonly _qmp_socat_idle_timeout=2
+
+# _qmp_exchange <sock> <timeout_seconds> <json...>
+# Send qmp_capabilities followed by the given command(s) and echo the raw
+# reply. Bounded by coreutils `timeout` (hard cap) + socat -t (idle cap).
+_qmp_exchange() {
+  local -r sock="${1}" timeout_seconds="${2}"
+  shift 2
+  # Fail fast (return 1, no socat) if the socket is not there yet: on a
+  # slow/failed launch qmp.sock may not exist, and the poll loop retries.
+  [[ -S "${sock}" ]] || return 1
+
+  # Build the request stream: negotiate capabilities first (mandatory
+  # before any other command in QMP), then the caller's command(s). The
+  # greeting QEMU sends on connect needs no request; socat reads it as part
+  # of the reply we echo back.
+  local request
+  request="$(printf '%s\n' '{"execute":"qmp_capabilities"}' "$@")"
+
+  # timeout: hard wall-clock ceiling on the whole exchange (a QMP socket
+  # that accepts the connection and then never answers cannot outlast it).
+  # socat -t: idle ceiling — close after the guest stalls for
+  # _qmp_socat_idle_timeout with no data, so a partial/dribbled reply also
+  # terminates. Both layers are deliberate; either alone leaves a gap
+  # (a steady slow dribble evades -t but not timeout; a mid-reply freeze
+  # hits -t before timeout). stdout is the raw concatenated JSON; socat's
+  # stderr is discarded: while QEMU is still coming up (or has died leaving
+  # a stale socket inode), connect() yields ECONNREFUSED, and qmp_query_running
+  # polls this repeatedly — without the redirect each retry would spew a
+  # socat "Connection refused" line and bury the caller's real error. The
+  # return code, not the diagnostic, is the signal (mirrors ssh_poll's
+  # 2>/dev/null on the ssh probe).
+  timeout "${timeout_seconds}" \
+    socat -t"${_qmp_socat_idle_timeout}" - UNIX-CONNECT:"${sock}" \
+    <<<"${request}" 2>/dev/null
+}
+
+# qmp_query_running <qmp_sock> <deadline_seconds>
+# Return 0 iff QEMU reports the VM running before the deadline; else 1.
+qmp_query_running() {
+  local -r qmp_sock="${1}" deadline_seconds="${2}"
+  # Per-exchange wall-clock cap for the socat probe below. Bounded and
+  # short: query-status answers in milliseconds on a live QMP socket, and
+  # the outer poll re-checks its own deadline only BETWEEN attempts, so a
+  # single wedged exchange must not swallow the whole budget.
+  local -r exchange_timeout=3
+  local deadline
+  deadline=$(( SECONDS + deadline_seconds ))
+  local reply
+  while (( SECONDS < deadline )); do
+    if [[ -S "${qmp_sock}" ]]; then
+      # _qmp_exchange returns non-zero on a connect failure or timeout; in
+      # that case reply is empty and the grep below simply fails, so the
+      # loop retries until the deadline. || true keeps set -e from aborting
+      # on that expected non-zero.
+      reply="$(_qmp_exchange "${qmp_sock}" "${exchange_timeout}" \
+                 '{"execute":"query-status"}' || true)"
+      if [[ "${reply}" =~ \"running\"[[:space:]]*:[[:space:]]*true ]]; then
+        return 0
+      fi
+    fi
+    sleep 0.2
+  done
+  return 1
+}
