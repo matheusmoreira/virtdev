@@ -27,7 +27,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments project
+import error validate arguments project runtime
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -60,7 +60,7 @@ Start it with: virtdev-start ${project}
 MESSAGE
 fi
 
-console_sock="${project_directory}/console.sock"
+console_sock="$(runtime_console_sock "${project_directory}")"
 if [[ ! -S "${console_sock}" ]]; then
   error 5 <<MESSAGE
 Console socket not found: ${console_sock}
