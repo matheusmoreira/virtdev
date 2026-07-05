@@ -89,9 +89,11 @@ Remaining residuals (documented openly):
    Accepted: the installer runs only official Arch Linux signed packages
    (no AUR, no `makepkg`, no provisioning), so the threat window is very
    short and the network exposure is similar to any OS installation.
-2. **Host-local-user access to socket files** (`passt.sock`, `monitor.sock`):
-   mitigated by mode 0700 on the per-project directory; outside the primary
-   hypervisor-escape threat model but documented for completeness.
+2. **Host-local-user access to socket files** (`passt.sock`, `monitor.sock`,
+   `qmp.sock`, `console.sock`): mitigated by mode 0700 on the per-project
+   directory; outside the primary hypervisor-escape threat model but
+   documented for completeness. The QMP control socket is the same host-only
+   exposure class as the HMP monitor — the guest has no path to any of them.
 
 ---
 
@@ -205,7 +207,8 @@ projects/<name>/
   home.qcow2     (delta over system/home.qcow2)
   nvram          (per-project UEFI variable store copy)
   port           (SSH forwarding port, present while running)
-  monitor.sock   (QEMU monitor socket, present while running)
+  monitor.sock   (QEMU HMP monitor socket, present while running)
+  qmp.sock       (QEMU QMP control socket, present while running)
   console.sock   (serial console socket, present while running)
   passt.sock     (passt network backend socket, present while running)
 ```
@@ -455,7 +458,12 @@ QEMU flags of note:
 - `-device virtio-serial` + `-device virtserialport` — progress channel (install time)
 - `-virtfs local,...` — 9p pacman cache sharing (install and maintenance)
 - `-display none` — headless
-- `-chardev socket ... -monitor` — QEMU monitor via Unix socket
+- `-chardev socket ... -monitor` — QEMU HMP monitor via Unix socket (virtdev-stop's
+  ACPI `system_powerdown`, interactive `virtdev-monitor`)
+- `-chardev socket,id=qmp,...,server=on,wait=off -mon chardev=qmp,mode=control` — host-side
+  QMP control channel; `virtdev-start` probes it with `query-status` to confirm QEMU actually
+  launched before publishing the port. Host-only, guest-unreachable (bound only to `-mon`, no
+  guest `-device`), same exposure class as the HMP monitor
 - `-chardev socket ... -serial` — serial console via Unix socket
 
 Stopping a VM sends `system_powerdown` via the monitor socket (ACPI power
@@ -871,8 +879,10 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_require`, `project_is_running`, `project_load_running_state`, `project_is_outdated`, `project_is_detached`, `generation_read`, `generation_read_lenient`) | 3, 82 |
+| `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets + the `port` running-signal (`runtime_socket_basenames`, `runtime_*_sock` accessors, `runtime_clean`/`runtime_clean_sockets`, `runtime_socket_name_maxlen`); feeds `validate`'s sun_path cap so the project-name limit tracks the socket set | none |
 | `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags. The forward-port bind race is detected via `port_in_use`, not a passt helper | 83, 84, 85, 86 |
-| `qemu` | the shared QEMU argv and post-launch activation classifier (`qemu_command`, `qemu_activation_classify`); the network-isolation security boundary keeping `start` and `maintain`'s QEMU flags byte-identical | 90, 91 |
+| `qemu` | the shared QEMU argv and post-launch activation classifier (`qemu_command`, `qemu_activation_classify`); the network-isolation security boundary keeping `start` and `maintain`'s QEMU flags byte-identical. Derives socket paths from `runtime` and wires an additive host-side QMP control socket | 90, 91 |
+| `qmp` | minimal QMP control client (`qmp_query_running` liveness probe over a socat coproc, internal `_qmp_exchange`); host↔QEMU only. `virtdev-start`'s post-launch confirmation reads it | none |
 | `firewall` | host egress lockdown policy single-source-of-truth (`firewall_slice_for`, `firewall_zone_of_slice`, `firewall_zone_default`, `firewall_require`, `firewall_is_active`, `firewall_assert_unit_filtered`, `firewall_zone_valid`, `firewall_zones`) + zone/destination-set constants. Root-only ruleset generation and apply live in `bin/virtdev-firewall`, not here | 88 |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
 | `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array); lazy-inits on first `terminal_write` call using the color mode from `arguments_parse` | none |
@@ -900,7 +910,11 @@ constants only, header comment format) are documented in
 ## Port Allocation
 
 SSH forwarding ports are assigned at virtual-machine start time and recorded
-in `projects/<name>/port` while the unit is running. A foreground
+in `projects/<name>/port`. The port file is written LAST, only after QEMU is
+confirmed running (the QMP `query-status` liveness probe) and, for a filtered
+launch, the machine is proven to sit under the frozen `virtdev.slice` — so
+`port file exists ⟹ the machine was confirmed running`, never a false green
+from a launch that failed after the unit went active. A foreground
 `virtdev-stop` removes the port file (and the per-project sockets) once the
 unit reaches a terminal state, and `virtdev-start`'s cleanup-on-failure trap
 removes it on failed activation. A guest-initiated `poweroff` or an external
@@ -913,9 +927,11 @@ active*: every consumer (`virtdev-ssh`, `virtdev-port`, `virtdev-list`) gates
 on the systemd unit's active state before it uses the port to reach the
 guest, so a port file that outlives its unit is never acted on. A port file
 left behind by the deferred-cleanup path is harmless stale state — the next
-`virtdev-start`
-overwrites it and sweeps stale sockets, and a foreground `virtdev-stop`
-removes it. Auto-assignment finds the lowest port >= 2222 not currently bound
+`virtdev-start` clears it (and stale sockets) at its pre-launch sweep, before
+it launches, so a stale wrong port never survives into the launch window; it
+then writes the correct port only after confirming liveness, and a failed
+start removes it via the cleanup trap. A foreground `virtdev-stop` removes it
+too. Auto-assignment finds the lowest port >= 2222 not currently bound
 on the host. Explicit port assignment is
 supported via `virtdev-start <project> <port>`; `virtdev-start`
 verifies the port is free before launching QEMU.
@@ -1018,7 +1034,8 @@ ${VIRTDEV_HOME}/
     nvram
   projects/maintenance/  transient maintenance virtual machine runtime directory (mode 0700)
     port                 hardcoded port 2222
-    monitor.sock         QEMU monitor socket (present while maintenance virtual machine is running)
+    monitor.sock         QEMU HMP monitor socket (present while maintenance virtual machine is running)
+    qmp.sock             QEMU QMP control socket (present while maintenance virtual machine is running)
     console.sock         serial console socket (present while maintenance virtual machine is running)
     passt.sock           passt network backend socket (present while maintenance virtual machine is running)
   projects/
@@ -1028,7 +1045,8 @@ ${VIRTDEV_HOME}/
       nvram             per-project UEFI variable store
       generation        copy of system/generation at create time
       port              SSH forwarding port (present while running)
-      monitor.sock      QEMU monitor socket (present while running)
+      monitor.sock      QEMU HMP monitor socket (present while running)
+      qmp.sock          QEMU QMP control socket (present while running)
       console.sock      serial console socket (present while running)
       passt.sock        passt network backend socket (present while running)
       manifest       optional; user-curated manifest for virtdev-backup

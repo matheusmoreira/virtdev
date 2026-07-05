@@ -415,14 +415,18 @@ glob in `PKGBUILD` picks it up automatically.
   no binary); after exec it is QEMU's code.
   `virtdev-install` is unchanged (keeps SLIRP). `passt` is a required
   dependency; see `PKGBUILD` `depends` and `README.md` Requirements.
-- **passt.sock cleanup.** `passt.sock` lives next to `monitor.sock` and
-  `console.sock` in the per-project directory. It is removed by
-  `virtdev-stop`'s `stop_finalize`, by `virtdev-maintain`'s
-  `maintenance_cleanup` and its pre-launch sweep in `maintenance_boot`,
-  and by `virtdev-start`'s `cleanup_failed_start` trap and stale-socket
-  sweep. `virtdev-netexec` unlinks it before each
-  passt start (`passt_socket_clean`) — passt's `bind()` returns
-  `EADDRINUSE` on a leftover socket file.
+- **passt.sock cleanup.** `passt.sock` lives next to `monitor.sock`,
+  `qmp.sock`, and `console.sock` in the per-project directory. The socket set
+  is single-sourced in `lib/virtdev/runtime` (`runtime_socket_basenames`),
+  and every teardown routes through `runtime_clean` (sockets + port) or
+  `runtime_clean_sockets` (sockets only), so all four sockets are swept
+  together: `virtdev-stop`'s `stop_finalize`, `virtdev-maintain`'s
+  `maintenance_cleanup` and its pre-launch sweep in `maintenance_boot`, and
+  `virtdev-start`'s `cleanup_failed_start` trap and pre-launch sweep (now the
+  full `runtime_clean` — it clears a stale port too, since the port is written
+  last, after the QMP liveness confirm). `virtdev-netexec` unlinks
+  `passt.sock` before each passt start (`passt_socket_clean`) — passt's
+  `bind()` returns `EADDRINUSE` on a leftover socket file.
 - **Per-project directory permissions (mode 0700).** `virtdev-create`
   and `virtdev-maintain` create project directories with mode 0700.
   `lib/virtdev/lock` (`lock_open`) runs `chmod 0700

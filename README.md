@@ -469,7 +469,7 @@ ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
   projects/<name>/
     system.qcow2, home.qcow2       delta disks
     nvram, generation               UEFI state, base generation
-    port, monitor.sock, console.sock, passt.sock  runtime (while running)
+    port, monitor.sock, qmp.sock, console.sock, passt.sock  runtime (while running)
     manifest                     optional project-local manifest
   backups/<project>/<date>/<time>/
     project, manifest, generation   metadata
