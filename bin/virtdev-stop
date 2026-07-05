@@ -111,11 +111,21 @@ project_require "${project}"
 # not running". A machine that is activating (mid-boot) or deactivating (mid-shutdown
 # via the lockless ExecStop/poweroff routes) FALLS THROUGH to the dispatch + wait loop
 # below, which drives it to a terminal state — the old `! project_is_running` rejected
-# those transitional machines with a spurious "not running". (An unreachable manager
-# also falls through; the stop attempt then surfaces the real error rather than a
-# misleading "not running".)
+# those transitional machines with a spurious "not running".
 if project_is_stopped "${project}"; then
   error 4 <<<"Project virtual machine is not running: ${project}"
+fi
+
+# An UNREACHABLE user manager (empty ActiveState) is a different indeterminate than a
+# transitional one: falling through would poll the empty state until 2x
+# VIRTDEV_STOP_TIMEOUT, then mis-report error 5 ("unexpected state"). Fast-fail with a
+# precise diagnosis instead — the machine's real state is unknown, not "not running".
+if project_is_unreachable "${project}"; then
+  error 6 <<MESSAGE
+Cannot reach the user systemd manager to stop: ${project}
+Its state is indeterminate (no session bus — an unset/stale XDG_RUNTIME_DIR, or a
+login-less ssh/cron context). Ensure your user session is reachable, then retry.
+MESSAGE
 fi
 
 if ! command -v socat &>/dev/null; then

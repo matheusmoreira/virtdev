@@ -25,6 +25,12 @@
 #       might still be running. NOT the boolean inverse of project_is_running —
 #       see their definitions for the indeterminate middle.
 #
+#   project_is_unreachable <project>
+#       Returns 0 iff the user manager could not be reached to determine the
+#       unit's state. The "indeterminate because we could not ask" case,
+#       distinct from a transitional state; lets a caller (virtdev-stop)
+#       fast-fail instead of waiting on a state it can never read.
+#
 #   project_load_running_state <result-array> <project>...
 #       Batch-queries systemctl for the running state of the
 #       given projects in a single call. Populates the caller's
@@ -122,6 +128,17 @@ project_is_stopped() {
     inactive|failed) return 0 ;;
     *)               return 1 ;;
   esac
+}
+
+# project_is_unreachable <project> — 0 iff the user manager could not be reached to
+# determine the unit's state (the classifier returned empty). The "indeterminate
+# BECAUSE we could not ask" case, distinct from the transitional indeterminate
+# (activating/deactivating, where the manager DID answer). Callers that must act
+# differently on an unreachable manager than on a mid-transition machine use this —
+# virtdev-stop fast-fails on it rather than entering a wait loop that could never
+# observe a terminal state.
+project_is_unreachable() {
+  [[ -z "$(_project_active_state "${1}")" ]]
 }
 
 # Batch running-state for DISPLAY ONLY (virtdev-list's RUNNING column): one
