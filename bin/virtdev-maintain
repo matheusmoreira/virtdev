@@ -149,10 +149,12 @@ fi
 
 readonly maintenance_port=2222
 # NOT readonly: shared library functions (ssh_poll_until_ready, the qemu helper,
-# firewall_*_of_unit, firewall_running_machine_units) declare `local unit`. A readonly
-# global here blocks that shadow with "readonly variable" and breaks their reads — most
-# visibly firewall_running_machine_units' `read -r unit` loop, which silently enumerates
-# nothing (a fail-open of the reseal preflight). virtdev-start uses a plain `unit=` too.
+# firewall_slice_of_unit / firewall_zone_of_unit) declare `local unit` and shadow this
+# global. A readonly global here blocks that shadow with "readonly variable" and breaks
+# their reads — e.g. firewall_slice_of_unit's `local -r unit=...` aborts, killing the
+# slice/zone capture. (firewall_running_machine_units' enumerator once relied on this
+# too; it now namespaces its loop var _frmu_unit, so it no longer does.) virtdev-start
+# uses a plain `unit=` too.
 unit=virtdev-maintenance
 
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
