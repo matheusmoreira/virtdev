@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+#
+# runtime library: the per-machine ephemeral runtime artifact set.
+#
+# One source of truth for a project (or maintenance) virtual machine's
+# transient host-side files: the monitor/console/passt sockets and the
+# `port` file that signals "this machine is running". The socket set, the
+# argv path accessors, the cleanup helpers, and validate's sun_path
+# length feed all derive from the name constants below, so the argv QEMU
+# is launched with and the files cleaned up on teardown cannot drift
+# apart. Adding a socket to the set is a one-line array change that every
+# cleanup site and length check picks up automatically.
+#
+# These are host-side artifacts in the 0700 per-project directory. The
+# guest has no path to them — same exposure class as the QEMU monitor
+# socket. Nothing here spawns a process or touches the network; the
+# accessors are pure and the cleaners are idempotent `rm -f`.
+#
+# Public:
+#   Name constants (basenames, readonly):
+#     runtime_monitor_sock_name   monitor.sock
+#     runtime_console_sock_name   console.sock
+#     runtime_passt_sock_name     passt.sock
+#     runtime_port_name           port
+#
+#   runtime_socket_basenames      Array of the socket basenames (built
+#                                 from the name constants). The single
+#                                 socket set — accessors, cleanup, and the
+#                                 sun_path maxlen all read it.
+#
+#   Path accessors (echo <dir>/<name>, no trailing newline). <dir> is the
+#   per-machine socket directory (the per-project directory for a project
+#   machine; projects/maintenance for the maintenance machine):
+#     runtime_monitor_sock <dir>
+#     runtime_console_sock <dir>
+#     runtime_passt_sock <dir>
+#   These are what qemu_command uses to wire the QEMU argv, so the argv
+#   socket paths and the cleanup set share one source.
+#
+#   runtime_clean_sockets <dir>   rm -f every socket basename under <dir>.
+#                                 Sockets ONLY — leaves the port file. The
+#                                 pre-launch stale-socket sweep uses this;
+#                                 it must not delete a just-written port.
+#   runtime_clean <dir>           runtime_clean_sockets <dir> plus the port
+#                                 file. The full teardown (stop, failure
+#                                 cleanup) uses this.
+#
+#   runtime_socket_name_maxlen    Print the longest socket basename length
+#                                 (bytes). Feeds validate's AF_UNIX
+#                                 sun_path overhead so the project-name cap
+#                                 tracks the socket set instead of a magic
+#                                 constant.
+#
+# No exit codes reserved: the accessors are pure and the cleaners are
+# best-effort rm -f; nothing here calls error().
+#
+set -euo pipefail
+
+# True constants — plain basenames, independent of any env var.
+readonly runtime_monitor_sock_name=monitor.sock
+readonly runtime_console_sock_name=console.sock
+readonly runtime_passt_sock_name=passt.sock
+readonly runtime_port_name=port
+
+# The single socket set, built FROM the name constants so a rename or
+# addition happens in exactly one place. -gra: global (libraries are
+# sourced from within import(), so a bare declare would be function-local)
+# and read-only.
+# shellcheck disable=SC2034  # read by consumers (qemu_command) and by the helpers below
+declare -gra runtime_socket_basenames=(
+  "${runtime_monitor_sock_name}"
+  "${runtime_console_sock_name}"
+  "${runtime_passt_sock_name}"
+)
+
+runtime_monitor_sock() {
+  printf '%s' "${1}/${runtime_monitor_sock_name}"
+}
+
+runtime_console_sock() {
+  printf '%s' "${1}/${runtime_console_sock_name}"
+}
+
+runtime_passt_sock() {
+  printf '%s' "${1}/${runtime_passt_sock_name}"
+}
+
+# rm -f every socket basename under <dir>. Sockets only — the port file is
+# deliberately left in place so callers that sweep stale sockets before a
+# launch do not delete a port that has already been written.
+runtime_clean_sockets() {
+  local -r dir="${1}"
+  local name
+  for name in "${runtime_socket_basenames[@]}"; do
+    rm -f "${dir}/${name}"
+  done
+}
+
+# Full teardown: the sockets plus the port "running" signal.
+runtime_clean() {
+  local -r dir="${1}"
+  runtime_clean_sockets "${dir}"
+  rm -f "${dir}/${runtime_port_name}"
+}
+
+# The longest socket basename length, in bytes. LC_ALL=C so ${#name}
+# counts bytes (matching sun_path's byte limit), not characters, even
+# though the current basenames are pure ASCII. Computed from the set so
+# validate's sun_path overhead cannot fall out of sync with it.
+runtime_socket_name_maxlen() {
+  local LC_ALL=C
+  local name max=0
+  for name in "${runtime_socket_basenames[@]}"; do
+    (( ${#name} > max )) && max=${#name}
+  done
+  printf '%s' "${max}"
+}
