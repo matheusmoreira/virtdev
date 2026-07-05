@@ -107,7 +107,14 @@ stop_finalize() {
 
 project_require "${project}"
 
-if ! project_is_running "${project}"; then
+# Only a PROVABLY stopped machine (inactive/failed) short-circuits here as "already
+# not running". A machine that is activating (mid-boot) or deactivating (mid-shutdown
+# via the lockless ExecStop/poweroff routes) FALLS THROUGH to the dispatch + wait loop
+# below, which drives it to a terminal state — the old `! project_is_running` rejected
+# those transitional machines with a spurious "not running". (An unreachable manager
+# also falls through; the stop attempt then surfaces the real error rather than a
+# misleading "not running".)
+if project_is_stopped "${project}"; then
   error 4 <<<"Project virtual machine is not running: ${project}"
 fi
 
