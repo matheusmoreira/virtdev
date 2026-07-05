@@ -458,7 +458,7 @@ esac
 # live QEMU; start stays ASYNC. On failure vm_started is still 0, so
 # cleanup_failed_start stops the unit and runtime_cleans (sockets + the
 # not-yet-written port).
-if ! qmp_query_running "${qmp_sock}" 5; then
+if ! qmp_query_running "${qmp_sock}" 5 "${unit}"; then
   error 13 <<MESSAGE
 QEMU did not reach a running state: ${unit} (passt or QEMU failed at launch).
 The transient unit went active when the netexec shim forked, but QEMU never
