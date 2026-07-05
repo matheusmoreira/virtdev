@@ -319,9 +319,23 @@ firewall_zone_to_restore() {
 # prefixes a state-dependent `●` status-dot to non-running rows that shifts awk's
 # fields, so a positional parse yields `●` for the very deactivating/failed rows the
 # guard must see. Verified against a real `failed` unit.
+#
+# RETURN: 0, with the alive unit names on stdout — possibly EMPTY, the genuine "no
+# machines running" case (a glob matching zero units succeeds). NON-ZERO iff the
+# enumeration itself FAILED (list-units could not reach the manager: bus down, a
+# broken cross-privilege sudo/XDG bridge). The caller MUST treat non-zero as "cannot
+# prove none are running" and fail CLOSED — never as an empty result. The list-units
+# rc is bound explicitly below for exactly this; inside the `< <(list-units | awk)` it
+# used to live in, a failed enumeration was indistinguishable from "no machines" and
+# read fail-OPEN under both consumers (apply's host-map guard, maintain's reseal).
 firewall_running_machine_units() {
   local -a _run=("$@")
   [[ "${#_run[@]}" -gt 0 ]] || return 0
+  # Bind the enumeration's exit code (see RETURN above): a glob matching zero units
+  # is success + empty; an unreachable manager is failure → return 1 (fail closed).
+  local raw
+  raw="$("${_run[@]}" list-units --all --plain --no-legend 'virtdev-*.service' 2>/dev/null)" \
+    || return 1
   local unit state
   while IFS= read -r unit; do
     [[ -n "${unit}" ]] || continue
@@ -331,10 +345,7 @@ firewall_running_machine_units() {
       inactive|failed) ;;                  # QEMU gone — holds neither the file nor the map
       *) printf '%s\n' "${unit}" ;;        # active/activating/deactivating/… or unknown → alive
     esac
-  done < <(
-    "${_run[@]}" list-units --all --plain --no-legend 'virtdev-*.service' 2>/dev/null \
-      | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.service$/) { print $i; break } }'
-  )
+  done < <(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.service$/) { print $i; break } }' <<<"${raw}")
 }
 
 # firewall_zone_default <project> -> the project's configured zone, else 'none'.

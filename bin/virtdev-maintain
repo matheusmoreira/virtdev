@@ -409,7 +409,12 @@ fi
 # lockless ExecStop/poweroff routes, still holding the fd) still blocks the reseal.
 # The old `--state=active` filter missed that window (a LIVE-PROVEN corruption gap).
 # The firewall pins are excluded inside the helper.
-running_machines="$(firewall_running_machine_units systemctl --user)"
+running_machines="$(firewall_running_machine_units systemctl --user)" \
+  || error 26 <<MESSAGE
+Could not determine whether any project virtual machines are running (the user
+systemd manager was unreachable). Refusing to reseal the base while a machine might
+still hold system/system.qcow2 open. Retry when the user session is reachable.
+MESSAGE
 if [[ -n "${running_machines}" ]]; then
   error 7 <<MESSAGE
 One or more project virtual machines are running.

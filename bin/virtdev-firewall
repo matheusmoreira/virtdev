@@ -473,14 +473,26 @@ firewall_guard_running_hostmap() {
   # netexec flag. Keep it in lockstep with its definition in virtdev-netexec (the
   # `spec` array) and the emit in virtdev-start; renaming the flag there without
   # updating this match silently fails the guard OPEN — no lint catches a string drift.
-  local unit exec_start project
+  local unit exec_start project running_units
   local -a stranded=()
+  # Fail CLOSED on an enumeration failure (bus down / broken cross-privilege bridge):
+  # bind the runner's rc so an empty stream from a FAILED enumeration cannot read as
+  # "no machines" and let apply widen a live machine's host-loopback map (exit 102).
+  running_units="$(firewall_running_machine_units firewall_user_systemctl "${uid}")" \
+    || error 102 <<MESSAGE
+apply refused: could not enumerate the target user's running machines (their systemd
+manager was unreachable). Cannot verify that no machine holds passt's host-loopback
+map open, so removing the last host-hole zone now might silently widen a live machine
+to every host loopback port. Ensure the user session is reachable, then re-apply.
+Nothing was changed.
+MESSAGE
   while IFS= read -r unit; do
+    [[ -n "${unit}" ]] || continue
     exec_start="$(firewall_user_systemctl "${uid}" show -p ExecStart --value "${unit}" 2>/dev/null || true)"
     [[ " ${exec_start} " == *" --allow-host-loopback "* ]] || continue
     project="${unit#virtdev-}"; project="${project%.service}"
     stranded+=("${project}")
-  done < <(firewall_running_machine_units firewall_user_systemctl "${uid}")
+  done <<<"${running_units}"
 
   [[ ${#stranded[@]} -eq 0 ]] && return 0
 
