@@ -27,7 +27,7 @@
 #       disk_dir        — directory holding system.qcow2, home.qcow2 and
 #                         nvram. virtdev-start: the per-project directory.
 #                         virtdev-maintain: the maintenance/ staging dir.
-#       sock_dir        — directory holding the monitor/console/passt
+#       sock_dir        — directory holding the monitor/console/passt/qmp
 #                         sockets. virtdev-start: the SAME per-project
 #                         directory. virtdev-maintain: projects/maintenance
 #                         (distinct from the staging disk dir — the two
@@ -52,6 +52,15 @@
 #       the system/home virtio qcow2 drives, the passt -netdev stream
 #       (NO SLIRP -netdev user), virtio-rng, and -display none. There is
 #       no read-only/snapshot drive flag — the qcow2 deltas are writable.
+#
+#       Two host-side control sockets are wired here, both in the 0700
+#       per-project directory and unreachable by the guest: the HMP
+#       monitor (-monitor chardev:monitor — virtdev-stop's ACPI
+#       system_powerdown and interactive virtdev-monitor) and, additive,
+#       a QMP control socket (-mon chardev=qmp,mode=control) that
+#       virtdev-start probes with query-status to confirm QEMU actually
+#       launched. Same exposure class as the monitor socket; no new
+#       guest-reachable surface.
 #
 #   qemu_activation_classify <unit> <deadline_seconds>
 #       Poll the transient systemd unit after systemd-run returns and
@@ -117,6 +126,7 @@ qemu_command() {
   local -r monitor_sock="$(runtime_monitor_sock "${sock_dir}")"
   local -r console_sock="$(runtime_console_sock "${sock_dir}")"
   local -r passt_sock="$(runtime_passt_sock "${sock_dir}")"
+  local -r qmp_sock="$(runtime_qmp_sock "${sock_dir}")"
 
   # The flag set below is the network-isolation security boundary. It is
   # copied verbatim from the historical start/maintain argv and must not
@@ -141,6 +151,8 @@ qemu_command() {
     -display none
     -chardev socket,id=monitor,path="${monitor_sock}",server=on,wait=off
     -monitor chardev:monitor
+    -chardev socket,id=qmp,path="${qmp_sock}",server=on,wait=off
+    -mon chardev=qmp,mode=control
     -chardev socket,id=serial,path="${console_sock}",server=on,wait=off
     -serial chardev:serial
     -fw_cfg name=opt/virtdev/project,string="${fw_cfg_project}"
