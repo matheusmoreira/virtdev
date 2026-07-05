@@ -99,7 +99,9 @@ has_backing() {
 
 # Pre-lock checks: fast failure before the confirmation prompt.
 # These are repeated under the lock below to close the TOCTOU window.
-if project_is_running "${project}"; then
+# Fail CLOSED: only a PROVABLY stopped machine proceeds — an unreachable manager
+# reads as not-stopped, never as safe (detach mutates disks).
+if ! project_is_stopped "${project}"; then
   error 4 <<MESSAGE
 Virtual machine is running: ${project}
 Stop it first: virtdev-stop ${project}
@@ -119,7 +121,8 @@ home_bak="${home_disk}.bak"
 if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
   lock_acquire
   # TOCTOU re-check under the lock: a concurrent start may have booted the VM.
-  if project_is_running "${project}"; then
+  # Fail CLOSED: an unreachable manager reads as not-stopped, never as safe.
+  if ! project_is_stopped "${project}"; then
     error 4 <<MESSAGE
 Virtual machine is running: ${project}
 Stop it first: virtdev-stop ${project}
@@ -189,7 +192,8 @@ rm -f "${system_disk}.detach" "${home_disk}.detach"
 # Post-lock re-checks: close the TOCTOU window between the pre-lock
 # checks and lock acquisition. A concurrent virtdev-start could have
 # booted the VM, or a concurrent virtdev-detach could have completed.
-if project_is_running "${project}"; then
+# Fail CLOSED: only a PROVABLY stopped machine proceeds (unreachable manager reads as not-stopped).
+if ! project_is_stopped "${project}"; then
   error 4 <<MESSAGE
 Virtual machine is running: ${project}
 Stop it first: virtdev-stop ${project}

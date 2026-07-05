@@ -74,7 +74,10 @@ if [[ -d "${projects_directory}" ]]; then
   LC_ALL=C
   while IFS= read -r project; do
     [[ "${project}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
-    if project_is_running "${project}"; then
+    # Fail CLOSED: any not-PROVABLY-stopped machine blocks the nuke. An unreachable
+    # manager reads as not-stopped, so nuke refuses rather than delete everything
+    # under a possibly-live machine.
+    if ! project_is_stopped "${project}"; then
       error 4 <<MESSAGE
 Project virtual machine is running: ${project}
 Stop it with: virtdev-stop ${project}

@@ -88,7 +88,8 @@ if (( ! recovering )); then
     error 4 <<<"Project already exists: ${target_name}"
   fi
 
-  if project_is_running "${source_name}"; then
+  # Fail CLOSED: only a PROVABLY stopped source moves (unreachable manager reads as not-stopped).
+  if ! project_is_stopped "${source_name}"; then
     error 5 <<<"Project virtual machine is running: ${source_name}"
   fi
 fi

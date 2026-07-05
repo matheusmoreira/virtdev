@@ -47,7 +47,10 @@ project_directory="${VIRTDEV_HOME}/projects/${project}"
 
 project_require "${project}"
 
-if project_is_running "${project}"; then
+# Fail CLOSED: only a PROVABLY stopped machine may be destroyed. project_is_stopped
+# is false for an unreachable manager too, so a lost session bus cannot read a live
+# machine as "stopped" and let this wipe its disks.
+if ! project_is_stopped "${project}"; then
   error 4 <<MESSAGE
 Project virtual machine is running: ${project}
 Stop it with: virtdev-stop ${project}
