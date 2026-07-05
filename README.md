@@ -6,7 +6,7 @@ Each project gets its own Arch Linux virtual machine backed by a thin qcow2
 delta over a shared sealed base. The isolation boundary is a hardware-assisted
 hypervisor, not a namespace or permission system.
 
-**Isolation scope:** project and maintenance virtual machines **start fully
+**Isolation scope:** project virtual machines **start fully
 locked by default** — zone `none`, no network at all beyond your own SSH
 session. passt blocks the guest→host-loopback path (`--map-host-loopback none`)
 and its host-global-address mapping (`--map-guest-addr none`); a host-root
@@ -227,6 +227,9 @@ virtdev ssh maintenance           # connect from another terminal
 # ... perform maintenance inside the VM ...
 sudo poweroff                     # triggers reseal prompt
 ```
+
+The maintenance virtual machine runs in zone `wan`, not `none` — resealing runs
+`pacman -Syu`, which needs the internet (the host and LAN stay blocked).
 
 Optional hooks in `~/.config/virtdev/maintenance/`:
 
