@@ -92,6 +92,8 @@
 #   24  Boot 2 (inventory) ended unclean; reseal refused to protect the base
 #   25  host egress lockdown baseline changed during launch (post-activation
 #       TOCTOU re-check failed); machine stopped, reseal refused
+#   26  could not enumerate running project machines (user manager unreachable);
+#       reseal refused to protect the base — fail closed
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):

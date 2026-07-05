@@ -97,6 +97,7 @@ Same error → same code, everywhere:
 | 99 | holder: zone-slice cgroup dirs never appeared (pins not running) | `bin/virtdev-firewall` |
 | 100 | apply: refused — removing the last host hole would strand a running machine's open host-loopback map | `bin/virtdev-firewall` |
 | 101 | apply: timed out acquiring the user lock (another virtdev op in progress) | `bin/virtdev-firewall` |
+| 102 | apply: could not enumerate running machines (manager unreachable) — fail closed | `bin/virtdev-firewall` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").

@@ -30,6 +30,7 @@
 #   99  holder: zone-slice cgroup dirs never appeared (pins not running)
 #  100  apply: refused — would strand a running machine's open host-loopback map
 #  101  apply: timed out acquiring the user lock (another virtdev op in progress)
+#  102  apply: could not enumerate running machines (manager unreachable) — fail closed
 #
 set -euo pipefail
 

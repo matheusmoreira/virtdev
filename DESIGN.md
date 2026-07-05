@@ -649,7 +649,9 @@ are enumerated through the shared `firewall_running_machine_units` predicate, wh
 counts `active` AND `deactivating` (a machine mid-shutdown still holds its map open)
 — the same predicate `virtdev-maintain`'s reseal preflight uses. Removing a
 *non-last* hole keeps the gate (the machine that lost its hole fails *closed*), and
-removing the last one with no such machine running just proceeds.
+removing the last one with no such machine running just proceeds. If the
+enumeration itself cannot reach the user manager, `apply` fails closed (exit 102,
+nothing changed) rather than reading the empty result as "no machines running".
 
 **Apply (root, one-time).** `virtdev firewall apply` (no sudo) **self-elevates**:
 run rootless it re-execs `sudo <self> apply --virtdev-home <VIRTDEV_HOME>`,
@@ -878,7 +880,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `trigger` | run user-supplied trigger scripts at lifecycle points (`trigger_fire`); discovers system and per-project triggers, captures stdout via namerefs | 80 |
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
-| `project` | enumerate and query project state (`project_list`, `project_require`, `project_is_running`, `project_load_running_state`, `project_is_outdated`, `project_is_detached`, `generation_read`, `generation_read_lenient`) | 3, 82 |
+| `project` | enumerate and query project state (`project_list`, `project_require`, `project_is_running`, `project_is_stopped`, `project_load_running_state`, `project_is_outdated`, `project_is_detached`, `generation_read`, `generation_read_lenient`); `project_is_running`/`project_is_stopped` are a fail-safe/fail-closed pair over one ActiveState classifier, deliberately not complementary (an unreachable manager satisfies neither) | 3, 82 |
 | `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets + the `port` running-signal (`runtime_socket_basenames`, `runtime_*_sock` accessors, `runtime_clean`/`runtime_clean_sockets`, `runtime_socket_name_maxlen`); feeds `validate`'s sun_path cap so the project-name limit tracks the socket set | none |
 | `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags. The forward-port bind race is detected via `port_in_use`, not a passt helper | 83, 84, 85, 86 |
 | `qemu` | the shared QEMU argv and post-launch activation classifier (`qemu_command`, `qemu_activation_classify`); the network-isolation security boundary keeping `start` and `maintain`'s QEMU flags byte-identical. Derives socket paths from `runtime` and wires an additive host-side QMP control socket | 90, 91 |

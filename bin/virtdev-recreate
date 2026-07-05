@@ -125,6 +125,13 @@ project_require "${project}"
 # Capture VM state once. Used for both the precondition check (which
 # requires it active unless --no-backup) and the do_stop decision
 # (skip stop when the VM is already down).
+#
+# This deliberately keeps project_is_running (provably active), NOT the fail-closed
+# project_is_stopped the destructive commands use. recreate is a thin orchestrator
+# and its only irreversible step is virtdev-destroy (below), which is itself
+# fail-closed — so a bus-flaky read that wrongly skips the stop still cannot wipe a
+# live machine, because the guarded destroy refuses. Keep that invariant: if recreate
+# ever grows a raw disk op, it would need the fail-closed predicate here too.
 unit_active=0
 if project_is_running "${project}"; then
   unit_active=1
