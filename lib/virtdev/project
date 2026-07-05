@@ -12,13 +12,25 @@
 #       and returns 0 if no projects exist.
 #
 #   project_is_running <project>
-#       Returns 0 if the project's systemd unit is active.
+#       Returns 0 iff the unit is PROVABLY active. Fail-SAFE partner for the
+#       query commands (ssh, monitor, backup, …): an unreachable user manager
+#       reads as "not running", so they refuse to touch a machine they cannot
+#       confirm is up rather than erroring on a live one.
+#
+#   project_is_stopped <project>
+#       Returns 0 iff the unit is PROVABLY inactive or failed. Fail-CLOSED
+#       partner for the destructive commands (destroy, detach, move, nuke, and
+#       stop's already-stopped guard): a transitional state OR an unreachable
+#       manager reads as "not stopped", so they refuse to mutate a machine that
+#       might still be running. NOT the boolean inverse of project_is_running —
+#       see their definitions for the indeterminate middle.
 #
 #   project_load_running_state <result-array> <project>...
 #       Batch-queries systemctl for the running state of the
 #       given projects in a single call. Populates the caller's
 #       associative array (passed by nameref): keys are project
-#       names, values are 1 (running) or 0 (stopped).
+#       names, values are 1 (running) or 0 (stopped). DISPLAY ONLY
+#       (virtdev-list) — see the note at the definition.
 #
 #   project_is_outdated <project>
 #       Returns 0 if the project's generation does not match the
@@ -78,10 +90,47 @@ project_list() {
   done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' | sort -z)
 }
 
-project_is_running() {
-  systemctl --user --quiet is-active "virtdev-${1}" 2>/dev/null
+# _project_active_state <project>
+# The single systemctl call behind the running/stopped predicates below. Echoes
+# the unit's raw ActiveState (active / activating / deactivating / reloading /
+# inactive / failed), or the EMPTY string when the user manager is unreachable
+# (no session bus: a cron/at job, `ssh host virtdev-…` without a login session, an
+# unset or stale XDG_RUNTIME_DIR). `systemctl show` prints the state and exits 0
+# for a known OR unknown unit, but prints NOTHING and exits non-zero when it cannot
+# reach the bus — so an empty result means "could not ask", distinct from a real
+# "inactive". That distinction is what lets the predicates fail closed. Verified:
+# `XDG_RUNTIME_DIR=/nonexistent systemctl --user show … -p ActiveState --value`
+# emits nothing and returns non-zero.
+_project_active_state() {
+  systemctl --user show "virtdev-${1}" -p ActiveState --value 2>/dev/null || true
 }
 
+# project_is_running / project_is_stopped are deliberately NOT complementary. For a
+# transitional state (activating / deactivating / reloading) OR an unreachable
+# manager (empty), BOTH return non-zero: that indeterminate middle is where each
+# caller picks its safe default. Query commands demand provably-running (fail SAFE);
+# destructive commands demand provably-stopped (fail CLOSED). The old bare
+# `is-active` collapsed the middle into "not running", which fails OPEN under a
+# destructive caller — the anchor bug this pair fixes. (== active drops is-active's
+# "reloading" too, but a QEMU unit has no ExecReload, so it never reloads.)
+project_is_running() {
+  [[ "$(_project_active_state "${1}")" == active ]]
+}
+
+project_is_stopped() {
+  case "$(_project_active_state "${1}")" in
+    inactive|failed) return 0 ;;
+    *)               return 1 ;;
+  esac
+}
+
+# Batch running-state for DISPLAY ONLY (virtdev-list's RUNNING column): one
+# systemctl call for N projects instead of N calls. Maps is-active semantics
+# (active → 1, else → 0), matching project_is_running. It deliberately does NOT
+# model the indeterminate middle that project_is_stopped guards — an unreachable
+# manager here reads every project as stopped, which merely mislabels the table
+# (cosmetic), never a data hazard: every destructive path is independently gated
+# by the fail-closed project_is_stopped. Do NOT wire this into a mutate decision.
 project_load_running_state() {
   local -n _project_result=$1
   shift
