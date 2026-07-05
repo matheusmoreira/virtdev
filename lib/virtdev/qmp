@@ -118,7 +118,13 @@ _qmp_exchange() {
   request="$(printf '%s\n' '{"execute":"qmp_capabilities"}' "$@")"
 
   local -r deadline=$(( SECONDS + timeout_seconds ))
-  coproc QMPCO { socat - UNIX-CONNECT:"${sock}" 2>/dev/null; }
+  # `exec` so the coproc process IS socat, not a wrapping bash subshell. The
+  # brace-group body is needed to carry the 2>/dev/null (a simple-command
+  # coproc body cannot), but a brace group forks a wrapper whose ${QMPCO_PID}
+  # is bash with socat as its child — the kill+wait below would then reap the
+  # wrapper and orphan socat to init. exec replaces the subshell with socat so
+  # ${QMPCO_PID} is socat and the reap targets it directly.
+  coproc QMPCO { exec socat - UNIX-CONNECT:"${sock}" 2>/dev/null; }
   # Capture the coproc fds and pid into plain locals IMMEDIATELY: bash
   # clears the ${QMPCO[*]} array the moment the coprocess exits (e.g. socat
   # dying on ECONNREFUSED to a stale post-crash socket), after which
@@ -136,7 +142,7 @@ _qmp_exchange() {
 
   local reply="" line rc=1 remaining read_rc
   while (( SECONDS < deadline )); do
-    (( remaining = deadline - SECONDS ))
+    remaining=$(( deadline - SECONDS ))
     (( remaining > _qmp_reply_read_timeout )) && remaining=${_qmp_reply_read_timeout}
     if IFS= read -r -t "${remaining}" -u "${rfd}" line; then
       reply+="${line}"$'\n'
