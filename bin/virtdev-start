@@ -275,14 +275,19 @@ cleanup_failed_start() {
 }
 trap cleanup_failed_start EXIT
 
-# Remove stale sockets from a previous unclean shutdown. Sockets ONLY
-# (runtime_clean_sockets): the port file is the running-signal and is
-# written ONLY after liveness is confirmed (below), so it does not exist
-# yet on the normal path — but a leftover from a prior crashed start might,
-# and runtime_clean here would wrongly clear it before this launch is
-# confirmed. Sweeping sockets-only leaves that decision to the confirmed
-# port write / cleanup_failed_start.
-runtime_clean_sockets "${project_directory}"
+# Remove stale sockets AND a stale port from a previous unclean shutdown
+# (runtime_clean — the full sweep). The is-active check above already proved
+# the unit is not running, so any port file here is genuinely stale (a prior
+# start SIGKILLed before its own cleanup, or a deferred-cleanup poweroff).
+# Clearing it now is what keeps "port file ⟺ machine confirmed running"
+# honest: the port is (re)written LAST, only after the liveness + firewall
+# checks, so leaving a stale port in place would let a lock-free reader
+# (virtdev-ssh/-port/-backup) read the WRONG port during this launch window.
+# With it cleared, that window shows an honest "no port yet" (exit 87 =
+# not-running-yet) until the confirmed write. (A sockets-only sweep was
+# correct only while the port was written BEFORE this point; it no longer
+# is.) cleanup_failed_start below repeats the full sweep on any failure.
+runtime_clean "${project_directory}"
 
 # Clear any residual failed state from a previous start attempt. Without
 # --collect (see below), a unit that exited with error persists as
