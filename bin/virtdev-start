@@ -458,7 +458,19 @@ esac
 # live QEMU; start stays ASYNC. On failure vm_started is still 0, so
 # cleanup_failed_start stops the unit and runtime_cleans (sockets + the
 # not-yet-written port).
-if ! qmp_query_running "${qmp_sock}" 5 "${unit}"; then
+#
+# The probe needs socat (a declared dependency). If it is somehow absent
+# (partial install, broken PATH), do NOT tear down a machine that is very
+# likely healthy — the QMP gate is a confirmation, not the launch itself.
+# Degrade like virtdev-stop does when socat is missing: warn that liveness
+# cannot be confirmed and proceed without the gate (the classify above
+# already saw the unit go active, and the filtered path still asserts the
+# cgroup below). Killing a healthy VM over a missing tool is the wrong
+# failure.
+if ! command -v socat &>/dev/null; then
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'socat not found; cannot confirm QEMU liveness via QMP, proceeding without the check.' reset)"
+  printf >&2 'Install socat to re-enable launch confirmation: pacman -S socat\n'
+elif ! qmp_query_running "${qmp_sock}" 5 "${unit}"; then
   error 13 <<MESSAGE
 QEMU did not reach a running state: ${unit} (passt or QEMU failed at launch).
 The transient unit went active when the netexec shim forked, but QEMU never
