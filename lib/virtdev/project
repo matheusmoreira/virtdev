@@ -104,7 +104,10 @@ project_list() {
 # unset or stale XDG_RUNTIME_DIR). `systemctl show` prints the state and exits 0
 # for a known OR unknown unit, but prints NOTHING and exits non-zero when it cannot
 # reach the bus — so an empty result means "could not ask", distinct from a real
-# "inactive". That distinction is what lets the predicates fail closed. Verified:
+# "inactive". A known-ABSENT unit (never started, or reset-failed away) reads
+# 'inactive' (rc 0) too, so project_is_stopped treats a never-started project as
+# stopped — the safe default for destroy/detach/move/nuke. That distinction is what
+# lets the predicates fail closed. Verified:
 # `XDG_RUNTIME_DIR=/nonexistent systemctl --user show … -p ActiveState --value`
 # emits nothing and returns non-zero.
 _project_active_state() {
@@ -117,8 +120,10 @@ _project_active_state() {
 # caller picks its safe default. Query commands demand provably-running (fail SAFE);
 # destructive commands demand provably-stopped (fail CLOSED). The old bare
 # `is-active` collapsed the middle into "not running", which fails OPEN under a
-# destructive caller — the anchor bug this pair fixes. (== active drops is-active's
-# "reloading" too, but a QEMU unit has no ExecReload, so it never reloads.)
+# destructive caller — the anchor bug this pair fixes. (`== active` also narrows away
+# is-active's rc-0 "activating" and "reloading": a query caller refusing a mid-boot
+# machine is correct — the port file isn't published until QMP liveness, so those
+# callers already refuse via port_require; a QEMU unit never reloads.)
 project_is_running() {
   [[ "$(_project_active_state "${1}")" == active ]]
 }
@@ -143,8 +148,11 @@ project_is_unreachable() {
 
 # Batch running-state for DISPLAY ONLY (virtdev-list's RUNNING column): one
 # systemctl call for N projects instead of N calls. Maps is-active semantics
-# (active → 1, else → 0), matching project_is_running. It deliberately does NOT
-# model the indeterminate middle that project_is_stopped guards — an unreachable
+# (active → 1, else → 0); this agrees with project_is_running only because BOTH key
+# off the literal state word "active" (here from is-active, there from show -p
+# ActiveState) — a future switch of this batch to an rc-based is-active loop would
+# silently reintroduce a status-vs-list skew. It deliberately does NOT model the
+# indeterminate middle that project_is_stopped guards — an unreachable
 # manager here reads every project as stopped, which merely mislabels the table
 # (cosmetic), never a data hazard: every destructive path is independently gated
 # by the fail-closed project_is_stopped. Do NOT wire this into a mutate decision.
