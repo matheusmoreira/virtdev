@@ -336,16 +336,25 @@ firewall_running_machine_units() {
   local raw
   raw="$("${_run[@]}" list-units --all --plain --no-legend 'virtdev-*.service' 2>/dev/null)" \
     || return 1
-  local unit state
-  while IFS= read -r unit; do
-    [[ -n "${unit}" ]] || continue
-    [[ "${unit}" == virtdev-firewall-pin@* ]] && continue
-    state="$("${_run[@]}" show "${unit}" -p ActiveState --value 2>/dev/null || true)"
-    case "${state}" in
+  # Loop vars are namespaced (_frmu_*) so a caller whose scope happens to have `unit`
+  # readonly cannot break this `local` — a failed `local unit` would abort the loop
+  # while the function still returned rc 0 + empty (a fail-OPEN the rc-binding above
+  # cannot see, because list-units itself succeeded).
+  local _frmu_unit _frmu_state
+  while IFS= read -r _frmu_unit; do
+    [[ -n "${_frmu_unit}" ]] || continue
+    [[ "${_frmu_unit}" == virtdev-firewall-pin@* ]] && continue
+    _frmu_state="$("${_run[@]}" show "${_frmu_unit}" -p ActiveState --value 2>/dev/null || true)"
+    case "${_frmu_state}" in
       inactive|failed) ;;                  # QEMU gone — holds neither the file nor the map
-      *) printf '%s\n' "${unit}" ;;        # active/activating/deactivating/… or unknown → alive
+      *) printf '%s\n' "${_frmu_unit}" ;;  # active/activating/deactivating/… or unknown → alive
     esac
   done < <(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\.service$/) { print $i; break } }' <<<"${raw}")
+  # Success rc is LOAD-BEARING: both consumers do `x="$(...)" || error N`, so the
+  # function must return 0 here. Explicit, so a future edit adding a trailing command
+  # inside the loop cannot silently make the success path return non-zero (a spurious
+  # fail-closed).
+  return 0
 }
 
 # firewall_zone_default <project> -> the project's configured zone, else 'none'.

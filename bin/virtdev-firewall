@@ -489,9 +489,17 @@ Nothing was changed.
 MESSAGE
   while IFS= read -r unit; do
     [[ -n "${unit}" ]] || continue
-    exec_start="$(firewall_user_systemctl "${uid}" show -p ExecStart --value "${unit}" 2>/dev/null || true)"
-    [[ " ${exec_start} " == *" --allow-host-loopback "* ]] || continue
     project="${unit#virtdev-}"; project="${project%.service}"
+    # Fail CLOSED on a per-unit read failure too (a mid-loop bus/bridge glitch AFTER
+    # list-units already succeeded): an UNREADABLE ExecStart is treated as "host map
+    # possibly open" — count the machine stranded rather than silently skip it, which
+    # would let apply widen its host-loopback map. A `|| true` here would re-open the
+    # exact fail-open the enumeration rc-binding closes one level up.
+    if ! exec_start="$(firewall_user_systemctl "${uid}" show -p ExecStart --value "${unit}" 2>/dev/null)"; then
+      stranded+=("${project}")
+      continue
+    fi
+    [[ " ${exec_start} " == *" --allow-host-loopback "* ]] || continue
     stranded+=("${project}")
   done <<<"${running_units}"
 
