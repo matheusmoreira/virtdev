@@ -81,6 +81,8 @@ WRAPPER_EOF
 
 ssh_poll_until_ready() {
   local -r key="${1}" port="${2}" unit="${3}" timeout="${4}"
+  # Hard per-attempt wall-clock cap for the ssh probe below (coreutils timeout).
+  local -r attempt_timeout=10
   local deadline
   deadline=$(( SECONDS + timeout ))
   while (( SECONDS < deadline )); do
@@ -90,7 +92,16 @@ ssh_poll_until_ready() {
       active|activating) ;;
       *) return 2 ;;
     esac
-    if ssh \
+    # ConnectTimeout bounds only the TCP connect, not the banner exchange: a
+    # compromised guest can accept the connection and then dribble the SSH
+    # identification string a byte at a time, resetting the per-read banner
+    # timer indefinitely so this one ssh never returns — and the loop re-checks
+    # its own deadline only BETWEEN attempts. Cap the whole attempt with
+    # coreutils timeout, so a hostile guest cannot outlast virtdev-wait's
+    # documented exit-7 deadline or wedge virtdev-maintain's exclusive lock.
+    # NOT ServerAlive* — that is a post-auth keepalive, the wrong layer for a
+    # pre-auth banner stall.
+    if timeout "${attempt_timeout}" ssh \
         -F /dev/null \
         -i "${key}" \
         -p "${port}" \
