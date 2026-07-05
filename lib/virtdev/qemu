@@ -92,7 +92,7 @@
 #
 set -euo pipefail
 
-import passt
+import passt runtime
 
 readonly qemu_active=0
 readonly qemu_crashed=90
@@ -112,9 +112,11 @@ qemu_command() {
   local -r system_disk="${disk_dir}/system.qcow2"
   local -r home_disk="${disk_dir}/home.qcow2"
   local -r nvram="${disk_dir}/nvram"
-  local -r monitor_sock="${sock_dir}/monitor.sock"
-  local -r console_sock="${sock_dir}/console.sock"
-  local -r passt_sock="${sock_dir}/passt.sock"
+  # Socket paths via the runtime library so the argv and every cleanup
+  # site share one source and cannot drift (lib/virtdev/runtime).
+  local -r monitor_sock="$(runtime_monitor_sock "${sock_dir}")"
+  local -r console_sock="$(runtime_console_sock "${sock_dir}")"
+  local -r passt_sock="$(runtime_passt_sock "${sock_dir}")"
 
   # The flag set below is the network-isolation security boundary. It is
   # copied verbatim from the historical start/maintain argv and must not

@@ -12,8 +12,10 @@ set -euo pipefail
 # firewall is imported so the reserved-name set can fold in the built-in zone
 # vocabulary (firewall_zone_known) and stay single-sourced. firewall is
 # side-effect-free at source time (functions + constants only), so the import is safe
-# for every validate consumer.
-import error firewall
+# for every validate consumer. runtime is imported for runtime_socket_name_maxlen —
+# the sun_path overhead below is derived from the machine socket set, not hardcoded.
+# runtime imports nothing heavy, so there is no cycle back through validate.
+import error firewall runtime
 
 validate_project_name() {
   local -r name="${1}"
@@ -49,7 +51,17 @@ MESSAGE
   # Other limits are far larger and never bind, so they are not
   # consulted: filesystem NAME_MAX (255) on the project directory, and
   # the systemd unit-name length on virtdev-<name>.service.
-  local -r socket_overhead=23   # /projects//console.sock
+  #
+  # socket_overhead is the bytes the longest socket path adds around the
+  # project name: ${VIRTDEV_HOME}/projects/<name>/<basename>. That is
+  # len("/projects/") + the "/" between <name> and <basename> + the
+  # longest socket basename. Derived from the runtime socket set
+  # (runtime_socket_name_maxlen), so adding or renaming a socket keeps
+  # this cap correct instead of drifting from a magic constant. With the
+  # current set the longest basename is console.sock/monitor.sock (12),
+  # so 10 + 1 + 12 = 23, unchanged.
+  local -r projects_infix="/projects/"   # ${VIRTDEV_HOME}<infix><name>/<socket>
+  local -r socket_overhead=$(( ${#projects_infix} + 1 + $(runtime_socket_name_maxlen) ))
   local -r sun_path_limit=107   # 108-byte sun_path minus the NUL terminator
   local -r host_name_max=64     # Linux HOST_NAME_MAX
   local -r sun_path_budget=$(( sun_path_limit - ${#VIRTDEV_HOME} - socket_overhead ))
