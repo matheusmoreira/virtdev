@@ -348,7 +348,7 @@ Install layout:
 - `iso/*` → `/usr/share/virtdev/profile/*`
 - Docs → `/usr/share/doc/virtdev/`
 
-`bash >= 5.2` required (for `source -p`). `passt` is a runtime
+`bash >= 5.3` required (for `source -p`). `passt` is a runtime
 dependency added to `depends` in `build/aur/PKGBUILD`. `.gitignore`
 excludes the `build/` tree from `makepkg`.
 

@@ -841,7 +841,7 @@ into the script's shell at start-up rather than reimplemented per-script.
 This is mechanical deduplication of identical boilerplate, not an
 extension point: the libraries are internal-only and have no stable API.
 
-The mechanism is bash 5.2's `source -p <colon-search-path> <name>`,
+The mechanism is bash 5.3's `source -p <colon-search-path> <name>`,
 which lets a script source a library by name without computing or
 hardcoding its path. Each script in `bin/` opens with a 2-line
 bootstrap that sources `lib/virtdev/import`, which provides
@@ -854,7 +854,7 @@ both the dev tree (`~/dev/virtdev/bin → ~/dev/virtdev/lib/virtdev`)
 and the pacman-installed package (`/usr/bin → /usr/lib/virtdev`),
 because `readlink -f` follows symlinks and normalises to the script's
 actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
-`/usr/bin/`, mode 644, and declares `bash>=5.2` in `depends`.
+`/usr/bin/`, mode 644, and declares `bash>=5.3` in `depends`.
 
 ### Current libraries
 
