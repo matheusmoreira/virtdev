@@ -224,6 +224,12 @@ _/usr/lib/systemd/user/virtdev-firewall-pin@.service_
 	apply: timed out (60 s) acquiring the user's rootless lock; another virtdev
 	operation is in progress. Retry once it finishes.
 
+*102*
+	apply: could not enumerate the target user's running machines (their systemd
+	manager was unreachable), so it cannot verify that no machine holds passt's
+	host-loopback map open. Nothing is changed; ensure the user session is
+	reachable and re-apply.
+
 The launch guard in *virtdev-start*(1) and *virtdev-maintain*(1) returns *88*
 when the lockdown is not active; *virtdev-start*(1) returns *22* when the resolved
 zone is defined but not applied.

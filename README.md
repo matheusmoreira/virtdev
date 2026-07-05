@@ -132,7 +132,9 @@ if you are removing the **last** host-hole zone while a machine is still running
 one, stop that machine first. `apply` refuses (exit 100) and names it, because the
 guest's host-loopback access is opened at machine launch and only narrowed to the
 declared port by the live ruleset; un-narrowing it under a running machine would
-widen it to every host loopback port. Stop the named machine, then re-`apply`.
+widen it to every host loopback port. Stop the named machine, then re-`apply`. (If
+`apply` cannot reach your user manager to check for running machines, it fails closed
+with exit 102 instead of guessing.)
 
 ### Create a project
 
