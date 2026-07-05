@@ -6,6 +6,15 @@
 # Starts a project virtual machine as a transient systemd user service.
 # The VM runs in the background, and systemd tracks the process.
 #
+# Launch confirmation: the transient unit is Type=simple, so systemd marks
+# it 'active' the instant the netexec shim forks — before passt binds or
+# QEMU runs. After the unit is active, start positively confirms QEMU is
+# actually running by probing its QMP control socket (query-status) before
+# writing the port "running" signal or printing success; a passt/QEMU launch
+# failure that lands after the fork fails here with exit 13 and leaves NO
+# stale port file, rather than a false green. This confirms the launch only
+# (sub-second) — start stays ASYNC and does not wait for guest boot/SSH.
+#
 # Lifecycle:
 #
 #     systemctl --user status virtdev-<project>     # status + recent logs
@@ -22,7 +31,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project terminal port passt qemu firewall runtime
+import error validate lock arguments project terminal port passt qemu firewall runtime qmp
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -235,10 +244,11 @@ fi
 
 # The disk/nvram paths are derived inside qemu_command from
 # project_directory; the socket set (cleanup trap, stale-socket sweep) is
-# owned by lib/virtdev/runtime. Only passt_sock is still spelled out here,
-# for the netexec --socket argument; it comes from the same runtime source
-# so it cannot drift from the qemu_command / cleanup set.
+# owned by lib/virtdev/runtime. passt_sock (netexec --socket) and qmp_sock
+# (the post-launch liveness probe) are spelled out here from the same
+# runtime source, so they cannot drift from the qemu_command / cleanup set.
 passt_sock="$(runtime_passt_sock "${project_directory}")"
+qmp_sock="$(runtime_qmp_sock "${project_directory}")"
 
 # Cleanup-on-failure: every error path between here and the wait-loop
 # success marker must leave the host in the same shape it found it.
@@ -247,10 +257,13 @@ passt_sock="$(runtime_passt_sock "${project_directory}")"
 # leftover port_file after an aborted start would lure later commands
 # into trusting a unit that does not exist. The trap fires on any
 # exit (set -e error, signal, or explicit error N) before
-# vm_started=1 is set; if the systemd unit is somehow still active
-# (e.g. error 12 on a slow boot whose unit eventually reaches active
-# after our 5s deadline), best-effort stop it so file state and unit
-# state stay consistent.
+# vm_started=1 is set; if the systemd unit is still active — the QMP
+# liveness gate (error 13) tears down an active-but-not-running unit, and
+# a slow boot that reaches active only after our 5s classify deadline
+# (error 12) is another — best-effort stop it so file state and unit
+# state stay consistent. On these early failures port_file has not been
+# written yet (it is published only after the liveness + firewall checks),
+# so runtime_clean's rm -f is simply a no-op for it.
 vm_started=0
 cleanup_failed_start() {
   (( vm_started )) && return 0
@@ -262,11 +275,13 @@ cleanup_failed_start() {
 }
 trap cleanup_failed_start EXIT
 
-printf '%d\n' "${port}" > "${port_file}"
-
 # Remove stale sockets from a previous unclean shutdown. Sockets ONLY
-# (runtime_clean_sockets): the port file was just written above and is
-# the running-signal — runtime_clean here would delete it.
+# (runtime_clean_sockets): the port file is the running-signal and is
+# written ONLY after liveness is confirmed (below), so it does not exist
+# yet on the normal path — but a leftover from a prior crashed start might,
+# and runtime_clean here would wrongly clear it before this launch is
+# confirmed. Sweeping sockets-only leaves that decision to the confirmed
+# port write / cleanup_failed_start.
 runtime_clean_sockets "${project_directory}"
 
 # Clear any residual failed state from a previous start attempt. Without
@@ -430,6 +445,31 @@ MESSAGE
     ;;
 esac
 
+# The unit is 'active', but that only means systemd saw the netexec shim
+# fork — the transient unit is Type=simple (systemd-run omits Type=), so it
+# flips to active the instant the shim is exec'd, BEFORE passt binds or QEMU
+# runs. A passt failure or a QEMU boot-crash that lands after that fork would
+# otherwise slip through here as a false green: success printed, exit 0, and a
+# stale port file left behind. (The filtered path's ControlGroup assert below
+# incidentally catches most of it, but --unfiltered skips that — where the
+# false green was deterministic.) Positively confirm QEMU is actually running
+# by probing its QMP control socket with query-status before publishing
+# anything. This is NOT an SSH/boot wait — query-status answers sub-second on a
+# live QEMU; start stays ASYNC. On failure vm_started is still 0, so
+# cleanup_failed_start stops the unit and runtime_cleans (sockets + the
+# not-yet-written port).
+if ! qmp_query_running "${qmp_sock}" 5; then
+  error 13 <<MESSAGE
+QEMU did not reach a running state: ${unit} (passt or QEMU failed at launch).
+The transient unit went active when the netexec shim forked, but QEMU never
+answered QMP query-status — passt failed to bring up the socket, or QEMU
+crashed at boot (bad firmware/qcow2, KVM failure) right after the fork.
+Investigate:
+    systemctl --user status ${unit}
+    journalctl --user -u ${unit}
+MESSAGE
+fi
+
 # Close the firewall TOCTOU: the guard ran before the lock + systemd-run, so a
 # user-manager teardown in that window could have churned virtdev.slice's inode,
 # leaving this machine UNFILTERED behind the now-stale ruleset. Confirm it
@@ -454,6 +494,15 @@ running unfiltered. Re-apply the firewall and retry:
 MESSAGE
   fi
 fi
+
+# Publish the running signal LAST — only now that liveness is confirmed
+# (QMP query-status) and, for a filtered launch, the machine is proven to
+# sit under the frozen virtdev.slice. The port file is what virtdev-ssh,
+# virtdev-list and virtdev-backup trust as "this machine is running"; writing
+# it before these checks is exactly the false-green that let a failed launch
+# strand a stale port. cleanup_failed_start's rm -f "${port_file}" stays
+# correct — on an early failure the file simply does not exist yet.
+printf '%d\n' "${port}" > "${port_file}"
 
 vm_started=1
 
