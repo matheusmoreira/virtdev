@@ -67,6 +67,13 @@ thing, then the closest C mental model.
 - **`Default`** — the conventional "empty/zero value" constructor: `T::default()`.
   clippy asks for it beside any no-arg `new()` so generic code can build a `T`
   without naming the concrete constructor.
+- **Newtype over a borrow** — `struct QemuRxToken<'a>(&'a mut FrameSlot);` — a
+  tuple struct wrapping one reference. Zero-cost (same layout as the reference),
+  but a *distinct type* you can hang trait impls on (here smoltcp's `RxToken`).
+- **`#[non_exhaustive]`** — a library marks a struct/enum so downstream crates
+  can't build it with a literal or match it without a `_ =>` arm; you construct
+  via `default()` + field sets. Lets the library add fields/variants later without
+  breaking you (forward-compat). C: a struct whose initializer the library owns.
 
 ## Option — "maybe"
 
@@ -88,6 +95,10 @@ thing, then the closest C mental model.
 - **`Option::map(f)`** — `x.map(f)` applies `f` to the inner value when `Some`
   and passes `None` through: `Some(3).map(double) == Some(6)`, `None.map(double)
   == None`. Transforms the inside without an `if`/`match` or an unwrap.
+- **`?` on `Option`** — `self.inbound.get()?;` returns `None` from the *enclosing
+  function* when the value is `None`, else yields the inner value. The
+  early-return guard as one character — the C `if (!x) return NULL;` habit, built
+  into the language (works on `Result` too, propagating the `Err`).
 
 ## Enums & pattern matching
 
@@ -158,6 +169,25 @@ thing, then the closest C mental model.
 - **Two generic scopes on one trait** — `type RxToken<'a>` puts the *lifetime* on
   the **type** (it borrows for `'a`); `fn consume<R, F>(…)` puts the *type params*
   `R, F` on the **method** (closure type + return, chosen per call site).
+- **GAT (generic associated type)** — an associated type that itself takes a
+  parameter: `type RxToken<'a>` is a *family* of types, one per lifetime `'a` — a
+  type-level function from a lifetime to a type. Needed when a trait method
+  returns something borrowing `self` for a caller-chosen lifetime (each `receive`
+  call has its own). The impl fills the family: `type RxToken<'a> =
+  QemuRxToken<'a> where Self: 'a` (the `where` echoes the trait's required bound).
+  Stabilized Rust 1.65 (late 2022).
+- **Split borrows** — you can hold two `&mut` into *different fields* of one
+  struct at once (`&mut self.inbound` and `&mut self.outbound`); the borrow
+  checker is field-sensitive. C: two pointers into different members — obviously
+  fine — except Rust *proves* they don't alias. This is why the device keeps
+  inbound/outbound as separate fields: `receive` hands out both at once.
+- **`impl Trait` in argument position** — `f: impl FnOnce(&mut [u8]) -> R` is
+  shorthand for an anonymous generic `<F: FnOnce(&mut [u8]) -> R>`. Monomorphized
+  like any generic; just terser when you don't need to name the type.
+- **Orphan rule** — you may `impl` a trait for a type only if you own the trait
+  *or* the type. We own `QemuDevice`, so we can implement smoltcp's `Device` for
+  it. Stops two crates writing conflicting impls for a pair they both merely
+  import. (C has no traits, so no analogue.)
 
 ## Closures (Fn / FnMut / FnOnce)
 
