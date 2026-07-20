@@ -8,9 +8,10 @@
 //! The peek's acceptance is a **subset** of what the datapath (`Interface::poll`)
 //! will actually terminate: it parses with the *same* `Ipv4Repr::parse` /
 //! `TcpRepr::parse` smoltcp's ingress uses, so it inherits their IP-version,
-//! IPv4/TCP checksum, and fragment checks, and additionally requires a unicast
-//! source and a unicast, non-zero-port destination (a broadcast/multicast target
-//! or port 0 is not a terminable egress connection). This keeps "peek reports a
+//! IPv4/TCP checksum, and fragment checks, and additionally requires the frame be
+//! L2-addressed to our gateway MAC and carry a unicast source and a unicast,
+//! non-zero-port destination (a foreign dst-MAC, a broadcast/multicast target, or
+//! port 0 is not a terminable egress connection). This keeps "peek reports a
 //! flow" ⟹ "poll will terminate it" — so the future flow manager never
 //! provisions a socket or dials a host for a frame smoltcp would silently drop.
 //! (The peek is the *identifier* of a real new flow; the policy gate is what
@@ -23,8 +24,8 @@
 
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{
-    EthernetFrame, EthernetProtocol, IpAddress, IpProtocol, Ipv4Address, Ipv4Packet, Ipv4Repr,
-    TcpControl, TcpPacket, TcpRepr,
+    EthernetAddress, EthernetFrame, EthernetProtocol, IpAddress, IpProtocol, Ipv4Address,
+    Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr,
 };
 
 /// A guest-initiated TCP connection attempt: the destination the guest is
@@ -43,16 +44,23 @@ fn is_unicast(addr: Ipv4Address) -> bool {
     !(addr.is_broadcast() || addr.is_multicast() || addr.is_unspecified())
 }
 
-/// Peek a new-flow TCP SYN off the front of an L2 frame. Returns `Some` only for
-/// a *pure* SYN (connection open) over IPv4/Ethernet that the datapath will
-/// actually terminate: valid IP version and IPv4/TCP checksums, not a fragment,
-/// a unicast source, and a unicast, non-zero-port destination. `None` for
-/// anything else — including SYN/ACK, mid-connection segments, and malformed or
-/// checksum-corrupt input.
-pub fn peek_tcp_syn(frame: &[u8]) -> Option<SynFlow> {
+/// Peek a new-flow TCP SYN off the front of an L2 frame addressed to
+/// `gateway_mac` (our interface's MAC). Returns `Some` only for a *pure* SYN
+/// (connection open) over IPv4/Ethernet that the datapath will actually
+/// terminate: L2-addressed to us, valid IP version and IPv4/TCP checksums, not a
+/// fragment, a unicast source, and a unicast, non-zero-port destination. `None`
+/// for anything else — a frame bound for a different MAC, a SYN/ACK, a
+/// mid-connection segment, or malformed / checksum-corrupt input.
+pub fn peek_tcp_syn(frame: &[u8], gateway_mac: EthernetAddress) -> Option<SynFlow> {
     let caps = ChecksumCapabilities::default();
 
     let eth = EthernetFrame::new_checked(frame).ok()?;
+    // The datapath (process_ethernet) only accepts a frame addressed to our MAC
+    // (or broadcast/multicast, which are not egress flows); a foreign unicast
+    // dst-MAC SYN is dropped by poll, so the peek must drop it too.
+    if eth.dst_addr() != gateway_mac {
+        return None;
+    }
     if eth.ethertype() != EthernetProtocol::Ipv4 {
         return None;
     }
@@ -175,7 +183,7 @@ mod tests {
     fn peeks_a_tcp_syn() {
         let frame = craft(GUEST_IP, SERVER_IP, &syn());
         assert_eq!(
-            peek_tcp_syn(&frame),
+            peek_tcp_syn(&frame, GW_MAC),
             Some(SynFlow {
                 dst: SERVER_IP,
                 dst_port: 80,
@@ -186,13 +194,13 @@ mod tests {
     #[test]
     fn ignores_a_syn_ack() {
         let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::Syn, Some(TcpSeqNumber(1)), 80));
-        assert_eq!(peek_tcp_syn(&frame), None);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     #[test]
     fn ignores_a_bare_ack() {
         let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::None, Some(TcpSeqNumber(1)), 80));
-        assert_eq!(peek_tcp_syn(&frame), None);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     #[test]
@@ -204,8 +212,17 @@ mod tests {
             ethertype: EthernetProtocol::Arp,
         }
         .emit(&mut EthernetFrame::new_unchecked(&mut arp[..]));
-        assert_eq!(peek_tcp_syn(&arp), None);
-        assert_eq!(peek_tcp_syn(&[0x00, 0x11, 0x22]), None);
+        assert_eq!(peek_tcp_syn(&arp, GW_MAC), None);
+        assert_eq!(peek_tcp_syn(&[0x00, 0x11, 0x22], GW_MAC), None);
+    }
+
+    #[test]
+    fn ignores_a_frame_for_a_different_mac() {
+        // A valid SYN addressed at L2 to some other MAC — poll's process_ethernet
+        // drops it (not our hardware address), so the peek must too.
+        let mut frame = craft(GUEST_IP, SERVER_IP, &syn());
+        frame[0..6].copy_from_slice(&[0x02, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA]);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     // --- The peek must not accept what the datapath (poll) would drop. Each of
@@ -215,14 +232,14 @@ mod tests {
     fn ignores_bad_ipv4_checksum() {
         let mut frame = craft(GUEST_IP, SERVER_IP, &syn());
         Ipv4Packet::new_unchecked(&mut frame[IP_OFF..]).set_checksum(0xDEAD);
-        assert_eq!(peek_tcp_syn(&frame), None);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     #[test]
     fn ignores_bad_tcp_checksum() {
         let mut frame = craft(GUEST_IP, SERVER_IP, &syn());
         TcpPacket::new_unchecked(&mut frame[TCP_OFF..]).set_checksum(0xDEAD);
-        assert_eq!(peek_tcp_syn(&frame), None);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     #[test]
@@ -233,26 +250,26 @@ mod tests {
         let mut ip = Ipv4Packet::new_unchecked(&mut frame[IP_OFF..]);
         ip.set_more_frags(true);
         ip.fill_checksum();
-        assert_eq!(peek_tcp_syn(&frame), None);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     #[test]
     fn ignores_non_unicast_source() {
         // Multicast source — the datapath's ingress gate drops it.
         let frame = craft(Ipv4Address::new(224, 0, 0, 5), SERVER_IP, &syn());
-        assert_eq!(peek_tcp_syn(&frame), None);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     #[test]
     fn ignores_non_unicast_destination() {
         // Broadcast destination is not a real egress connection.
         let frame = craft(GUEST_IP, Ipv4Address::new(255, 255, 255, 255), &syn());
-        assert_eq!(peek_tcp_syn(&frame), None);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     #[test]
     fn ignores_port_zero() {
         let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::Syn, None, 0));
-        assert_eq!(peek_tcp_syn(&frame), None);
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 }
