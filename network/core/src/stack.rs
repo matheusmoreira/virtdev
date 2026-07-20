@@ -11,3 +11,6 @@ pub mod frame;
 
 // The smoltcp datapath device: fixed-buffer, single-frame conduit.
 pub mod device;
+
+// The guest's L3: an AnyIP smoltcp interface (transparent-termination gateway).
+pub mod netstack;

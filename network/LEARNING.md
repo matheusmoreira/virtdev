@@ -236,9 +236,24 @@ thing, then the closest C mental model.
   links libstd); under `cfg(test)` we drop it so the ordinary test harness
   (which needs `std`) can run. `core` is always available; it's `std` minus the
   OS/allocation bits.
+- **Borrowed storage (no-alloc collections)** — smoltcp's `SocketSet`,
+  `SocketBuffer`, and interface tables take a `&mut [T]` you own instead of
+  allocating: `SocketSet::new(&mut storage[..])`, `SocketBuffer::new(&mut buf[..])`.
+  Under the hood `managed::ManagedSlice` is `Borrowed(&mut [T])` or (alloc-only)
+  `Owned(Vec<T>)`; the borrowed arm is what lets a heapless build use them. C:
+  you hand the library a fixed array and it never calls `malloc` — but a *full*
+  borrowed store *panics* instead of growing, so size it for the worst case.
 
 ## Project facts worth remembering
 
 - QEMU `-netdev stream` wire format: 4-byte **big-endian** length prefix (payload
   length, prefix not counted) + raw L2 frame; no virtio-net header. QEMU is the
   socket *client* (`server=off`), so our binary is the *server*.
+- smoltcp 0.13.1 AnyIP: `set_any_ip(true)` accepts + locally terminates **every**
+  unicast IPv4 destination (`has_ip_addr` short-circuits to true; the setter's
+  route-gated doc comment is stale — CHANGELOG #1119). The catch-all default
+  route is only for the *reply* direction. So the egress allow-list must be
+  **ours**, not smoltcp's gate — smoltcp terminating a flow ≠ letting it leave.
+- Our single-slot `QemuDevice`: `transmit()` returns `None` while `outbound` is
+  full (backpressure) so smoltcp defers rather than clobbering the unsent frame;
+  the reactor drains `outbound` after each poll.
