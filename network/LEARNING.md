@@ -95,6 +95,46 @@ thing, then the closest C mental model.
 - **`matches!(x, Decoded::Oversized)`** — a boolean "is it this variant?" test
   without a full `match`; handy when you don't need the fields.
 
+## Generics, traits & lifetimes
+
+- **`T: Trait`** = a bounded type parameter, "any `T` that implements `Trait`."
+  Java's `<T extends Bound>` is the right first intuition, with two differences:
+  Rust **monomorphizes** (like C++ templates — a specialized, inlined copy per
+  concrete type; zero-cost, no boxing) where Java **erases** to `Object` + casts
+  at runtime; and the bound is a *trait* (behavior, implementable even for
+  primitives/foreign types), not class inheritance.
+- **`Self` vs `self`** — capital `Self` = *the type* implementing the trait
+  (shorthand for its name); lowercase `self` = *the instance* (C++ `this`, but a
+  value). `fn consume(self, …)` takes `self` **by value** — moves the receiver
+  in — which is what makes a call *consume* it.
+- **Lifetime `'a`** — a compile-time *name* for "the region a reference stays
+  valid." Pure compile-time, zero runtime cost. C: the "is this pointer still
+  alive?" question you track in your head and lose to use-after-free; Rust writes
+  it down and the borrow checker proves it. `Foo<'a>` holds a ref valid for `'a`.
+- **`'_`** — the *elided* lifetime: "a lifetime goes here; infer which one."
+  `RxToken<'_>` returned from `receive(&mut self)` = "the token borrows from
+  `&mut self`; tie its lifetime to that borrow."
+- **`where Self: 'a`** — "the type `Self` outlives `'a`." Needed because the
+  token (parameterized by `'a`) borrows the device (`Self`); the device must live
+  at least as long as the token. The compiler keeping the borrow sound.
+- **Two generic scopes on one trait** — `type RxToken<'a>` puts the *lifetime* on
+  the **type** (it borrows for `'a`); `fn consume<R, F>(…)` puts the *type params*
+  `R, F` on the **method** (closure type + return, chosen per call site).
+
+## Closures (Fn / FnMut / FnOnce)
+
+- A **closure** = a function value that captures its environment: a code pointer
+  plus a hidden struct of captured variables. Three traits, by how they use the
+  captures / how often they can run:
+  - **`Fn`** — reads captures by `&`; callable any number of times.
+  - **`FnMut`** — mutates captures by `&mut`; callable many times.
+  - **`FnOnce`** — may **move** a captured value out of itself; that consumes the
+    closure, so it runs **exactly once** (called via `self`, by value).
+- **`f: F where F: FnOnce(&[u8]) -> R`** — `consume` asks only for `FnOnce`
+  because it calls `f` once. `FnOnce` is the *weakest* bound, so it is the most
+  accepting: an `Fn` or `FnMut` closure also satisfies it, and the caller may
+  pass any of them. C: a one-shot callback allowed to consume its captured state.
+
 ## Control flow & safety
 
 - **Tail expression = return.** A block's last expression *with no `;`* is its
