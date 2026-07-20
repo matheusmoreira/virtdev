@@ -55,6 +55,10 @@ impl FrameSlot {
     /// Returns the closure's result. `len` must fit `MAX_FRAME_LEN`.
     /// (`impl FnOnce(&mut [u8]) -> R` in argument position is shorthand for a
     /// generic `<F: FnOnce(&mut [u8]) -> R>` — an anonymous type parameter.)
+    ///
+    /// The closure MUST initialise all `len` bytes: the buffer is reused across
+    /// frames, so a partial write would leak a prior frame's tail to the guest.
+    /// smoltcp's `TxToken` contract guarantees a full write; this relies on it.
     fn fill<R>(&mut self, len: usize, f: impl FnOnce(&mut [u8]) -> R) -> R {
         debug_assert!(len <= MAX_FRAME_LEN);
         let r = f(&mut self.buf[..len]);
@@ -87,22 +91,36 @@ impl QemuDevice {
         }
     }
 
-    /// Reactor → device: park a decoded frame for smoltcp to receive.
+    // The reactor's contract is `load_inbound` / `outbound` / `clear_outbound`.
+    // `inbound` / `clear_inbound` / `store_outbound` exist for the trait impls
+    // and tests — smoltcp drains inbound via `RxToken` and fills outbound via
+    // `TxToken`, so the reactor never calls those three. (Tighten their
+    // visibility once the reactor pins the real surface.)
+
+    /// Reactor → device: park a **decoded** frame for smoltcp to receive.
+    ///
+    /// Contract: `frame` must be a payload that already passed
+    /// [`decode`](super::frame::decode), hence `<= MAX_FRAME_LEN`; a longer frame
+    /// panics (the slot copy is bounds-checked) — fail-closed, but the reactor
+    /// must never pass a raw, un-decoded read buffer. A zero-length frame is
+    /// valid-but-inert: smoltcp drops anything `< 14` bytes.
     pub fn load_inbound(&mut self, frame: &[u8]) {
         self.inbound.store(frame);
     }
 
-    /// The parked inbound frame, if any (smoltcp consumes it next increment).
+    /// The parked inbound frame, if any (smoltcp consumes it via `RxToken`).
     pub fn inbound(&self) -> Option<&[u8]> {
         self.inbound.get()
     }
 
-    /// Drop the inbound frame once received.
+    /// Drop the inbound frame. smoltcp's `RxToken` already clears it after
+    /// receiving; this is for direct slot manipulation in tests.
     pub fn clear_inbound(&mut self) {
         self.inbound.clear();
     }
 
-    /// smoltcp → device: park an outbound frame for the reactor to send.
+    /// Park an outbound frame directly (test/internal — smoltcp fills the slot
+    /// via `TxToken`). Same `<= MAX_FRAME_LEN` contract as `load_inbound`.
     pub fn store_outbound(&mut self, frame: &[u8]) {
         self.outbound.store(frame);
     }
@@ -112,7 +130,7 @@ impl QemuDevice {
         self.outbound.get()
     }
 
-    /// Drop the outbound frame once sent.
+    /// Drop the outbound frame once the reactor has sent it.
     pub fn clear_outbound(&mut self) {
         self.outbound.clear();
     }
