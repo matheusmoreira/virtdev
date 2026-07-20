@@ -105,12 +105,22 @@ thing, then the closest C mental model.
   overread past the buffer (UB / info-leak); Rust either panics or, once guarded,
   returns `None`. Turning a would-be overread into an explicit `None` is the whole
   game when parsing untrusted guest bytes.
+- **`debug_assert!(cond)`** — like C's `assert()` under `NDEBUG`: checked in
+  debug/test builds, *compiled out* in release. Use it for *internal invariants
+  the producer guarantees* (here: our own frames never exceed `MAX_FRAME_LEN`).
+  `assert!` is the always-on version. A tripped assertion panics — in a
+  freestanding binary that means abort, so egress fails closed. Contrast
+  `decode`, which meets *untrusted* guest input with a typed variant, not an
+  assert.
 
 ## Bytes & endianness
 
 - **`u32::from_be_bytes([b0,b1,b2,b3])`** — build a `u32` from 4 bytes,
   big-endian. Replaces C's `ntohl(*(uint32_t*)p)` but with **no alignment UB**
   and **no host-endian dependence**. (`_le_bytes` / `_ne_bytes` variants exist.)
+- **`(n as u32).to_be_bytes()`** — the inverse: a `u32` → `[u8; 4]`, big-endian.
+  Replaces `htonl` + a manual serialize; returns a fixed 4-byte array on the
+  stack (no alloc), which the caller `writev`s alongside the payload.
 
 ## no_std
 

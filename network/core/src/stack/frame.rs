@@ -75,6 +75,19 @@ pub fn decode(buf: &[u8]) -> Decoded<'_> {
     }
 }
 
+/// The 4-byte big-endian length prefix for `frame`. Write it and the frame
+/// together — e.g. `writev` with two iovecs — never copying the payload, exactly
+/// how QEMU frames its own outbound packets. The inverse of [`decode`].
+///
+/// `frame` must be at most [`MAX_FRAME_LEN`]; a longer frame is our own bug
+/// (smoltcp produces frames at our MTU), so it trips a debug assertion rather
+/// than a fallible return — untrusted input earns a variant, our own invariant
+/// earns an assert.
+pub fn encode(frame: &[u8]) -> [u8; 4] {
+    debug_assert!(frame.len() <= MAX_FRAME_LEN);
+    (frame.len() as u32).to_be_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +145,30 @@ mod tests {
         // Incomplete, not Oversized. Pins the boundary at `>`, not `>=`.
         let at_limit = (MAX_FRAME_LEN as u32).to_be_bytes();
         assert_eq!(decode(&at_limit), Decoded::Incomplete);
+    }
+
+    #[test]
+    fn encode_produces_the_big_endian_length_prefix() {
+        // encode yields only the 4-byte header; the caller writev's it with the
+        // frame (zero-copy), so a 4-byte frame gives the prefix 0x0000_0004.
+        let frame = [0xDE, 0xAD, 0xBE, 0xEF];
+        assert_eq!(encode(&frame), [0x00, 0x00, 0x00, 0x04]);
+    }
+
+    #[test]
+    fn encode_then_decode_round_trips() {
+        // encode and decode are inverses: prefix a frame, then decode it back
+        // whole. Pins their symmetry — the test to trust if the wire format ever
+        // changes. (Passes on first write; both sides already exist and are
+        // unit-tested above, so this is a living guard, not a driver.)
+        let frame = [0x01, 0x02, 0x03];
+        let mut wire = encode(&frame).to_vec(); // std Vec is available under cfg(test)
+        wire.extend_from_slice(&frame);
+
+        let Decoded::Complete { payload, consumed } = decode(&wire) else {
+            panic!("a freshly encoded frame must decode as complete");
+        };
+        assert_eq!(payload, &frame[..]);
+        assert_eq!(consumed, 4 + frame.len());
     }
 }
