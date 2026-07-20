@@ -1,0 +1,13 @@
+# Dependency sources are vendored into ./vendor and audited (see SUPPLY-CHAIN.md).
+# Redirect the crates-io registry to those in-repo copies and forbid network
+# access, so every build uses only audited source and can never silently
+# re-fetch from crates.io. To change a dependency you must consciously override
+# this (and re-audit).
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
+
+[net]
+offline = true
