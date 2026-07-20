@@ -171,4 +171,25 @@ mod tests {
         assert_eq!(payload, &frame[..]);
         assert_eq!(consumed, 4 + frame.len());
     }
+
+    #[test]
+    fn oversized_at_the_u32_ceiling_is_rejected() {
+        // A prefix of u32::MAX must be Oversized, never a `4 + len` overflow.
+        let wire = 0xFFFF_FFFFu32.to_be_bytes();
+        assert_eq!(decode(&wire), Decoded::Oversized);
+    }
+
+    #[test]
+    fn round_trips_a_max_length_frame() {
+        // A frame of exactly MAX_FRAME_LEN is accepted (the cap is `>`, not `>=`)
+        // and encode/decode round-trip it at the boundary.
+        let frame = vec![0xAB; MAX_FRAME_LEN];
+        let mut wire = encode(&frame).to_vec();
+        wire.extend_from_slice(&frame);
+        let Decoded::Complete { payload, consumed } = decode(&wire) else {
+            panic!("a MAX_FRAME_LEN frame must decode as complete");
+        };
+        assert_eq!(payload, &frame[..]);
+        assert_eq!(consumed, 4 + MAX_FRAME_LEN);
+    }
 }
