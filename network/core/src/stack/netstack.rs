@@ -89,13 +89,12 @@ mod tests {
     use smoltcp::phy::ChecksumCapabilities;
     use smoltcp::socket::tcp;
     use smoltcp::wire::{
-        EthernetFrame, EthernetProtocol, EthernetRepr, IpAddress, IpProtocol, Ipv4Packet,
-        Ipv4Repr, TcpControl, TcpPacket, TcpRepr, TcpSeqNumber,
+        ArpOperation, ArpPacket, ArpRepr, EthernetFrame, EthernetProtocol, EthernetRepr, IpAddress,
+        IpProtocol, Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr, TcpSeqNumber,
     };
 
     /// Build a raw `Ethernet | IPv4 | TCP(SYN)` frame from the guest to
-    /// `server_ip:dst_port`, addressed at L2 to our gateway MAC. Real checksums
-    /// (smoltcp's ingress verifies them). Layered emit per the wire API.
+    /// `server_ip:dst_port`, addressed at L2 to our gateway MAC. Real checksums.
     fn craft_syn(
         guest_mac: EthernetAddress,
         guest_ip: Ipv4Address,
@@ -131,10 +130,7 @@ mod tests {
         };
 
         let mut buf = vec![0u8; eth_repr.buffer_len() + ip_repr.buffer_len() + tcp_repr.buffer_len()];
-        {
-            let mut frame = EthernetFrame::new_unchecked(&mut buf[..]);
-            eth_repr.emit(&mut frame);
-        }
+        eth_repr.emit(&mut EthernetFrame::new_unchecked(&mut buf[..]));
         let ip_off = eth_repr.buffer_len();
         {
             let mut packet = Ipv4Packet::new_unchecked(&mut buf[ip_off..]);
@@ -153,22 +149,49 @@ mod tests {
         buf
     }
 
+    /// The guest's ARP reply to our "who-has GATEWAY_IP" — tells smoltcp the
+    /// guest's MAC so it can address the SYN/ACK back.
+    fn craft_arp_reply(guest_mac: EthernetAddress, guest_ip: Ipv4Address) -> Vec<u8> {
+        let arp = ArpRepr::EthernetIpv4 {
+            operation: ArpOperation::Reply,
+            source_hardware_addr: guest_mac,
+            source_protocol_addr: guest_ip,
+            target_hardware_addr: GATEWAY_MAC,
+            target_protocol_addr: GATEWAY_IP,
+        };
+        let eth = EthernetRepr {
+            src_addr: guest_mac,
+            dst_addr: GATEWAY_MAC,
+            ethertype: EthernetProtocol::Arp,
+        };
+        let mut buf = vec![0u8; eth.buffer_len() + arp.buffer_len()];
+        eth.emit(&mut EthernetFrame::new_unchecked(&mut buf[..]));
+        {
+            let mut packet = ArpPacket::new_unchecked(&mut buf[eth.buffer_len()..]);
+            arp.emit(&mut packet);
+        }
+        buf
+    }
+
     #[test]
     fn builds_an_anyip_interface_with_a_default_route() {
         let stack = NetStack::new(Instant::ZERO);
-        // AnyIP is enabled and the gateway address is assigned — the setup that
-        // makes transparent termination possible took effect (and did not panic).
+        // AnyIP is enabled...
         assert!(stack.iface.any_ip());
-        assert!(stack.iface.has_ip_addr(GATEWAY_IP));
+        // ...and the gateway address is actually assigned. (`has_ip_addr` is
+        // vacuous under AnyIP — it returns true for *any* address — so assert the
+        // address table directly, which AnyIP does not gate.)
+        assert_eq!(stack.iface.ipv4_addr(), Some(GATEWAY_IP));
     }
 
-    /// THE SPIKE (design spec §9.1): prove that with AnyIP on, a TCP socket
-    /// listening on an address the interface does NOT own accepts the guest's
-    /// SYN to that address and advances the handshake — transparent termination.
+    /// THE SPIKE (design spec §9.1): prove transparent termination end-to-end.
+    /// With AnyIP on, a TCP socket listening on an address the interface does NOT
+    /// own accepts the guest's SYN to that address, and — after the ARP round-trip
+    /// the reply requires — emits the real SYN/ACK back to the guest.
     #[test]
     fn anyip_terminates_a_flow_to_a_non_owned_destination() {
         let guest_mac = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
-        let guest_ip = Ipv4Address::new(10, 0, 0, 2); // in our subnet (reply routes directly)
+        let guest_ip = Ipv4Address::new(10, 0, 0, 2); // in our subnet (no gateway hop)
         let server_ip = Ipv4Address::new(93, 184, 216, 34); // NOT owned by the interface
 
         let mut stack = NetStack::new(Instant::ZERO);
@@ -190,18 +213,42 @@ mod tests {
             .expect("port is non-zero and the socket is fresh");
         assert_eq!(sockets.get::<tcp::Socket>(handle).state(), tcp::State::Listen);
 
-        // Feed the guest's SYN to 93.184.216.34:80 and drive one poll.
+        // Poll 1: feed the guest's SYN to 93.184.216.34:80.
         let syn = craft_syn(guest_mac, guest_ip, server_ip, 49152, 80);
         stack.device_mut().load_inbound(&syn);
         stack.poll(Instant::ZERO, &mut sockets);
 
-        // smoltcp accepted a SYN to an IP it does not own (AnyIP) and moved the
-        // socket into the handshake — transparent termination works.
+        // smoltcp accepted a SYN to an IP it does not own (AnyIP) and entered the
+        // handshake — the acceptance half of transparent termination.
         assert_eq!(
             sockets.get::<tcp::Socket>(handle).state(),
             tcp::State::SynReceived,
         );
-        // ...and emitted the SYN/ACK into the device's outbound slot (reply path).
-        assert!(stack.device_mut().outbound().is_some());
+        // It cannot send the SYN/ACK yet: it has never seen the guest's MAC, so
+        // the FIRST outbound frame is an ARP request to resolve the guest.
+        {
+            let out = stack.device_mut().outbound().expect("an ARP request is queued");
+            let eth = EthernetFrame::new_checked(out).unwrap();
+            assert_eq!(eth.ethertype(), EthernetProtocol::Arp);
+            let arp = ArpPacket::new_checked(eth.payload()).unwrap();
+            assert_eq!(arp.operation(), ArpOperation::Request);
+        }
+
+        // The reactor sends the ARP and drains the slot; the guest ARP-replies.
+        stack.device_mut().clear_outbound();
+        let arp_reply = craft_arp_reply(guest_mac, guest_ip);
+        stack.device_mut().load_inbound(&arp_reply);
+        stack.poll(Instant::from_millis(250), &mut sockets);
+
+        // NOW the reply datapath completes: the outbound frame is the IPv4 TCP
+        // SYN/ACK from 93.184.216.34:80 back to the guest.
+        let out = stack.device_mut().outbound().expect("the SYN/ACK is now queued");
+        let eth = EthernetFrame::new_checked(out).unwrap();
+        assert_eq!(eth.ethertype(), EthernetProtocol::Ipv4);
+        let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
+        assert_eq!(ipv4.src_addr(), server_ip);
+        let seg = TcpPacket::new_checked(ipv4.payload()).unwrap();
+        assert!(seg.syn() && seg.ack(), "reply is a SYN/ACK");
+        assert_eq!(seg.src_port(), 80);
     }
 }
