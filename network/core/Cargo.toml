@@ -1,0 +1,16 @@
+[package]
+name = "network"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Pinned EXACTLY (=) for supply-chain determinism; Cargo.lock + vendored sources
+# make this reproducible offline. default-features = false keeps std/alloc/log/libc
+# OUT of the graph; we enable only what the M1 skeleton needs.
+smoltcp = { version = "=0.13.1", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-tcp",
+    "socket-udp",
+] }
