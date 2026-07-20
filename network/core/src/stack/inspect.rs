@@ -3,17 +3,28 @@
 //! The reactor peeks each inbound frame *before* `poll`, so the flow manager can
 //! learn the `(dst, port)` a new connection is dialing, consult policy, and — if
 //! allowed — provision a smoltcp listening socket on that exact destination on
-//! demand (AnyIP transparent termination; design spec §5.1). Because smoltcp
-//! accepts *any* destination under AnyIP, this peek plus the policy gate are what
-//! actually decide what may leave the machine.
+//! demand (AnyIP transparent termination; design spec §5.1).
 //!
-//! We parse with smoltcp's audited, bounds-checked, `#![deny(unsafe_code)]`
-//! `wire` parsers — the same ones `poll` uses — reading a few header fields they
-//! already validate, rather than a hand-rolled IP/TCP parser that would duplicate
-//! that parsing. (The DNS parser we still own — a distinct untrusted surface, M3.)
+//! The peek's acceptance is a **subset** of what the datapath (`Interface::poll`)
+//! will actually terminate: it parses with the *same* `Ipv4Repr::parse` /
+//! `TcpRepr::parse` smoltcp's ingress uses, so it inherits their IP-version,
+//! IPv4/TCP checksum, and fragment checks, and additionally requires a unicast
+//! source and a unicast, non-zero-port destination (a broadcast/multicast target
+//! or port 0 is not a terminable egress connection). This keeps "peek reports a
+//! flow" ⟹ "poll will terminate it" — so the future flow manager never
+//! provisions a socket or dials a host for a frame smoltcp would silently drop.
+//! (The peek is the *identifier* of a real new flow; the policy gate is what
+//! decides whether it may leave — that gate is separate, not-yet-written code.)
+//!
+//! Parsing reuses smoltcp's audited, bounds-checked, `#![deny(unsafe_code)]`
+//! parsers rather than hand-rolled IP/TCP parsing; hostile bytes yield `None`,
+//! never a panic or overread. (The DNS parser we still own — a distinct
+//! untrusted surface, M3.)
 
+use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{
-    EthernetFrame, EthernetProtocol, IpProtocol, Ipv4Address, Ipv4Packet, TcpPacket,
+    EthernetFrame, EthernetProtocol, IpAddress, IpProtocol, Ipv4Address, Ipv4Packet, Ipv4Repr,
+    TcpControl, TcpPacket, TcpRepr,
 };
 
 /// A guest-initiated TCP connection attempt: the destination the guest is
@@ -25,49 +36,82 @@ pub struct SynFlow {
     pub dst_port: u16,
 }
 
+/// Whether `addr` is a unicast IPv4 address — mirrors smoltcp's own
+/// `AddressExt::x_is_unicast` (`wire/ipv4.rs`): not broadcast, multicast, or
+/// unspecified. Those are not terminable egress destinations.
+fn is_unicast(addr: Ipv4Address) -> bool {
+    !(addr.is_broadcast() || addr.is_multicast() || addr.is_unspecified())
+}
+
 /// Peek a new-flow TCP SYN off the front of an L2 frame. Returns `Some` only for
-/// a *pure* SYN (connection open) over IPv4/Ethernet; `None` for anything else —
-/// not IPv4, not TCP, a SYN/ACK or mid-connection segment, or malformed input.
-/// The parsers are bounds-checked, so hostile bytes yield `None`, never a
-/// panic or overread.
+/// a *pure* SYN (connection open) over IPv4/Ethernet that the datapath will
+/// actually terminate: valid IP version and IPv4/TCP checksums, not a fragment,
+/// a unicast source, and a unicast, non-zero-port destination. `None` for
+/// anything else — including SYN/ACK, mid-connection segments, and malformed or
+/// checksum-corrupt input.
 pub fn peek_tcp_syn(frame: &[u8]) -> Option<SynFlow> {
+    let caps = ChecksumCapabilities::default();
+
     let eth = EthernetFrame::new_checked(frame).ok()?;
     if eth.ethertype() != EthernetProtocol::Ipv4 {
         return None;
     }
+
+    // Parse the IPv4 header exactly as the datapath does: rejects a non-4 version,
+    // a bad header checksum, and any fragment (reassembly is off in our build).
     let ipv4 = Ipv4Packet::new_checked(eth.payload()).ok()?;
-    if ipv4.next_header() != IpProtocol::Tcp {
+    let ip = Ipv4Repr::parse(&ipv4, &caps).ok()?;
+    if ip.next_header != IpProtocol::Tcp {
         return None;
     }
+    // Only real unicast egress: the ingress gate drops a non-unicast source, and
+    // broadcast/multicast/unspecified is not an egress destination.
+    if !is_unicast(ip.src_addr) || !is_unicast(ip.dst_addr) {
+        return None;
+    }
+
+    // Parse the TCP header the same way (verifies the TCP checksum).
     let tcp = TcpPacket::new_checked(ipv4.payload()).ok()?;
-    // A connection open is SYN set and ACK clear; a SYN/ACK (both) or a bare ACK
-    // is not a new flow.
-    if !tcp.syn() || tcp.ack() {
+    let seg = TcpRepr::parse(
+        &tcp,
+        &IpAddress::Ipv4(ip.src_addr),
+        &IpAddress::Ipv4(ip.dst_addr),
+        &caps,
+    )
+    .ok()?;
+    // A new flow is a pure SYN (control Syn, no ACK) to a real port; `listen()`
+    // rejects port 0.
+    if seg.control != TcpControl::Syn || seg.ack_number.is_some() || seg.dst_port == 0 {
         return None;
     }
+
     Some(SynFlow {
-        dst: ipv4.dst_addr(),
-        dst_port: tcp.dst_port(),
+        dst: ip.dst_addr,
+        dst_port: seg.dst_port,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{is_unicast, peek_tcp_syn, SynFlow};
     use smoltcp::phy::ChecksumCapabilities;
     use smoltcp::wire::{
-        EthernetAddress, EthernetRepr, IpAddress, Ipv4Repr, TcpControl, TcpRepr, TcpSeqNumber,
+        EthernetAddress, EthernetFrame, EthernetProtocol, EthernetRepr, IpAddress, IpProtocol,
+        Ipv4Address, Ipv4Packet, Ipv4Repr, TcpControl, TcpPacket, TcpRepr, TcpSeqNumber,
     };
 
     const GUEST_MAC: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x02]);
     const GW_MAC: EthernetAddress = EthernetAddress([0x02, 0, 0, 0, 0, 0x01]);
     const GUEST_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 2);
     const SERVER_IP: Ipv4Address = Ipv4Address::new(93, 184, 216, 34);
+    // Offsets in a crafted frame: 14-byte Ethernet, 20-byte IPv4 (no options).
+    const IP_OFF: usize = 14;
+    const TCP_OFF: usize = 34;
 
-    fn repr(control: TcpControl, ack: Option<TcpSeqNumber>) -> TcpRepr<'static> {
+    fn tcp(control: TcpControl, ack: Option<TcpSeqNumber>, dst_port: u16) -> TcpRepr<'static> {
         TcpRepr {
             src_port: 49152,
-            dst_port: 80,
+            dst_port,
             control,
             seq_number: TcpSeqNumber(0x1000),
             ack_number: ack,
@@ -81,12 +125,18 @@ mod tests {
         }
     }
 
-    fn craft_tcp(tcp_repr: &TcpRepr) -> Vec<u8> {
+    fn syn() -> TcpRepr<'static> {
+        tcp(TcpControl::Syn, None, 80)
+    }
+
+    /// Build a valid, fully-checksummed Ethernet|IPv4|TCP frame from `src` to
+    /// `dst` at L2 addressed to our gateway MAC.
+    fn craft(src: Ipv4Address, dst: Ipv4Address, seg: &TcpRepr) -> Vec<u8> {
         let ip_repr = Ipv4Repr {
-            src_addr: GUEST_IP,
-            dst_addr: SERVER_IP,
+            src_addr: src,
+            dst_addr: dst,
             next_header: IpProtocol::Tcp,
-            payload_len: tcp_repr.buffer_len(),
+            payload_len: seg.buffer_len(),
             hop_limit: 64,
         };
         let eth_repr = EthernetRepr {
@@ -95,23 +145,18 @@ mod tests {
             ethertype: EthernetProtocol::Ipv4,
         };
         let mut buf =
-            vec![0u8; eth_repr.buffer_len() + ip_repr.buffer_len() + tcp_repr.buffer_len()];
+            vec![0u8; eth_repr.buffer_len() + ip_repr.buffer_len() + seg.buffer_len()];
+        eth_repr.emit(&mut EthernetFrame::new_unchecked(&mut buf[..]));
         {
-            let mut f = EthernetFrame::new_unchecked(&mut buf[..]);
-            eth_repr.emit(&mut f);
-        }
-        let ip_off = eth_repr.buffer_len();
-        {
-            let mut p = Ipv4Packet::new_unchecked(&mut buf[ip_off..]);
+            let mut p = Ipv4Packet::new_unchecked(&mut buf[IP_OFF..]);
             ip_repr.emit(&mut p, &ChecksumCapabilities::default());
         }
         {
-            let tcp_off = ip_off + ip_repr.buffer_len();
-            let mut p = TcpPacket::new_unchecked(&mut buf[tcp_off..]);
-            tcp_repr.emit(
+            let mut p = TcpPacket::new_unchecked(&mut buf[TCP_OFF..]);
+            seg.emit(
                 &mut p,
-                &IpAddress::Ipv4(GUEST_IP),
-                &IpAddress::Ipv4(SERVER_IP),
+                &IpAddress::Ipv4(src),
+                &IpAddress::Ipv4(dst),
                 &ChecksumCapabilities::default(),
             );
         }
@@ -119,8 +164,16 @@ mod tests {
     }
 
     #[test]
+    fn is_unicast_classifies_addresses() {
+        assert!(is_unicast(SERVER_IP));
+        assert!(!is_unicast(Ipv4Address::new(224, 0, 0, 5))); // multicast
+        assert!(!is_unicast(Ipv4Address::new(255, 255, 255, 255))); // broadcast
+        assert!(!is_unicast(Ipv4Address::new(0, 0, 0, 0))); // unspecified
+    }
+
+    #[test]
     fn peeks_a_tcp_syn() {
-        let frame = craft_tcp(&repr(TcpControl::Syn, None));
+        let frame = craft(GUEST_IP, SERVER_IP, &syn());
         assert_eq!(
             peek_tcp_syn(&frame),
             Some(SynFlow {
@@ -132,21 +185,18 @@ mod tests {
 
     #[test]
     fn ignores_a_syn_ack() {
-        // SYN+ACK (both flags) is a handshake reply, not a new-flow open.
-        let frame = craft_tcp(&repr(TcpControl::Syn, Some(TcpSeqNumber(1))));
+        let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::Syn, Some(TcpSeqNumber(1)), 80));
         assert_eq!(peek_tcp_syn(&frame), None);
     }
 
     #[test]
     fn ignores_a_bare_ack() {
-        // A pure ACK (no SYN) is mid-connection.
-        let frame = craft_tcp(&repr(TcpControl::None, Some(TcpSeqNumber(1))));
+        let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::None, Some(TcpSeqNumber(1)), 80));
         assert_eq!(peek_tcp_syn(&frame), None);
     }
 
     #[test]
     fn ignores_non_ipv4_and_truncated() {
-        // Non-IPv4 ethertype (an ARP-typed header).
         let mut arp = vec![0u8; 14];
         EthernetRepr {
             src_addr: GUEST_MAC,
@@ -155,7 +205,54 @@ mod tests {
         }
         .emit(&mut EthernetFrame::new_unchecked(&mut arp[..]));
         assert_eq!(peek_tcp_syn(&arp), None);
-        // Fewer bytes than even an Ethernet header — bounds-checked to None.
         assert_eq!(peek_tcp_syn(&[0x00, 0x11, 0x22]), None);
+    }
+
+    // --- The peek must not accept what the datapath (poll) would drop. Each of
+    // these was proven to slip past the pre-fix peek by the scrutinize panel. ---
+
+    #[test]
+    fn ignores_bad_ipv4_checksum() {
+        let mut frame = craft(GUEST_IP, SERVER_IP, &syn());
+        Ipv4Packet::new_unchecked(&mut frame[IP_OFF..]).set_checksum(0xDEAD);
+        assert_eq!(peek_tcp_syn(&frame), None);
+    }
+
+    #[test]
+    fn ignores_bad_tcp_checksum() {
+        let mut frame = craft(GUEST_IP, SERVER_IP, &syn());
+        TcpPacket::new_unchecked(&mut frame[TCP_OFF..]).set_checksum(0xDEAD);
+        assert_eq!(peek_tcp_syn(&frame), None);
+    }
+
+    #[test]
+    fn ignores_ipv4_fragments() {
+        let mut frame = craft(GUEST_IP, SERVER_IP, &syn());
+        // A first fragment with a VALID checksum, so only the fragment flag —
+        // not a checksum error — is what rejects it.
+        let mut ip = Ipv4Packet::new_unchecked(&mut frame[IP_OFF..]);
+        ip.set_more_frags(true);
+        ip.fill_checksum();
+        assert_eq!(peek_tcp_syn(&frame), None);
+    }
+
+    #[test]
+    fn ignores_non_unicast_source() {
+        // Multicast source — the datapath's ingress gate drops it.
+        let frame = craft(Ipv4Address::new(224, 0, 0, 5), SERVER_IP, &syn());
+        assert_eq!(peek_tcp_syn(&frame), None);
+    }
+
+    #[test]
+    fn ignores_non_unicast_destination() {
+        // Broadcast destination is not a real egress connection.
+        let frame = craft(GUEST_IP, Ipv4Address::new(255, 255, 255, 255), &syn());
+        assert_eq!(peek_tcp_syn(&frame), None);
+    }
+
+    #[test]
+    fn ignores_port_zero() {
+        let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::Syn, None, 0));
+        assert_eq!(peek_tcp_syn(&frame), None);
     }
 }
