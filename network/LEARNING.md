@@ -11,6 +11,12 @@ thing, then the closest C mental model.
   harness catches it and prints `left` (got) vs `right` (expected).
 - **clippy** = idiom linter (`cargo clippy`); **rustfmt** = formatter (`cargo fmt`).
 - Debug output prints bytes in **decimal** (`0xDE` → `222`).
+- **The type checker is the first test.** Changing a function's return type makes
+  every caller *fail to compile* until updated — `error[E0308]: mismatched types`
+  at each site. In TDD that compile failure IS the RED: write the test against the
+  new shape, watch it fail to build, then grow the code to match. A type error
+  anywhere in a test module blocks the *whole* test binary — nothing runs until it
+  compiles (unlike a dynamic language, where one broken test errors in isolation).
 
 ## Types & memory
 
@@ -25,6 +31,22 @@ thing, then the closest C mental model.
   `buf` alive — Rust proves it at compile time.
 - **`usize`** = `size_t` (pointer-sized unsigned; slice indices are `usize`).
 - **`as`** = an explicit, non-fallible cast (`u32 as usize`).
+
+## Tuples & multiple returns
+
+- **`(&[u8], usize)`** — a *tuple*: several values bundled into one anonymous,
+  fixed-size struct, accessed positionally (`.0`, `.1`) rather than by name. C
+  has no multiple return — you'd pass an out-param (`size_t *consumed`) or
+  declare a named `struct`. A tuple is zero-cost: returned in registers, no
+  allocation.
+- **Destructuring** — `let (payload, consumed) = decode(buf)?;` pulls the pair
+  apart by pattern in one line, like unpacking the fields of a returned struct.
+- **Threading a cursor** — `decode` stays *single-frame* (dumb): it returns the
+  payload plus `consumed` (`4 + len`), and the caller advances `&buf[consumed..]`
+  and decodes again. `&buf[n..]` is the tail sub-slice — `buf + n` with the
+  remaining length, bounds-checked. Iterating over many frames lives in the
+  *caller*, not the codec: no array/`Vec` of frames, each stays borrowed in place
+  in the read buffer (stack-friendly, alloc-free).
 
 ## Option — "maybe"
 
