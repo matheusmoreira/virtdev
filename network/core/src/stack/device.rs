@@ -183,7 +183,13 @@ impl Device for QemuDevice {
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        // The single outbound slot can always take one frame.
+        // Single outbound slot: offer it only when empty. A still-undrained frame
+        // means we return None, which smoltcp treats as backpressure and defers —
+        // rather than us clobbering the unsent frame. The reactor drains
+        // `outbound` after each poll, so at the next poll the slot is free again.
+        if self.outbound.get().is_some() {
+            return None;
+        }
         Some(QemuTxToken(&mut self.outbound))
     }
 
@@ -282,8 +288,21 @@ mod tests {
         let mut dev = QemuDevice::new();
         let tx = dev
             .transmit(Instant::from_millis(0))
-            .expect("always able to send one frame");
+            .expect("an empty device can send one frame");
         tx.consume(2, |buf| buf.copy_from_slice(&[0xEE, 0xFF]));
         assert_eq!(dev.outbound(), Some(&[0xEE, 0xFF][..]));
+    }
+
+    #[test]
+    fn transmit_is_refused_while_the_outbound_slot_is_full() {
+        let mut dev = QemuDevice::new();
+        // A prior, still-undrained outbound frame occupies the single slot.
+        dev.store_outbound(&[0x01]);
+        // smoltcp must not be handed the slot — offering it would clobber the
+        // unsent frame. None = backpressure; smoltcp defers.
+        assert!(dev.transmit(Instant::from_millis(0)).is_none());
+        // Once the reactor drains it, the slot is offered again.
+        dev.clear_outbound();
+        assert!(dev.transmit(Instant::from_millis(0)).is_some());
     }
 }
