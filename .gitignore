@@ -1,6 +1,6 @@
 build
 pkg/
-src/
+/src/
 *.pkg.tar*
 virtdev-git/
 bin/virtdev-exchange
