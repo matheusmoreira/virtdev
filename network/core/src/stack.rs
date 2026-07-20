@@ -14,3 +14,6 @@ pub mod device;
 
 // The guest's L3: an AnyIP smoltcp interface (transparent-termination gateway).
 pub mod netstack;
+
+// Flow inspection: peek a new TCP flow's (dst, port) off an inbound frame.
+pub mod inspect;

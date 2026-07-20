@@ -99,6 +99,10 @@ thing, then the closest C mental model.
   function* when the value is `None`, else yields the inner value. The
   early-return guard as one character — the C `if (!x) return NULL;` habit, built
   into the language (works on `Result` too, propagating the `Err`).
+- **`result.ok()?`** — `Result::ok()` discards the error and becomes an `Option`
+  (`Ok(v) → Some(v)`, `Err(_) → None`); the `?` then propagates `None`. For when
+  you only care *did it parse?*, not why — e.g.
+  `EthernetFrame::new_checked(frame).ok()?` in the flow peek.
 
 ## Enums & pattern matching
 
