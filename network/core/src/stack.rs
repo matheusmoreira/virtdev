@@ -8,3 +8,6 @@
 
 // QEMU `-netdev stream` framing: deframe the length-prefixed byte stream.
 pub mod frame;
+
+// The smoltcp datapath device: fixed-buffer, single-frame conduit.
+pub mod device;

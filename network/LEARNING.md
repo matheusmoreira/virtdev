@@ -48,6 +48,26 @@ thing, then the closest C mental model.
   *caller*, not the codec: no array/`Vec` of frames, each stays borrowed in place
   in the read buffer (stack-friendly, alloc-free).
 
+## Structs, methods & constructors
+
+- **Associated function (constructor)** — `fn empty() -> Self` / `fn new() ->
+  Self` take no `self`; you call them on the *type* (`FrameSlot::empty()`), like
+  a C `foo_create()` factory. `Self` inside = the type being defined; `Self {
+  field: … }` builds an instance.
+- **`&self` vs `&mut self`** — the method receiver's borrow. `&self` = read-only
+  view (many at once, can't mutate); `&mut self` = exclusive mutable access (one
+  at a time, may mutate). C: `const T *this` vs `T *this`, but exclusivity is
+  compiler-enforced, not a convention.
+- **`const fn`** — a function evaluable at *compile time* (C++ `constexpr`), so
+  its result can initialize a `const`/`static`. Matters for the freestanding
+  binary, which builds state without a runtime.
+- **`copy_from_slice(src)`** — a length-checked `memcpy`: destination and `src`
+  must be the *same length* or it panics. `buf[..n].copy_from_slice(f)` copies
+  `f`'s `n` bytes into the front of `buf`.
+- **`Default`** — the conventional "empty/zero value" constructor: `T::default()`.
+  clippy asks for it beside any no-arg `new()` so generic code can build a `T`
+  without naming the concrete constructor.
+
 ## Option — "maybe"
 
 - **`Option<T>`** = `Some(T)` | `None`. C's "return `NULL` for none," but the
@@ -65,6 +85,9 @@ thing, then the closest C mental model.
   test itself is broken, so panicking fails it). Avoided on **production paths** —
   there we handle both arms explicitly (`match`, `if let`, `let … else`, `?`) so
   there is no hidden abort. `Result` has the same `.unwrap()`, panicking on `Err`.
+- **`Option::map(f)`** — `x.map(f)` applies `f` to the inner value when `Some`
+  and passes `None` through: `Some(3).map(double) == Some(6)`, `None.map(double)
+  == None`. Transforms the inside without an `if`/`match` or an unwrap.
 
 ## Enums & pattern matching
 
@@ -103,6 +126,13 @@ thing, then the closest C mental model.
   concrete type; zero-cost, no boxing) where Java **erases** to `Object` + casts
   at runtime; and the bound is a *trait* (behavior, implementable even for
   primitives/foreign types), not class inheritance.
+- **Monomorphization: cost & escape hatch.** One copy per *distinct* concrete
+  type (call sites sharing a type share the copy), so code size grows with type
+  *variety*, not usage — and dead-code elimination + inlining claw much of it
+  back; our concrete types are few, so it is negligible here. When you instead
+  want *one shared copy* (dynamic dispatch), use **`dyn Trait`**: a fat pointer
+  (data ptr + vtable), exactly Java/C++ virtual calls — smaller code, one
+  indirection per call. The classic space-vs-speed dial.
 - **`Self` vs `self`** — capital `Self` = *the type* implementing the trait
   (shorthand for its name); lowercase `self` = *the instance* (C++ `this`, but a
   value). `fn consume(self, …)` takes `self` **by value** — moves the receiver
@@ -111,6 +141,14 @@ thing, then the closest C mental model.
   valid." Pure compile-time, zero runtime cost. C: the "is this pointer still
   alive?" question you track in your head and lose to use-after-free; Rust writes
   it down and the borrow checker proves it. `Foo<'a>` holds a ref valid for `'a`.
+- **What a lifetime *is* to the compiler.** Erased before codegen — at runtime a
+  `&'a T` is just a pointer (same bytes as C). Borrow-checking is a *static* pass:
+  each borrow gets a *region* (the CFG points where it is still used later), and
+  the checker proves the referent stays valid across that whole region. `Self: 'a`
+  / `'a: 'b` are *outlives* constraints — plain region-containment (`⊇`) — solved
+  like inequalities. Annotations exist only to connect borrows *across* function
+  signatures, where the checker can't see into the callee. Exhaustive
+  compile-time pointer-provenance analysis, made a hard error — not a runtime value.
 - **`'_`** — the *elided* lifetime: "a lifetime goes here; infer which one."
   `RxToken<'_>` returned from `receive(&mut self)` = "the token borrows from
   `&mut self`; tie its lifetime to that borrow."
