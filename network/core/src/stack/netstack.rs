@@ -1,6 +1,6 @@
 //! The guest's L3: a smoltcp `Interface` that terminates the guest's traffic.
 //!
-//! We present the guest a gateway at [`GATEWAY_IP`]/[`GATEWAY_MAC`] and run
+//! We present the guest a gateway at `GATEWAY_IP`/`GATEWAY_MAC` and run
 //! smoltcp in **AnyIP** mode. In smoltcp 0.13.1 `set_any_ip(true)` makes the
 //! interface accept and locally terminate **every unicast IPv4 destination** —
 //! `has_ip_addr` short-circuits to `true` under AnyIP (the `set_any_ip` doc
