@@ -57,6 +57,43 @@ thing, then the closest C mental model.
   `NULL`), (b) nests — `Option<Option<T>>` keeps `Some(None)` distinct from `None`,
   (c) forces the check. And when `T` has a spare value it's free: `Option<&[u8]>` is
   the same size as `&[u8]` (niche optimization — `None` = null pointer).
+- **`.unwrap()`** — on `Some(x)` returns `x`; on `None` it *panics* (aborts with a
+  message + source location). Reads as "I assert this is `Some`; if I'm wrong,
+  crash loudly here rather than carry a bad value forward." C analogy:
+  dereferencing a pointer you're *sure* is non-NULL — except a wrong guess is a
+  clean panic, not undefined behavior. Fine in **tests** (a `None` there means the
+  test itself is broken, so panicking fails it). Avoided on **production paths** —
+  there we handle both arms explicitly (`match`, `if let`, `let … else`, `?`) so
+  there is no hidden abort. `Result` has the same `.unwrap()`, panicking on `Err`.
+
+## Enums & pattern matching
+
+- **`enum` with data** = a *tagged union* (sum type). Each variant may be empty
+  (`Incomplete`) or carry fields, tuple- or named struct-style
+  (`Complete { payload, consumed }`). C: a hand-rolled `struct { enum tag; union
+  {…}; }`, but tag and payload are fused, the compiler forces you to handle
+  every variant, and the size is `tag + largest variant` (minus niche savings).
+  This *is* a little state machine: one value, exactly one of N states.
+- **`Decoded<'a>` / `Decoded<'_>`** — the enum takes a *lifetime parameter*
+  because a variant borrows (`Complete.payload: &'a [u8]`). Writing the return
+  type `Decoded<'_>` means "a borrow lives in here; infer its lifetime"
+  (elision) — the compiler proves the payload can't outlive the input `buf`.
+- **`#[derive(Debug, PartialEq)]`** — auto-generate impls: `Debug` = a `{:?}`
+  dump, `PartialEq` = structural `==` (field-by-field). C: you'd hand-write a
+  compare and a print helper. Lets `assert_eq!` work on the enum.
+- **Refutable patterns need a home.** A plain `let PAT = expr;` requires PAT to
+  *always* match (irrefutable). A single-variant pattern is *refutable*, so the
+  compiler (E0005) makes you use `match`, `if let`, or `let … else`.
+- **`let … else`** — `let Decoded::Complete { payload, consumed } = decode(buf)
+  else { return; };`. Binds the fields if the pattern matches; otherwise runs a
+  block that *must diverge* (`return`/`panic!`/`break`). The idiomatic
+  `.unwrap()` replacement for a data-carrying enum: name the happy path, handle
+  the rest explicitly. C: `if (r.tag != COMPLETE) bail(); /* use r.fields */`,
+  but the bindings only come into scope *after* the guard.
+- **field-init shorthand** — `Complete { payload, consumed }` when the local
+  names match the fields (short for `payload: payload, consumed: consumed`).
+- **`matches!(x, Decoded::Oversized)`** — a boolean "is it this variant?" test
+  without a full `match`; handy when you don't need the fields.
 
 ## Control flow & safety
 
