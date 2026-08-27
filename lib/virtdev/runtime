@@ -3,8 +3,9 @@
 # runtime library: the per-machine ephemeral runtime artifact set.
 #
 # One source of truth for a project (or maintenance) virtual machine's
-# transient host-side files: the monitor/console/passt/qmp sockets and the
-# `port` file that signals "this machine is running". The socket set, the
+# transient host-side files: the monitor/console/passt/qmp sockets, the launch
+# phase/provenance marker, and the `port` file that signals "this machine is
+# running". The socket set, the
 # argv path accessors, the cleanup helpers, and validate's sun_path
 # length feed all derive from the name constants below, so the argv QEMU
 # is launched with and the files cleaned up on teardown cannot drift
@@ -23,6 +24,7 @@
 #     runtime_passt_sock_name     passt.sock
 #     runtime_qmp_sock_name       qmp.sock
 #     runtime_port_name           port
+#     runtime_launch_phase_name   launch.phase
 #
 #   runtime_socket_basenames      Array of the socket basenames (built
 #                                 from the name constants). The single
@@ -36,16 +38,24 @@
 #     runtime_console_sock <dir>
 #     runtime_passt_sock <dir>
 #     runtime_qmp_sock <dir>
+#     runtime_launch_phase_file <dir>
 #   These are what qemu_command uses to wire the QEMU argv, so the argv
 #   socket paths and the cleanup set share one source.
 #
 #   runtime_clean_sockets <dir>   Remove every socket basename under <dir>.
-#                                 Sockets ONLY — leaves the port file. The
+#                                 Sockets ONLY — leaves the port and phase
+#                                 files. The
 #                                 pre-launch stale-socket sweep uses this;
 #                                 it must not delete a just-written port.
 #   runtime_clean <dir>           runtime_clean_sockets <dir> plus the port
-#                                 file. The full teardown (stop, failure
-#                                 cleanup) uses this.
+#                                 and launch-phase files. The full teardown
+#                                 (stop, failure cleanup) uses this.
+#   runtime_launch_phase_publish <file> <shim|qemu>
+#                                 Atomically publish which process owns the
+#                                 unit's eventual ExecMainStatus.
+#   runtime_launch_phase_read <file>
+#                                 Print a canonical phase, or return nonzero
+#                                 for missing/irregular/malformed state.
 #
 #   runtime_socket_name_maxlen    Print the longest socket basename length
 #                                 (bytes). Feeds validate's AF_UNIX
@@ -65,6 +75,10 @@ readonly runtime_console_sock_name=console.sock
 readonly runtime_passt_sock_name=passt.sock
 readonly runtime_qmp_sock_name=qmp.sock
 readonly runtime_port_name=port
+readonly runtime_launch_phase_name=launch.phase
+readonly runtime_launch_phase_tmp_name=launch.phase.tmp
+readonly runtime_launch_phase_shim=shim
+readonly runtime_launch_phase_qemu=qemu
 
 # The single socket set, built FROM the name constants so a rename or
 # addition happens in exactly one place. -gra: global (libraries are
@@ -76,6 +90,16 @@ declare -gra runtime_socket_basenames=(
   "${runtime_console_sock_name}"
   "${runtime_passt_sock_name}"
   "${runtime_qmp_sock_name}"
+)
+
+# Every artifact removed by a full runtime teardown. Kept separate from the
+# socket-only set because the pre-launch socket sweep must not accidentally
+# remove a deliberately published port/phase in callers that use it.
+declare -gra runtime_control_basenames=(
+  "${runtime_socket_basenames[@]}"
+  "${runtime_port_name}"
+  "${runtime_launch_phase_name}"
+  "${runtime_launch_phase_tmp_name}"
 )
 
 runtime_monitor_sock() {
@@ -92,6 +116,44 @@ runtime_passt_sock() {
 
 runtime_qmp_sock() {
   printf '%s' "${1}/${runtime_qmp_sock_name}"
+}
+
+runtime_launch_phase_file() {
+  printf '%s' "${1}/${runtime_launch_phase_name}"
+}
+
+runtime_launch_phase_publish() {
+  local -r file="${1}" phase="${2}" tmp="${1}.tmp"
+  case "${phase}" in
+    "${runtime_launch_phase_shim}"|"${runtime_launch_phase_qemu}") ;;
+    *) return 1 ;;
+  esac
+  runtime_remove_artifact "${tmp}" || return 1
+  if ! printf '%s\n' "${phase}" > "${tmp}"; then
+    runtime_remove_artifact "${tmp}" || true
+    return 1
+  fi
+  if ! mv -T -- "${tmp}" "${file}"; then
+    runtime_remove_artifact "${tmp}" || true
+    return 1
+  fi
+}
+
+runtime_launch_phase_read() {
+  local -r file="${1}"
+  [[ -f "${file}" && ! -L "${file}" ]] || return 1
+  local size phase=''
+  size="$(stat -c '%s' -- "${file}" 2>/dev/null)" || return 1
+  # Both canonical tokens are four ASCII bytes plus one newline. The exact
+  # bound rejects extra records, partial writes, NUL-bearing state, and floods.
+  [[ "${size}" == 5 ]] || return 1
+  IFS= read -r phase < "${file}" || return 1
+  case "${phase}" in
+    "${runtime_launch_phase_shim}"|"${runtime_launch_phase_qemu}")
+      printf '%s' "${phase}"
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 # Remove every socket basename under <dir>. Sockets only — the port file is
@@ -120,12 +182,13 @@ runtime_clean_sockets() {
   return "${status}"
 }
 
-# Full teardown: the sockets plus the port "running" signal.
+# Full teardown: sockets, port "running" signal, and launch provenance.
 runtime_clean() {
   local -r dir="${1}"
-  local status=0
-  runtime_clean_sockets "${dir}" || status=1
-  runtime_remove_artifact "${dir}/${runtime_port_name}" || status=1
+  local name status=0
+  for name in "${runtime_control_basenames[@]}"; do
+    runtime_remove_artifact "${dir}/${name}" || status=1
+  done
   return "${status}"
 }
 

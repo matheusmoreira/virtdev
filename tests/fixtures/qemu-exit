@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+exit "${QEMU_EXIT_STATUS:-0}"

@@ -411,15 +411,17 @@ glob in `PKGBUILD` picks it up automatically.
   QEMU. QEMU uses `-netdev stream,addr.type=unix,addr.path=<passt.sock>`
   to connect. The keystone invariant: passt creates the socket *before*
   forking to background, so a zero exit from passt means QEMU can connect
-  immediately. The unit's `ExecMainStatus` is the shim's exit code when
-  it fails before exec (83/84/85, or 86 when the QEMU pre-flight finds
-  no binary); after exec it is QEMU's code.
+  immediately. A host-owned `launch.phase` marker records `shim` before
+  pre-exec failures and atomically changes to `qemu` immediately before exec.
+  Consumers interpret reserved statuses 83–86 only with `shim` provenance, so
+  a numerically identical QEMU exit is never misdiagnosed.
   `virtdev-install` is unchanged (keeps SLIRP). `passt` is a required
   dependency; see `PKGBUILD` `depends` and `README.md` Requirements.
 - **passt.sock cleanup.** `passt.sock` lives next to `monitor.sock`,
   `qmp.sock`, and `console.sock` in the per-project directory. The socket set
   is single-sourced in `lib/virtdev/runtime` (`runtime_socket_basenames`),
-  and every teardown routes through `runtime_clean` (sockets + port) or
+  and every teardown routes through `runtime_clean` (sockets + port + launch
+  provenance) or
   `runtime_clean_sockets` (sockets only), so all four sockets are swept
   together: `virtdev-stop`'s `stop_finalize`, `virtdev-maintain`'s
   `maintenance_cleanup` and its pre-launch sweep in `maintenance_boot`, and

@@ -6,6 +6,15 @@ state="${SYSTEMCTL_ACTIVE_STATE:-inactive}"
 if [[ -n "${SYSTEMCTL_STATE_FILE:-}" && -f "${SYSTEMCTL_STATE_FILE}" ]]; then
   state="$(< "${SYSTEMCTL_STATE_FILE}")"
 fi
+if [[ " $* " == *ActiveState* \
+      && -n "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE:-}" \
+      && -s "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}" ]]; then
+  IFS= read -r state < "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}"
+  tail -n +2 "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}" \
+    > "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}.tmp"
+  mv -T -- "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}.tmp" \
+    "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}"
+fi
 
 if [[ " $* " == *" stop "* ]]; then
   [[ -n "${SYSTEMCTL_STOP_FILE:-}" ]] && : > "${SYSTEMCTL_STOP_FILE}"
@@ -31,7 +40,7 @@ if [[ " $* " == *" list-units "* ]]; then
 fi
 
 if [[ " $* " == *" show "* ]]; then
-  if [[ " $* " == *" ExecMainStatus "* ]]; then
+  if [[ " $* " == *ExecMainStatus* ]]; then
     printf '%s\n' "${SYSTEMCTL_EXEC_MAIN_STATUS:-0}"
   else
     printf '%s\n' "${state}"

@@ -249,6 +249,7 @@ fi
 # runtime source, so they cannot drift from the qemu_command / cleanup set.
 passt_sock="$(runtime_passt_sock "${project_directory}")"
 qmp_sock="$(runtime_qmp_sock "${project_directory}")"
+launch_phase_file="$(runtime_launch_phase_file "${project_directory}")"
 
 # Cleanup-on-failure: every error path between here and the wait-loop
 # success marker either proves the submitted unit terminal before removing its
@@ -336,7 +337,11 @@ qemu_command qemu_argv \
 # host-hole zone (open_host_map, resolved once above). The per-port restriction is
 # enforced by the nft rules, not passt, whose host map is all-or-nothing — so the
 # map is opened only when nft is actually enforcing it.
-declare -a netexec_opts=(--socket "${passt_sock}" --forward "${port}")
+declare -a netexec_opts=(
+  --socket "${passt_sock}"
+  --phase-file "${launch_phase_file}"
+  --forward "${port}"
+)
 if (( open_host_map )); then
   netexec_opts+=(--allow-host-loopback)
 fi
@@ -369,9 +374,10 @@ systemd-run \
 # message instead of a generic timeout:
 #
 #   - qemu_active:           normal — continue.
-#   - 83/84/85/86:           passt-shim failures (the shim exited before
-#                            exec'ing QEMU; once it exec's QEMU the status
-#                            is QEMU's own 0/143/… and never these four).
+#   - 83/84/85/86:           passt-shim failures, accepted only with the
+#                            host-owned `shim` launch-phase marker. The same
+#                            numeric QEMU exits carry `qemu` and classify as a
+#                            generic crash.
 #                            passt now binds the forward port (not QEMU),
 #                            so exit code 85 is the authoritative bind-race
 #                            signal — the legacy post-hoc port re-probe is
@@ -382,10 +388,13 @@ systemd-run \
 #                            exit status so the user is not told "unit did
 #                            not become active" when it entered and left in
 #                            the same second.
-#   - qemu_still_activating: deadline passed, unit still transient.
-qemu_activation_classify "${unit}" 5 && classify=0 || classify=$?
+#   - qemu_still_activating: deadline passed before systemd state and the
+#                            authenticated QEMU phase were both ready.
+qemu_activation_classify \
+  "${unit}" 5 "${launch_phase_file}" && classify=0 || classify=$?
 state="${VIRTDEV_QEMU_ACTIVE_STATE}"
 exit_status="${VIRTDEV_QEMU_EXIT_STATUS}"
+launch_phase="${VIRTDEV_QEMU_LAUNCH_PHASE}"
 case "${classify}" in
   "${qemu_active}")
     : # Unit is active; fall through.
@@ -439,17 +448,19 @@ MESSAGE
     error 12 <<MESSAGE
 Unit exited before becoming active: ${unit}
 ActiveState: ${state}
-QEMU exit status: ${exit_status}
-QEMU likely crashed at boot. Investigate:
+Launch phase: ${launch_phase}
+Main-process exit status: ${exit_status}
+The netexec shim or QEMU failed during launch. Investigate:
     systemctl --user status ${unit}
     journalctl --user -u ${unit}
 MESSAGE
     ;;
   "${qemu_still_activating}")
     error 16 <<MESSAGE
-Unit did not become active within 5s: ${unit}
+Unit/QEMU launch did not become ready within 5s: ${unit}
 ActiveState: ${state:-unknown}
-systemd-run reported success but systemctl does not see the unit active.
+Launch phase: ${launch_phase}
+systemd-run reported success, but QEMU ownership was not confirmed.
 Investigate: systemctl --user status ${unit}
 MESSAGE
     ;;

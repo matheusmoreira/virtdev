@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
-# virtdev-netexec --socket <path> [--forward <port>] [--allow-host-loopback] -- <qemu-command...>
+# virtdev-netexec --socket <path> --phase-file <path> [--forward <port>] [--allow-host-loopback] -- <qemu-command...>
 #
 # Internal exec-shim: sets up passt networking, then exec's the QEMU
 # command. Designed to be run as the main process of a systemd transient
@@ -19,8 +19,9 @@
 #   4. exec the QEMU command — passt and QEMU share the unit cgroup;
 #      systemd owns teardown via KillMode=control-group.
 #
-# This shim supervises nothing. Once exec succeeds, the unit's main
-# process is QEMU and ExecMainStatus reflects QEMU's exit code.
+# This shim supervises nothing. It atomically publishes `shim` before any
+# pre-exec failure and `qemu` immediately before exec, so consumers can attribute
+# a numerically-colliding ExecMainStatus to its actual process.
 #
 # Exit codes:
 #   64  usage error (arguments library)
@@ -35,12 +36,12 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments passt port
+import error arguments passt port runtime
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([socket]=required [forward]=value [allow-host-loopback]=bool)
+declare -A spec=([socket]=required [phase-file]=required [forward]=value [allow-host-loopback]=bool)
 # shellcheck disable=SC2034
-declare -A spec_placeholders=([socket]=path [forward]=port)
+declare -A spec_placeholders=([socket]=path [phase-file]=path [forward]=port)
 # shellcheck disable=SC2034
 declare -a spec_positionals=("qemu-command+")
 # shellcheck disable=SC2034
@@ -52,6 +53,7 @@ set -- "${positional[@]}"
 # --socket is `required` (enforced by arguments_parse), but that check is
 # syntactic — --socket= would pass it — so validate non-emptiness too.
 socket="${flags[socket]:-}"
+phase_file="${flags[phase-file]:-}"
 forward_port="${flags[forward]:-}"
 # --allow-host-loopback: presence opts this launch back into guest->host loopback
 # (host-hole zones). virtdev-start passes it iff firewall/zones marks the resolved
@@ -64,8 +66,16 @@ if [[ -n "${flags[allow-host-loopback]:-}" && "${flags[allow-host-loopback]}" !=
   allow_host_loopback=1
 fi
 
-if [[ $# -lt 1 || -z "${socket}" ]]; then
+if [[ $# -lt 1 || -z "${socket}" || -z "${phase_file}" ]]; then
   error 64 <<<"$(arguments_usage spec)"
+fi
+
+# Publish provenance before any reserved shim exit can occur. Failure is generic
+# because a missing marker cannot itself authenticate which process later owned
+# a numeric status; stderr retains this exact cause.
+if ! runtime_launch_phase_publish \
+    "${phase_file}" "${runtime_launch_phase_shim}"; then
+  error 1 <<<"Could not publish netexec launch phase: '${phase_file}'"
 fi
 if [[ -n "${forward_port}" ]] && ! port_is_valid "${forward_port}"; then
   error 64 <<<"Invalid forward port: '${forward_port}' (must be canonical 1024-65535)"
@@ -114,5 +124,10 @@ MESSAGE
 fi
 
 # Step 4: exec QEMU — this replaces the shim process.
-# After exec, ExecMainStatus reflects QEMU's exit code.
+# Publish the ownership transition first. A QEMU exit of 83..86 is then
+# unambiguously QEMU's, rather than a reserved shim failure.
+if ! runtime_launch_phase_publish \
+    "${phase_file}" "${runtime_launch_phase_qemu}"; then
+  error 1 <<<"Could not publish QEMU launch phase: '${phase_file}'"
+fi
 exec "$@"

@@ -8,6 +8,7 @@ set -euo pipefail
 [[ -n "${SYSTEMD_RUN_MARKER:-}" ]] && : > "${SYSTEMD_RUN_MARKER}"
 printf 'active\n' > "${SYSTEMCTL_STATE_FILE}"
 mkdir -p "${MAINTENANCE_RUNTIME_DIRECTORY}"
+printf 'qemu\n' > "${MAINTENANCE_RUNTIME_DIRECTORY}/launch.phase"
 if [[ "${MAINTENANCE_MALFORMED_CONTROL:-0}" == 1 ]]; then
   mkdir "${MAINTENANCE_RUNTIME_DIRECTORY}/monitor.sock"
   : > "${MAINTENANCE_RUNTIME_DIRECTORY}/monitor.sock/sentinel"

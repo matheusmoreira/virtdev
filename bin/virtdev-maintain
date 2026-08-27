@@ -282,6 +282,7 @@ maintenance_boot() {
       -- \
       "${virtdev_bin_directory}/virtdev-netexec" \
           --socket "${passt_sock}" \
+          --phase-file "${maintenance_launch_phase_file}" \
           --forward "${maintenance_port}" \
           -- \
           "${qemu_argv[@]}"
@@ -623,6 +624,7 @@ trap 'exit 143' TERM
 # from the same runtime source so it cannot drift from the qemu_command /
 # cleanup set.
 passt_sock="$(runtime_passt_sock "${maintenance_project}")"
+maintenance_launch_phase_file="$(runtime_launch_phase_file "${maintenance_project}")"
 
 # ── Boot 1: interactive maintenance session ─────────────────────────
 
@@ -656,11 +658,11 @@ fi
 # misleading "SSH did not become available" report.
 #
 # Mirrors virtdev-start's post-launch poll via the shared
-# qemu_activation_classify (lib/virtdev/qemu). No new code arm is needed
-# in the later reseal 'case "${qemu_exit}"': once the shim exec's QEMU,
-# qemu_exit is QEMU's (0/143/…) and can never be a pre-exec shim code
-# (83/84/85/86).
-qemu_activation_classify "${unit}" 5 && activate_classify=0 || activate_classify=$?
+# qemu_activation_classify (lib/virtdev/qemu). The launch-phase marker keeps a
+# real QEMU exit of 83..86 distinct from the shim's reserved diagnostics.
+qemu_activation_classify \
+  "${unit}" 5 "${maintenance_launch_phase_file}" \
+  && activate_classify=0 || activate_classify=$?
 activate_exit="${VIRTDEV_QEMU_EXIT_STATUS}"
 case "${activate_classify}" in
   "${qemu_active}")

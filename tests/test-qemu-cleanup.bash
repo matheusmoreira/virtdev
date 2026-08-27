@@ -14,7 +14,7 @@ import qemu
 
 runtime_directory="${test_tmp}/runtime"
 mkdir "${runtime_directory}"
-for name in "${runtime_socket_basenames[@]}" "${runtime_port_name}"; do
+for name in "${runtime_control_basenames[@]}"; do
   : > "${runtime_directory}/${name}"
 done
 
@@ -24,7 +24,7 @@ if qemu_stop_unit_then_clean_runtime virtdev-probe "${runtime_directory}" 0; the
   printf 'transitional unit was incorrectly accepted as terminal\n' >&2
   exit 1
 fi
-for name in "${runtime_socket_basenames[@]}" "${runtime_port_name}"; do
+for name in "${runtime_control_basenames[@]}"; do
   if [[ ! -e "${runtime_directory}/${name}" ]]; then
     printf 'runtime control %s was removed before terminal proof\n' "${name}" >&2
     exit 1
@@ -37,7 +37,7 @@ if ! qemu_stop_unit_then_clean_runtime virtdev-probe "${runtime_directory}" 0; t
   printf 'inactive unit was not accepted as terminal\n' >&2
   exit 1
 fi
-for name in "${runtime_socket_basenames[@]}" "${runtime_port_name}"; do
+for name in "${runtime_control_basenames[@]}"; do
   if [[ -e "${runtime_directory}/${name}" ]]; then
     printf 'runtime control %s survived confirmed terminal cleanup\n' "${name}" >&2
     exit 1

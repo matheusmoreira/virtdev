@@ -62,7 +62,7 @@
 #       launched. Same exposure class as the monitor socket; no new
 #       guest-reachable surface.
 #
-#   qemu_activation_classify <unit> <deadline_seconds>
+#   qemu_activation_classify <unit> <deadline_seconds> <launch-phase-file>
 #       Poll the transient systemd unit after systemd-run returns and
 #       classify the outcome. Runs the post-launch ActiveState poll until
 #       the unit becomes active, enters a terminal state, or the deadline
@@ -81,29 +81,32 @@
 #       deadline_seconds — budget, in seconds, for the unit to reach
 #                          active before the still-activating verdict.
 #
-#       On return, two namespaced globals carry the detail the caller
+#       On return, three namespaced globals carry the detail the caller
 #       needs for its own diagnostics:
 #         VIRTDEV_QEMU_EXIT_STATUS  — the unit's ExecMainStatus (the shim
 #                                     exit code 83/84/85/86 when QEMU was
 #                                     never exec'd, otherwise QEMU's own
 #                                     code), or "unknown".
 #         VIRTDEV_QEMU_ACTIVE_STATE — the last ActiveState observed.
+#         VIRTDEV_QEMU_LAUNCH_PHASE — `shim`, `qemu`, or `unknown`.
 #
 # Discriminants returned by qemu_activation_classify:
 #   0   (qemu_active)            unit reached active state.
 #   90  (qemu_crashed)           unit entered failed/inactive with a
 #                                non-passt ExecMainStatus (bad firmware
 #                                path, bad qcow2 header, KVM failure, …).
-#   91  (qemu_still_activating)  deadline passed; unit still transient.
+#   91  (qemu_still_activating)  deadline passed before both the unit and
+#                                authenticated QEMU phase became ready.
 #   83  (passt_missing)          passt binary not found (shim pre-exec).
 #   84  (passt_init_failure)     passt failed to initialise (shim).
 #   85  (passt_port_race)        forward-port bind race (shim).
 #   86  (passt_qemu_missing)     QEMU pre-flight found no binary (shim).
 #
-# The 83/84/85/86 constants are owned by lib/virtdev/passt and reused
-# here verbatim; once the shim exec's QEMU, ExecMainStatus is QEMU's own
-# code and can never collide with them. 90 and 91 are reserved here and
-# are disjoint from {0,83,84,85,86}.
+# The 83/84/85/86 constants are owned by lib/virtdev/passt and reused here
+# verbatim. Numeric status alone is not provenance: QEMU may legitimately exit
+# with the same value. They are interpreted as shim failures only when the
+# host-owned launch phase file says `shim`; missing/malformed/`qemu` state maps
+# to the generic qemu_crashed result. 90 and 91 are reserved here.
 #
 set -euo pipefail
 
@@ -115,6 +118,7 @@ readonly qemu_still_activating=91
 
 # Last state observed by qemu_stop_unit_then_clean_runtime. Diagnostic only.
 VIRTDEV_QEMU_STOP_STATE=unknown
+VIRTDEV_QEMU_LAUNCH_PHASE=unknown
 
 qemu_command() {
   local -n _command="${1}"
@@ -208,12 +212,14 @@ qemu_stop_unit_then_clean_runtime() {
 qemu_activation_classify() {
   local -r unit="${1}"
   local -r deadline_seconds="${2}"
+  local -r launch_phase_file="${3:-}"
   local -r deadline=$(( SECONDS + deadline_seconds ))
 
   # Reset the detail globals so a previous call's values never leak into
   # this verdict.
   VIRTDEV_QEMU_EXIT_STATUS=unknown
   VIRTDEV_QEMU_ACTIVE_STATE=unknown
+  VIRTDEV_QEMU_LAUNCH_PHASE=unknown
 
   local state exit_status
   while true; do
@@ -222,24 +228,40 @@ qemu_activation_classify() {
     VIRTDEV_QEMU_ACTIVE_STATE="${state}"
     case "${state}" in
       active)
-        return "${qemu_active}"
+        VIRTDEV_QEMU_LAUNCH_PHASE="$(
+          runtime_launch_phase_read "${launch_phase_file}" 2>/dev/null || true
+        )"
+        VIRTDEV_QEMU_LAUNCH_PHASE="${VIRTDEV_QEMU_LAUNCH_PHASE:-unknown}"
+        if [[ "${VIRTDEV_QEMU_LAUNCH_PHASE}" == "${runtime_launch_phase_qemu}" ]]; then
+          return "${qemu_active}"
+        fi
+        # Type=simple can report active while netexec is still preflighting or
+        # starting passt. Do not return success on `shim`/unknown: the shim may
+        # fail a moment later with a reserved status. Keep polling so a terminal
+        # transition is classified with authenticated provenance.
+        if (( SECONDS >= deadline )); then
+          return "${qemu_still_activating}"
+        fi
+        sleep 0.1
         ;;
       failed|inactive)
         exit_status="$(systemctl --user show "${unit}" \
             --property=ExecMainStatus --value 2>/dev/null || true)"
         exit_status="${exit_status:-unknown}"
         VIRTDEV_QEMU_EXIT_STATUS="${exit_status}"
-        # Classify by the shim's exit code first. When the shim exits
-        # before exec'ing QEMU, ExecMainStatus is the shim's own code
-        # (83/84/85/86); once the shim exec's QEMU the status is QEMU's
-        # (0/143/…) and can never be one of those four.
-        case "${exit_status}" in
-          "${passt_port_race_exit_code}") return "${passt_port_race_exit_code}" ;;
-          "${passt_missing_exit_code}")   return "${passt_missing_exit_code}" ;;
-          "${passt_init_failure_exit_code}") return "${passt_init_failure_exit_code}" ;;
-          "${passt_qemu_missing_exit_code}") return "${passt_qemu_missing_exit_code}" ;;
-          *) return "${qemu_crashed}" ;;
-        esac
+        VIRTDEV_QEMU_LAUNCH_PHASE="$(
+          runtime_launch_phase_read "${launch_phase_file}" 2>/dev/null || true
+        )"
+        VIRTDEV_QEMU_LAUNCH_PHASE="${VIRTDEV_QEMU_LAUNCH_PHASE:-unknown}"
+        if [[ "${VIRTDEV_QEMU_LAUNCH_PHASE}" == "${runtime_launch_phase_shim}" ]]; then
+          case "${exit_status}" in
+            "${passt_port_race_exit_code}") return "${passt_port_race_exit_code}" ;;
+            "${passt_missing_exit_code}")   return "${passt_missing_exit_code}" ;;
+            "${passt_init_failure_exit_code}") return "${passt_init_failure_exit_code}" ;;
+            "${passt_qemu_missing_exit_code}") return "${passt_qemu_missing_exit_code}" ;;
+          esac
+        fi
+        return "${qemu_crashed}"
         ;;
       *)
         if (( SECONDS >= deadline )); then
