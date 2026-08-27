@@ -253,23 +253,20 @@ MESSAGE
 
 _generation_read() {
   local -r file="${1}" kind="${2}"
-  # C locale makes byte counts and [0-9] agree. Read at most one byte beyond
-  # the largest valid representation, with a sentinel that prevents command
-  # substitution from stripping meaningful trailing newlines. This bounds
-  # shell allocation and makes multiple trailing records invalid.
-  local LC_ALL=C raw sentinel=$'\x01' file_size content
+  # C locale makes byte counts and [0-9] agree. A fixed-size `read -N` retains
+  # meaningful trailing newlines without command substitution and bounds shell
+  # allocation; exact stat-size comparison also rejects NUL/binary contents.
+  local LC_ALL=C raw='' file_size content
   if [[ ! -f "${file}" || -L "${file}" ]]; then
     _generation_error "${file}" "${kind}" '<missing-or-nonregular>'
   fi
   file_size="$(stat -c '%s' -- "${file}" 2>/dev/null)" \
     || _generation_error "${file}" "${kind}" '<unreadable>'
-  raw="$({ head -c 12 -- "${file}"; printf '%s' "${sentinel}"; } 2>/dev/null)" \
-    || _generation_error "${file}" "${kind}" '<unreadable>'
-  raw="${raw%"${sentinel}"}"
-
-  if [[ ! "${file_size}" =~ ^[0-9]+$ \
-        || ${file_size} -gt 11 \
-        || ${#raw} -ne file_size ]]; then
+  if [[ ! "${file_size}" =~ ^[0-9]+$ || ${file_size} -gt 11 ]]; then
+    _generation_error "${file}" "${kind}" "${raw}"
+  fi
+  IFS= read -r -N 12 raw < "${file}" 2>/dev/null || true
+  if [[ ${#raw} -ne file_size ]]; then
     _generation_error "${file}" "${kind}" "${raw}"
   fi
 

@@ -17,6 +17,8 @@
 #   port_read_lenient <project>  Print the validated port, or "?" when
 #                                the file is missing or corrupt. For
 #                                display-oriented commands (list).
+#   port_is_valid <port>         Return 0 only for canonical decimal ports in
+#                                1024..65535 (no sign or leading zero).
 #   port_in_use <port>           Returns 0 if the given port is bound.
 #
 # Exit codes:
@@ -41,19 +43,40 @@ import error
 readonly port_corrupt_exit_code=81
 readonly port_missing_exit_code=87
 
+port_is_valid() {
+  local LC_ALL=C
+  local -r port="${1}"
+  [[ "${port}" =~ ^[1-9][0-9]{3,4}$ ]] || return 1
+  (( 10#${port} >= 1024 && 10#${port} <= 65535 ))
+}
+
 # Internal. Print the port and return 0; return 1 if the port file is
 # missing, or 81 (port_corrupt_exit_code) if it exists but is not a
 # valid integer. Never exits — callers map the status to behavior.
 _port_value_or_status() {
   local -r port_file="${VIRTDEV_HOME}/projects/${1}/port"
-  [[ -f "${port_file}" ]] || return 1
+  [[ -e "${port_file}" || -L "${port_file}" ]] || return 1
+  [[ -f "${port_file}" && ! -L "${port_file}" ]] \
+    || return "${port_corrupt_exit_code}"
   # LC_ALL=C so [0-9] is byte-wise ASCII: under a UTF-8 locale a non-ASCII digit would
   # pass the regex and read as a valid port, defeating the corruption guard — the same
   # locale pin the generation readers / project_list carry for integer files.
-  local LC_ALL=C
-  local port
-  port="$(< "${port_file}")"
-  [[ "${port}" =~ ^[0-9]+$ ]] || return "${port_corrupt_exit_code}"
+  local LC_ALL=C raw='' file_size port
+  file_size="$(stat -c '%s' -- "${port_file}" 2>/dev/null)" \
+    || return "${port_corrupt_exit_code}"
+  if [[ ! "${file_size}" =~ ^[0-9]+$ || ${file_size} -gt 6 ]]; then
+    return "${port_corrupt_exit_code}"
+  fi
+  # -N retains newlines and caps allocation; Bash cannot store NUL bytes, so
+  # the exact stat-size comparison below also rejects binary scalar contents.
+  IFS= read -r -N 7 raw < "${port_file}" 2>/dev/null || true
+  [[ ${#raw} -eq file_size ]] || return "${port_corrupt_exit_code}"
+  port="${raw}"
+  if [[ "${port}" == *$'\n' ]]; then
+    port="${port%$'\n'}"
+  fi
+  [[ "${port}" != *$'\n'* ]] || return "${port_corrupt_exit_code}"
+  port_is_valid "${port}" || return "${port_corrupt_exit_code}"
   printf '%s' "${port}"
 }
 
@@ -88,5 +111,6 @@ port_read_lenient() {
 }
 
 port_in_use() {
+  port_is_valid "${1}" || return 2
   [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
 }

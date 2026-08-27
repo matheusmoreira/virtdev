@@ -67,6 +67,9 @@ fi
 if [[ $# -lt 1 || -z "${socket}" ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
+if [[ -n "${forward_port}" ]] && ! port_is_valid "${forward_port}"; then
+  error 64 <<<"Invalid forward port: '${forward_port}' (must be canonical 1024-65535)"
+fi
 
 # Pre-flight the QEMU command before starting passt: if it is missing or
 # not executable, the `exec "$@"` below would fail with 126/127 AFTER
