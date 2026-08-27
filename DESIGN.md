@@ -905,7 +905,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets, `port` running-signal, and atomic `launch.phase` exit-provenance marker (`runtime_socket_basenames`, `runtime_control_basenames`, path/phase accessors, `runtime_clean`/`runtime_clean_sockets`, `runtime_socket_name_maxlen`); feeds `validate`'s sun_path cap so the project-name limit tracks the socket set | none |
 | `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags. The forward-port bind race is detected via `port_in_use`, not a passt helper | 83, 84, 85, 86 |
 | `qemu` | the shared QEMU argv and post-launch activation classifier (`qemu_command`, `qemu_activation_classify`); the network-isolation security boundary keeping `start` and `maintain`'s QEMU flags byte-identical. Derives socket paths from `runtime` and wires an additive host-side QMP control socket | 90, 91 |
-| `qmp` | bounded QMP control client (`qmp_query_running`, `qmp_wait_shutdown`, `qmp_quit` over a socat coproc, internal `_qmp_exchange`); host↔QEMU only. Start uses it for launch readiness; maintenance uses it for positive guest-shutdown evidence before reseal | none |
+| `qmp` | bounded QMP control client (`qmp_query_running`, `qmp_wait_shutdown`, `qmp_quit` over a socat coproc, with responses validated by jq); host↔QEMU only. Start uses it for launch readiness; maintenance uses it for positive guest-shutdown evidence before reseal | none |
 | `firewall` | host egress lockdown policy single-source-of-truth (`firewall_slice_for`, `firewall_zone_of_slice`, `firewall_zone_default`, `firewall_require`, `firewall_is_active`, `firewall_assert_unit_filtered`, `firewall_zone_valid`, `firewall_zones`) + zone/destination-set constants. Root-only ruleset generation and apply live in `bin/virtdev-firewall`, not here | 88 |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
 | `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array); lazy-inits on first `terminal_write` call using the color mode from `arguments_parse` | none |
@@ -935,7 +935,7 @@ constants only, header comment format) are documented in
 SSH forwarding ports are assigned at virtual-machine start time and recorded
 in `projects/<name>/port`. The port file is written LAST, only after QEMU is
 confirmed running (the mandatory QMP `query-status` liveness probe; a host
-missing the declared `socat` dependency refuses launch before submission) and,
+missing the declared `socat` or `jq` dependency refuses launch first) and,
 for a filtered launch, the machine is proven to sit under the frozen
 `virtdev.slice` — so
 `port file exists ⟹ the machine was confirmed running`, never a false green

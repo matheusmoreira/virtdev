@@ -74,6 +74,69 @@ if [[ -e "${maintain_marker}" || -e "${maintain_home}/maintenance" ]]; then
   printf 'maintenance mutated state without its QMP shutdown client\n' >&2
   exit 1
 fi
+if ! grep -Fq \
+    'socat is required to collect positive guest-originated shutdown evidence through QMP.' \
+    "${output}"; then
+  printf 'maintenance missing-socat diagnostic did not explain the shutdown invariant\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+ln -s "$(command -v socat)" "${fixture_bin}/socat"
+rm -f -- "${output}"
+status=0
+PATH="${fixture_bin}" \
+  HOME="${test_tmp}" \
+  VIRTDEV_HOME="${virtdev_home}" \
+  SYSTEMD_RUN_MARKER="${marker}" \
+  NO_COLOR=1 \
+  "${repository}/bin/virtdev-start" --unfiltered probe \
+    >"${output}" 2>&1 || status=$?
+
+if (( status != 23 )); then
+  printf 'expected missing-jq exit 23, got %d\n' "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+if [[ -e "${marker}" || -e "${virtdev_home}/projects/probe/port" ]]; then
+  printf 'start mutated state without its QMP response parser\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'jq is required for authoritative QMP launch confirmation.' \
+    "${output}"; then
+  printf 'missing-jq diagnostic did not explain the readiness invariant\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+rm -f -- "${output}"
+status=0
+PATH="${fixture_bin}" \
+  HOME="${test_tmp}" \
+  VIRTDEV_HOME="${maintain_home}" \
+  SYSTEMD_RUN_MARKER="${maintain_marker}" \
+  NO_COLOR=1 \
+  "${repository}/bin/virtdev-maintain" \
+    --unfiltered --no-provision --no-inventory \
+    >"${output}" 2>&1 || status=$?
+
+if (( status != 32 )); then
+  printf 'expected maintenance missing-jq exit 32, got %d\n' "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+if [[ -e "${maintain_marker}" || -e "${maintain_home}/maintenance" ]]; then
+  printf 'maintenance mutated state without its QMP response parser\n' >&2
+  exit 1
+fi
+
+if ! grep -Fq \
+    'jq is required to validate guest-originated shutdown evidence through QMP.' \
+    "${output}"; then
+  printf 'maintenance missing-jq diagnostic did not explain the shutdown invariant\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
 
 printf 'ok - start refuses before submission when QMP readiness cannot be probed\n'
 printf 'ok - maintenance refuses before staging when shutdown proof is unavailable\n'

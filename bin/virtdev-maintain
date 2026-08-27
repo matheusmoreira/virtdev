@@ -94,7 +94,7 @@
 #   29  submitted maintenance unit state/termination is indeterminate
 #   30  terminal maintenance unit left malformed/unremovable runtime controls
 #   31  Boot 1 QEMU exited zero without positive guest-shutdown evidence
-#   32  socat is unavailable, so QMP shutdown evidence cannot be collected
+#   32  socat or jq is unavailable, so QMP evidence cannot be validated
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -178,6 +178,12 @@ if ! command -v socat &>/dev/null; then
   error 32 <<MESSAGE
 socat is required to collect positive guest-originated shutdown evidence through QMP.
 Install socat and retry: pacman -S socat
+MESSAGE
+fi
+if ! command -v jq &>/dev/null; then
+  error 32 <<MESSAGE
+jq is required to validate guest-originated shutdown evidence through QMP.
+Install jq and retry: pacman -S jq
 MESSAGE
 fi
 

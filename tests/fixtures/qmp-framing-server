@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${QMP_TEST_MODE:?}"
+
+readonly reply_max_bytes=65536
+readonly greeting='{"QMP":{"version":{"qemu":{"major":11,"minor":1,"micro":0}},"capabilities":[]}}'
+readonly capabilities_reply='{"return":{},"id":"virtdev-capabilities"}'
+readonly running_reply='{"return":{"status":"running","running":true},"id":"virtdev-query-running"}'
+
+emit_sized_running_reply() {
+  local -r total_bytes="${1}" prefix='{"return":{"padding":"' \
+    suffix='","status":"running","running":true},"id":"virtdev-query-running"}'
+  local -r padding_bytes=$(( total_bytes
+    - ${#greeting} - 1
+    - ${#capabilities_reply} - 1
+    - ${#prefix} - ${#suffix} - 1 ))
+
+  printf '%s' "${prefix}"
+  head -c "${padding_bytes}" /dev/zero | tr '\0' x
+  printf '%s\n' "${suffix}"
+}
+
+emit_running_reply() {
+  case "${QMP_TEST_MODE}" in
+    running)
+      printf '%s\n' "${running_reply}"
+      ;;
+    mismatched)
+      printf '%s\n' \
+        '{"return":{"status":"running","running":true},"id":"unrelated"}' \
+        '{"error":{"class":"GenericError"},"id":"virtdev-query-running"}'
+      ;;
+    nested-running)
+      printf '%s\n' \
+        '{"event":"DEVICE_TEST","data":{"id":"virtdev-query-running","running":true}}' \
+        '{"error":{"class":"GenericError"},"id":"virtdev-query-running"}'
+      ;;
+    event-before-running)
+      printf '%s\n' \
+        '{"event":"DEVICE_TEST","data":{"id":"virtdev-query-running","running":true}}'
+      sleep 0.2
+      printf '%s\n' "${running_reply}"
+      ;;
+    exact-cap)
+      emit_sized_running_reply "${reply_max_bytes}"
+      ;;
+    cap-plus-one)
+      emit_sized_running_reply "$(( reply_max_bytes + 1 ))"
+      ;;
+    oversized)
+      printf '%s' '{"return":{"padding":"'
+      head -c 1048576 /dev/zero | tr '\0' x
+      printf '%s\n' '","running":true},"id":"virtdev-query-running"}'
+      ;;
+    eof-partial)
+      printf '%s' "${running_reply}"
+      exit 0
+      ;;
+    crlf)
+      printf '%s\r\n' "${running_reply}"
+      ;;
+    fragmented)
+      printf '%s' '{"return":{"status":"running",'
+      sleep 0.2
+      printf '%s\n' '"running":true},"id":"virtdev-query-running"}'
+      ;;
+    fragmented-eof)
+      printf '%s' '{"return":{"status":"running",'
+      sleep 0.2
+      printf '%s' '"running":true},"id":"virtdev-query-running"}'
+      exit 0
+      ;;
+    nul-token)
+      printf '%s' '{"return":{"status":"running","running":tr'
+      printf '\0'
+      printf '%s\n' 'ue},"id":"virtdev-query-running"}'
+      ;;
+    nul-id)
+      printf '%s' '{"return":{"status":"running","running":true},"id":"virtdev-query-'
+      printf '\0'
+      printf '%s\n' 'running"}'
+      ;;
+    nul-prefix)
+      printf '\0'
+      printf '%s\n' "${running_reply}"
+      ;;
+    multi-value)
+      printf '%s %s\n' \
+        '{"event":"DEVICE_TEST"}' "${running_reply}"
+      exit 0
+      ;;
+    *)
+      exit 2
+      ;;
+  esac
+}
+
+printf '%s\n' "${greeting}"
+
+while IFS= read -r request; do
+  case "${request}" in
+    *'"execute":"qmp_capabilities"'*)
+      printf '%s\n' "${capabilities_reply}"
+      ;;
+    *'"execute":"query-status"'*'"id":"virtdev-query-running"'*)
+      emit_running_reply
+      ;;
+    *'"execute":"query-status"'*'"id":"virtdev-query-shutdown"'*)
+      [[ "${QMP_TEST_MODE}" == nested-shutdown ]] || exit 2
+      printf '%s\n' \
+        '{"event":"SHUTDOWN_TEST","data":{"id":"virtdev-query-shutdown","status":"shutdown","running":false}}' \
+        '{"error":{"class":"GenericError"},"id":"virtdev-query-shutdown"}'
+      ;;
+    *'"execute":"quit"'*'"id":"virtdev-quit"'*)
+      [[ "${QMP_TEST_MODE}" == nested-quit ]] || exit 2
+      printf '%s\n' \
+        '{"event":"QUIT_TEST","data":{"id":"virtdev-quit"}}' \
+        '{"error":{"class":"GenericError"},"id":"virtdev-quit"}'
+      ;;
+  esac
+done

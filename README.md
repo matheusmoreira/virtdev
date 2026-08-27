@@ -36,7 +36,7 @@ from its `zone` dotfile; `--zone` overrides it per launch.
 
 - Arch Linux host, bash >= 5.3
 - KVM-capable CPU, QEMU (`qemu-system-x86`), OVMF (`edk2-ovmf`)
-- OpenSSH (`openssh`), passt, nftables, socat, rsync, archiso
+- OpenSSH (`openssh`), passt, nftables, socat, jq, rsync, archiso
 
 ### Install
 

@@ -18,30 +18,42 @@
 #
 set -euo pipefail
 
-# Per-read stall and total captured-reply bounds.
-readonly _qmp_reply_read_timeout=2
+# Per-read stall, chunk, and total captured-reply bounds.
+readonly _qmp_reply_read_timeout=0.1
+readonly _qmp_reply_chunk_bytes=4096
 readonly _qmp_reply_max_bytes=65536
-
-# Fixed QEMU JSON scalars; quoted keys avoid matching runstate string values.
-readonly _qmp_running_match='"running"[[:space:]]*:[[:space:]]*true'
-readonly _qmp_not_running_match='"running"[[:space:]]*:[[:space:]]*false'
-readonly _qmp_shutdown_match='"status"[[:space:]]*:[[:space:]]*"shutdown"'
 
 # Diagnostic only; `shutdown` is the sole positive result.
 VIRTDEV_QMP_WAIT_STATE=unknown
 
-# _qmp_exchange <sock> <timeout_seconds> <done_ere> <json...>
+# _qmp_response_for_id <raw-qmp-reply> <response-id>
+_qmp_response_for_id() {
+  local -r reply="${1}" response_id="${2}"
+  jq -Rcse --arg id "${response_id}" '
+    first(
+      splits("\n") | sub("\r$"; "") | fromjson? |
+      select(
+        type == "object" and .id == $id and
+        ((has("return") and (has("error") | not)) or
+         (has("error") and (has("return") | not)))
+      )
+    )
+  ' <<< "${reply}" 2>/dev/null
+}
+
+# _qmp_exchange <sock> <timeout_seconds> <response-id> <json...>
 # Send qmp_capabilities followed by the given command(s) over a socat
 # coproc (write fd held open) and echo the raw reply, reading until
-# <done_ere> matches, the peer EOFs, or <timeout_seconds> elapses.
+# a complete response with <response-id>, EOF, the byte cap, or the deadline.
 _qmp_exchange() {
-  local -r sock="${1}" timeout_seconds="${2}" done_ere="${3}"
+  local -r sock="${1}" timeout_seconds="${2}" response_id="${3}"
   shift 3
   [[ -S "${sock}" ]] || return 1
 
   # QMP capabilities negotiation must precede commands.
   local request
-  request="$(printf '%s\n' '{"execute":"qmp_capabilities"}' "$@")"
+  request="$(printf '%s\n' \
+    '{"execute":"qmp_capabilities","id":"virtdev-capabilities"}' "$@")"
 
   local -r deadline=$(( BASH_MONOSECONDS + timeout_seconds ))
   # `exec` makes QMPCO_PID the socat process, so cleanup reaps the right PID.
@@ -52,20 +64,47 @@ _qmp_exchange() {
   # Keep the write fd open; tolerate a stale peer closing before this write.
   { printf '%s\n' "${request}" >&"${wfd}"; } 2>/dev/null || true
 
-  local reply="" line rc=1 remaining read_rc
+  local LC_ALL=C
+  local reply="" pending="" chunk="" frames="" line="" rc=1 \
+    read_size read_rc chunk_bytes
   while (( BASH_MONOSECONDS < deadline )); do
-    remaining=$(( deadline - BASH_MONOSECONDS ))
-    (( remaining > _qmp_reply_read_timeout )) && remaining=${_qmp_reply_read_timeout}
-    if IFS= read -r -t "${remaining}" -u "${rfd}" line 2>/dev/null; then
-      reply+="${line}"$'\n'
-      (( ${#reply} > _qmp_reply_max_bytes )) && break
-      [[ "${reply}" =~ ${done_ere} ]] && { rc=0; break; }
+    read_size=$(( _qmp_reply_max_bytes - ${#reply} ))
+    (( read_size > 0 )) || break
+    (( read_size > _qmp_reply_chunk_bytes )) \
+      && read_size=${_qmp_reply_chunk_bytes}
+
+    chunk=""
+    if IFS= read -r -d '' -n "${read_size}" \
+        -t "${_qmp_reply_read_timeout}" \
+        -u "${rfd}" chunk 2>/dev/null; then
+      read_rc=0
     else
       read_rc=$?
-      # >128 is a read timeout; retry until the exchange deadline. 1 is EOF.
-      (( read_rc > 128 )) && continue
-      break
     fi
+    chunk_bytes=${#chunk}
+    reply+="${chunk}"
+    pending+="${chunk}"
+
+    frames=""
+    while [[ "${pending}" == *$'\n'* ]]; do
+      line="${pending%%$'\n'*}"
+      pending="${pending#*$'\n'}"
+      frames+="${line}"$'\n'
+    done
+    if [[ "${frames}" == *"\"${response_id}\""* ]] \
+        && _qmp_response_for_id "${frames}" "${response_id}" >/dev/null; then
+      rc=0
+    fi
+    (( rc == 0 )) && break
+
+    # With an empty delimiter, a short successful read consumed a raw NUL.
+    # JSON forbids it; reject before Bash can silently normalize the frame.
+    (( read_rc == 0 && chunk_bytes < read_size )) && break
+
+    (( ${#reply} >= _qmp_reply_max_bytes )) && break
+    # >128 is a read timeout; retain partial input and retry. 1 is EOF.
+    (( read_rc == 0 || read_rc > 128 )) && continue
+    break
   done
 
   # QEMU keeps QMP connected; close and reap the client explicitly.
@@ -81,8 +120,8 @@ _qmp_exchange() {
 # Return 0 iff QEMU reports the VM running before the deadline; else 1.
 qmp_query_running() {
   local -r qmp_sock="${1}" deadline_seconds="${2}" unit="${3:-}"
-  local -r done_ere="${_qmp_running_match}|\"error\""
-  local deadline reply unit_state remaining exchange_timeout
+  local -r query_id="virtdev-query-running"
+  local deadline reply response unit_state remaining exchange_timeout
   deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
   while (( BASH_MONOSECONDS < deadline )); do
     # Stop polling after the owning unit leaves its launch states.
@@ -99,10 +138,16 @@ qmp_query_running() {
       # Connection failures are expected while the socket comes up.
       exchange_timeout=3
       (( remaining < exchange_timeout )) && exchange_timeout=${remaining}
-      reply="$(_qmp_exchange "${qmp_sock}" "${exchange_timeout}" "${done_ere}" \
-                 '{"execute":"query-status"}' || true)"
-      if [[ "${reply}" =~ ${_qmp_running_match} ]]; then
-        return 0
+      if reply="$(_qmp_exchange "${qmp_sock}" "${exchange_timeout}" \
+          "${query_id}" \
+          "{\"execute\":\"query-status\",\"id\":\"${query_id}\"}")"; then
+        response="$(_qmp_response_for_id "${reply}" "${query_id}" || true)"
+        if jq -e '
+            has("return") and ((.return | type) == "object") and
+            (.return.running == true)
+          ' <<< "${response}" >/dev/null 2>&1; then
+          return 0
+        fi
       fi
     fi
     (( BASH_MONOSECONDS < deadline )) || break
@@ -115,8 +160,11 @@ qmp_query_running() {
 # Require status=shutdown and running=false from one exchange.
 _qmp_reply_is_shutdown() {
   local -r reply="${1}"
-  [[ "${reply}" =~ ${_qmp_shutdown_match} \
-     && "${reply}" =~ ${_qmp_not_running_match} ]]
+  jq -e '
+    type == "object" and has("return") and
+    ((.return | type) == "object") and
+    (.return.status == "shutdown") and (.return.running == false)
+  ' <<< "${reply}" >/dev/null 2>&1
 }
 
 # _qmp_query_shutdown_once <qmp-sock> [timeout-seconds]
@@ -124,13 +172,12 @@ _qmp_reply_is_shutdown() {
 _qmp_query_shutdown_once() {
   local -r qmp_sock="${1}" timeout_seconds="${2:-3}" \
     query_id="virtdev-query-shutdown"
-  local -r id_match="\"id\"[[:space:]]*:[[:space:]]*\"${query_id}\""
-  local -r done_ere="${id_match}|\"error\""
-  local reply
-  reply="$(_qmp_exchange "${qmp_sock}" "${timeout_seconds}" "${done_ere}" \
-    "{\"execute\":\"query-status\",\"id\":\"${query_id}\"}" || true)"
-  [[ "${reply}" =~ ${id_match} ]] || return 1
-  _qmp_reply_is_shutdown "${reply}"
+  local reply response
+  reply="$(_qmp_exchange "${qmp_sock}" "${timeout_seconds}" "${query_id}" \
+    "{\"execute\":\"query-status\",\"id\":\"${query_id}\"}")" \
+    || return 1
+  response="$(_qmp_response_for_id "${reply}" "${query_id}")" || return 1
+  _qmp_reply_is_shutdown "${response}"
 }
 
 # qmp_wait_shutdown <qmp_sock> <deadline_seconds> <unit>
@@ -191,10 +238,10 @@ qmp_wait_shutdown() {
 # qmp_quit <qmp_sock> <timeout_seconds>
 qmp_quit() {
   local -r qmp_sock="${1}" timeout_seconds="${2}" quit_id="virtdev-quit"
-  local -r id_match="\"id\"[[:space:]]*:[[:space:]]*\"${quit_id}\""
-  local -r done_ere="${id_match}|\"error\""
-  local reply
-  reply="$(_qmp_exchange "${qmp_sock}" "${timeout_seconds}" "${done_ere}" \
-    "{\"execute\":\"quit\",\"id\":\"${quit_id}\"}" || true)"
-  [[ "${reply}" =~ ${id_match} && ! "${reply}" =~ "error" ]]
+  local reply response
+  reply="$(_qmp_exchange "${qmp_sock}" "${timeout_seconds}" "${quit_id}" \
+    "{\"execute\":\"quit\",\"id\":\"${quit_id}\"}")" || return 1
+  response="$(_qmp_response_for_id "${reply}" "${quit_id}")" || return 1
+  jq -e 'type == "object" and has("return") and ((.return | type) == "object")' \
+    <<< "${response}" >/dev/null 2>&1
 }
