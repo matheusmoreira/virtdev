@@ -14,7 +14,7 @@
 #       Callers must: rm -f "${<wrapper-varname>}" in their EXIT trap.
 #
 #   ssh_poll_until_ready <key-path> <port> <unit> <timeout>
-#       Polls SSH on 127.0.0.1:<port> every 2s until a connection
+#       Polls SSH on 127.0.0.1:<port> up to every 2s until a connection
 #       succeeds or <timeout> seconds elapse. Checks systemd unit
 #       state each iteration; returns immediately if the unit dies.
 #       Returns: 0 = SSH up, 1 = timeout, 2 = unit exited.
@@ -81,33 +81,31 @@ WRAPPER_EOF
 
 ssh_poll_until_ready() {
   local -r key="${1}" port="${2}" unit="${3}" timeout="${4}"
-  # Hard per-attempt wall-clock cap for the ssh probe below (coreutils timeout).
   local -r attempt_timeout=10
-  local deadline
-  deadline=$(( SECONDS + timeout ))
-  while (( SECONDS < deadline )); do
-    local unit_state
+  local deadline unit_state remaining probe_timeout connect_timeout sleep_timeout
+  deadline=$(( BASH_MONOSECONDS + timeout ))
+  while (( BASH_MONOSECONDS < deadline )); do
     unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
     case "${unit_state}" in
       active|activating) ;;
       *) return 2 ;;
     esac
-    # ConnectTimeout bounds only the TCP connect, not the banner exchange: a
-    # compromised guest can accept the connection and then dribble the SSH
-    # identification string a byte at a time, resetting the per-read banner
-    # timer indefinitely so this one ssh never returns — and the loop re-checks
-    # its own deadline only BETWEEN attempts. Cap the whole attempt with
-    # coreutils timeout, so a hostile guest cannot outlast virtdev-wait's
-    # documented exit-7 deadline or wedge virtdev-maintain's exclusive lock.
-    # NOT ServerAlive* — that is a post-auth keepalive, the wrong layer for a
-    # pre-auth banner stall.
-    if timeout "${attempt_timeout}" ssh \
+
+    remaining=$(( deadline - BASH_MONOSECONDS ))
+    (( remaining > 0 )) || break
+    probe_timeout=${attempt_timeout}
+    (( remaining < probe_timeout )) && probe_timeout=${remaining}
+    connect_timeout=3
+    (( remaining < connect_timeout )) && connect_timeout=${remaining}
+    # ConnectTimeout covers connection setup; coreutils timeout also bounds a
+    # peer that stalls during the pre-authentication banner exchange.
+    if timeout "${probe_timeout}" ssh \
         -F /dev/null \
         -i "${key}" \
         -p "${port}" \
         -o IdentitiesOnly=yes \
         -o BatchMode=yes \
-        -o ConnectTimeout=3 \
+        -o ConnectTimeout="${connect_timeout}" \
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR \
@@ -116,7 +114,12 @@ ssh_poll_until_ready() {
     then
       return 0
     fi
-    sleep 2
+
+    remaining=$(( deadline - BASH_MONOSECONDS ))
+    (( remaining > 0 )) || break
+    sleep_timeout=2
+    (( remaining < sleep_timeout )) && sleep_timeout=${remaining}
+    sleep "${sleep_timeout}"
   done
   return 1
 }

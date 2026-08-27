@@ -43,7 +43,7 @@ _qmp_exchange() {
   local request
   request="$(printf '%s\n' '{"execute":"qmp_capabilities"}' "$@")"
 
-  local -r deadline=$(( SECONDS + timeout_seconds ))
+  local -r deadline=$(( BASH_MONOSECONDS + timeout_seconds ))
   # `exec` makes QMPCO_PID the socat process, so cleanup reaps the right PID.
   coproc QMPCO { exec socat - UNIX-CONNECT:"${sock}" 2>/dev/null; }
   # Bash clears QMPCO metadata when the coprocess exits; save it immediately.
@@ -53,8 +53,8 @@ _qmp_exchange() {
   { printf '%s\n' "${request}" >&"${wfd}"; } 2>/dev/null || true
 
   local reply="" line rc=1 remaining read_rc
-  while (( SECONDS < deadline )); do
-    remaining=$(( deadline - SECONDS ))
+  while (( BASH_MONOSECONDS < deadline )); do
+    remaining=$(( deadline - BASH_MONOSECONDS ))
     (( remaining > _qmp_reply_read_timeout )) && remaining=${_qmp_reply_read_timeout}
     if IFS= read -r -t "${remaining}" -u "${rfd}" line 2>/dev/null; then
       reply+="${line}"$'\n'
@@ -81,13 +81,10 @@ _qmp_exchange() {
 # Return 0 iff QEMU reports the VM running before the deadline; else 1.
 qmp_query_running() {
   local -r qmp_sock="${1}" deadline_seconds="${2}" unit="${3:-}"
-  # Bound one probe independently of the outer poll.
-  local -r exchange_timeout=3
   local -r done_ere="${_qmp_running_match}|\"error\""
-  local deadline
-  deadline=$(( SECONDS + deadline_seconds ))
-  local reply unit_state
-  while (( SECONDS < deadline )); do
+  local deadline reply unit_state remaining exchange_timeout
+  deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
+  while (( BASH_MONOSECONDS < deadline )); do
     # Stop polling after the owning unit leaves its launch states.
     if [[ -n "${unit}" ]]; then
       unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
@@ -96,14 +93,19 @@ qmp_query_running() {
         *) return 1 ;;
       esac
     fi
+    remaining=$(( deadline - BASH_MONOSECONDS ))
+    (( remaining > 0 )) || break
     if [[ -S "${qmp_sock}" ]]; then
       # Connection failures are expected while the socket comes up.
+      exchange_timeout=3
+      (( remaining < exchange_timeout )) && exchange_timeout=${remaining}
       reply="$(_qmp_exchange "${qmp_sock}" "${exchange_timeout}" "${done_ere}" \
                  '{"execute":"query-status"}' || true)"
       if [[ "${reply}" =~ ${_qmp_running_match} ]]; then
         return 0
       fi
     fi
+    (( BASH_MONOSECONDS < deadline )) || break
     sleep 0.2
   done
   return 1
@@ -136,11 +138,15 @@ qmp_wait_shutdown() {
   local -r qmp_sock="${1}" deadline_seconds="${2}" unit="${3}"
   local deadline=0 unit_state exchange_timeout remaining
   if (( deadline_seconds > 0 )); then
-    deadline=$(( SECONDS + deadline_seconds ))
+    deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
   fi
 
   VIRTDEV_QMP_WAIT_STATE=unknown
   while true; do
+    if (( deadline_seconds > 0 && BASH_MONOSECONDS >= deadline )); then
+      VIRTDEV_QMP_WAIT_STATE=timeout
+      return 1
+    fi
     unit_state="$(systemctl --user show "${unit}" \
       --property=ActiveState --value 2>/dev/null || true)"
     case "${unit_state}" in
@@ -163,18 +169,18 @@ qmp_wait_shutdown() {
 
     exchange_timeout=3
     if (( deadline_seconds > 0 )); then
-      if (( SECONDS >= deadline )); then
+      if (( BASH_MONOSECONDS >= deadline )); then
         VIRTDEV_QMP_WAIT_STATE=timeout
         return 1
       fi
-      remaining=$(( deadline - SECONDS ))
+      remaining=$(( deadline - BASH_MONOSECONDS ))
       (( remaining < exchange_timeout )) && exchange_timeout=${remaining}
     fi
     if _qmp_query_shutdown_once "${qmp_sock}" "${exchange_timeout}"; then
       VIRTDEV_QMP_WAIT_STATE=shutdown
       return 0
     fi
-    if (( deadline_seconds > 0 && SECONDS >= deadline )); then
+    if (( deadline_seconds > 0 && BASH_MONOSECONDS >= deadline )); then
       VIRTDEV_QMP_WAIT_STATE=timeout
       return 1
     fi
