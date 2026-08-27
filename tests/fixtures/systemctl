@@ -2,13 +2,35 @@
 
 set -euo pipefail
 
+systemctl_wants_active_state=0
+systemctl_wants_exec_main_status=0
+systemctl_wants_id=0
+systemctl_next_property=0
+for systemctl_arg in "$@"; do
+  systemctl_property=''
+  if (( systemctl_next_property )); then
+    systemctl_property="${systemctl_arg}"
+    systemctl_next_property=0
+  else
+    case "${systemctl_arg}" in
+      -p|--property) systemctl_next_property=1 ;;
+      --property=*)  systemctl_property="${systemctl_arg#*=}" ;;
+    esac
+  fi
+  case "${systemctl_property}" in
+    ActiveState)    systemctl_wants_active_state=1 ;;
+    ExecMainStatus) systemctl_wants_exec_main_status=1 ;;
+    Id)             systemctl_wants_id=1 ;;
+  esac
+done
+
 state="${SYSTEMCTL_ACTIVE_STATE:-inactive}"
 if [[ -n "${SYSTEMCTL_STATE_FILE:-}" && -f "${SYSTEMCTL_STATE_FILE}" ]]; then
   state="$(< "${SYSTEMCTL_STATE_FILE}")"
 fi
-if [[ " $* " == *ActiveState* \
-      && -n "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE:-}" \
-      && -s "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}" ]]; then
+if (( systemctl_wants_active_state )) \
+    && [[ -n "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE:-}" \
+          && -s "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}" ]]; then
   IFS= read -r state < "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}"
   tail -n +2 "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}" \
     > "${SYSTEMCTL_ACTIVE_SEQUENCE_FILE}.tmp"
@@ -40,8 +62,27 @@ if [[ " $* " == *" list-units "* ]]; then
 fi
 
 if [[ " $* " == *" show "* ]]; then
-  if [[ " $* " == *ExecMainStatus* ]]; then
+  if (( systemctl_wants_exec_main_status )); then
     printf '%s\n' "${SYSTEMCTL_EXEC_MAIN_STATUS:-0}"
+  elif (( systemctl_wants_id && systemctl_wants_active_state )); then
+    for systemctl_arg in "$@"; do
+      [[ "${systemctl_arg}" == virtdev-* ]] || continue
+      systemctl_unit="${systemctl_arg}"
+      [[ "${systemctl_unit}" == *.service ]] \
+        || systemctl_unit+='.service'
+      systemctl_unit_state="${state}"
+      if [[ -n "${SYSTEMCTL_STATE_MAP_FILE:-}" \
+            && -f "${SYSTEMCTL_STATE_MAP_FILE}" ]]; then
+        while read -r systemctl_map_unit systemctl_map_state; do
+          if [[ "${systemctl_map_unit}" == "${systemctl_unit}" ]]; then
+            systemctl_unit_state="${systemctl_map_state}"
+            break
+          fi
+        done < "${SYSTEMCTL_STATE_MAP_FILE}"
+      fi
+      printf 'Id=%s\nActiveState=%s\n\n' \
+        "${systemctl_unit}" "${systemctl_unit_state}"
+    done
   else
     printf '%s\n' "${state}"
   fi

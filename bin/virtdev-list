@@ -8,12 +8,12 @@
 #
 #   PROJECT   Name of the project virtual machine
 #   PORT      Host-side SSH forwarding port
-#   STATUS    running | stopped
+#   STATUS    running | stopped | starting | stopping | unknown
 #   ZONE      Network zone of a running virtual machine, derived from its
 #             live systemd slice AND the host egress lockdown being active:
 #             a built-in (none | wan | lan | full) or a custom zone name;
 #             UNFILTERED (the lockdown is down, so the machine is not actually
-#             filtered); - (stopped).
+#             filtered); - (not confirmed running).
 #   GENERATION  Base generation the project was created against,
 #               or 'detached' for standalone projects
 #
@@ -68,8 +68,8 @@ done
 printf "%-${max_name}s %-5s %-8s %-10s %s\n" 'PROJECT' 'PORT' 'STATUS' 'ZONE' 'GENERATION'
 printf "%-${max_name}s %-5s %-8s %-10s %s\n" '-------' '----' '------' '----' '----------'
 
-declare -A running_state=()
-project_load_running_state running_state "${projects[@]}"
+declare -A project_states=()
+project_load_state project_states "${projects[@]}"
 
 # The host egress lockdown is global state, not per-project: query it once
 # here rather than forking systemctl per running row. A running machine is
@@ -99,17 +99,18 @@ for project in "${projects[@]}"; do
   project_directory="${VIRTDEV_HOME}/projects/${project}"
   generation_file="${project_directory}/generation"
 
-  if [[ "${running_state[${project}]}" == "1" ]]; then
-    status='running'
-    status_color='fg=green'
-    port="$(port_read_lenient "${project}")"
-    zone="$(zone_display "${project}" 1)"
-  else
-    status='stopped'
-    status_color='fg=red'
-    port='-'
-    zone="$(zone_display "${project}" 0)"
-  fi
+  status="${project_states[${project}]}"
+  port='-'
+  zone="$(zone_display "${project}" 0)"
+  case "${status}" in
+    running)
+      status_color='fg=green'
+      port="$(port_read_lenient "${project}")"
+      zone="$(zone_display "${project}" 1)"
+      ;;
+    stopped) status_color='fg=red' ;;
+    *)       status_color='fg=yellow' ;;
+  esac
 
   if [[ -s "${generation_file}" ]]; then
     generation="$(generation_read_project_lenient "${generation_file}")"

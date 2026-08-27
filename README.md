@@ -319,13 +319,13 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-console <project>` | Serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is available |
 | `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
-| `virtdev-list` | List projects with port, status, zone, and generation (colored) |
+| `virtdev-list` | List projects with port, runtime state, zone, and generation (colored) |
 
 ### Inspection
 
 | Command | Description |
 |---------|-------------|
-| `virtdev-status <project>` | Print `running` or `stopped` |
+| `virtdev-status <project>` | Print `running`, `stopped`, `starting`, `stopping`, or `unknown` |
 | `virtdev-port <project>` | Print SSH port of a running virtual machine |
 | `virtdev-pid <project>` | Print QEMU process ID |
 | `virtdev-path <project> [resource]` | Print path to project resource |

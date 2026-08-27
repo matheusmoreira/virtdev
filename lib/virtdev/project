@@ -31,12 +31,13 @@
 #       distinct from a transitional state; lets a caller (virtdev-stop)
 #       fast-fail instead of waiting on a state it can never read.
 #
-#   project_load_running_state <result-array> <project>...
-#       Batch-queries systemctl for the running state of the
-#       given projects in a single call. Populates the caller's
-#       associative array (passed by nameref): keys are project
-#       names, values are 1 (running) or 0 (stopped). DISPLAY ONLY
-#       (virtdev-list) — see the note at the definition.
+#   project_state <project>
+#       Prints running, stopped, starting, stopping, or unknown from one
+#       ActiveState observation.
+#
+#   project_load_state <result-array> <project>...
+#       Populates a caller-owned associative array with project_state values.
+#       Returns 2 for a cyclic or unsupported result nameref.
 #
 #   project_is_outdated <project>
 #       Returns 0 if the project's generation does not match the
@@ -106,86 +107,121 @@ project_list() {
   done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' | sort -z)
 }
 
-# _project_active_state <project>
-# The single systemctl call behind the running/stopped predicates below. Echoes
-# the unit's raw ActiveState (active / activating / deactivating / reloading /
-# inactive / failed), or the EMPTY string when the user manager is unreachable
-# (no session bus: a cron/at job, `ssh host virtdev-…` without a login session, an
-# unset or stale XDG_RUNTIME_DIR). `systemctl show` prints the state and exits 0
-# for a known OR unknown unit, but prints NOTHING and exits non-zero when it cannot
-# reach the bus — so an empty result means "could not ask", distinct from a real
-# "inactive". A known-ABSENT unit (never started, or reset-failed away) reads
-# 'inactive' (rc 0) too, so project_is_stopped treats a never-started project as
-# stopped — the safe default for destroy/detach/move/nuke. That distinction is what
-# lets the predicates fail closed. Verified:
-# `XDG_RUNTIME_DIR=/nonexistent systemctl --user show … -p ActiveState --value`
-# emits nothing and returns non-zero.
+# Empty output means the user manager was unreachable, not inactive.
 _project_active_state() {
   systemctl --user show "virtdev-${1}" -p ActiveState --value 2>/dev/null || true
 }
 
-# project_is_running / project_is_stopped are deliberately NOT complementary. For a
-# transitional state (activating / deactivating / reloading) OR an unreachable
-# manager (empty), BOTH return non-zero: that indeterminate middle is where each
-# caller picks its safe default. Query commands demand provably-running (fail SAFE);
-# destructive commands demand provably-stopped (fail CLOSED). The old bare
-# `is-active` collapsed the middle into "not running", which fails OPEN under a
-# destructive caller — the anchor bug this pair fixes. (`== active` also narrows away
-# is-active's rc-0 "activating" and "reloading": a query caller refusing a mid-boot
-# machine is correct — the port file isn't published until QMP liveness, so those
-# callers already refuse via port_require; a QEMU unit never reloads.)
-project_is_running() {
-  [[ "$(_project_active_state "${1}")" == active ]]
-}
-
-project_is_stopped() {
-  case "$(_project_active_state "${1}")" in
-    inactive|failed) return 0 ;;
-    *)               return 1 ;;
+_project_state_from_active() {
+  case "${1}" in
+    active)          printf 'running\n' ;;
+    inactive|failed) printf 'stopped\n' ;;
+    activating)      printf 'starting\n' ;;
+    deactivating)    printf 'stopping\n' ;;
+    *)               printf 'unknown\n' ;;
   esac
 }
 
-# project_is_unreachable <project> — 0 iff the user manager could not be reached to
-# determine the unit's state (the classifier returned empty). The "indeterminate
-# BECAUSE we could not ask" case, distinct from the transitional indeterminate
-# (activating/deactivating, where the manager DID answer). Callers that must act
-# differently on an unreachable manager than on a mid-transition machine use this —
-# virtdev-stop fast-fails on it rather than entering a wait loop that could never
-# observe a terminal state.
+project_state() {
+  _project_state_from_active "$(_project_active_state "${1}")"
+}
+
+# These predicates are intentionally not complements: transitional or unknown
+# state satisfies neither, so destructive callers remain fail-closed.
+project_is_running() {
+  [[ "$(project_state "${1}")" == running ]]
+}
+
+project_is_stopped() {
+  [[ "$(project_state "${1}")" == stopped ]]
+}
+
 project_is_unreachable() {
   [[ -z "$(_project_active_state "${1}")" ]]
 }
 
-# Batch running-state for DISPLAY ONLY (virtdev-list's RUNNING column): one
-# systemctl call for N projects instead of N calls. Maps is-active semantics
-# (active → 1, else → 0); this agrees with project_is_running only because BOTH key
-# off the literal state word "active" (here from is-active, there from show -p
-# ActiveState) — a future switch of this batch to an rc-based is-active loop would
-# silently reintroduce a status-vs-list skew. It deliberately does NOT model the
-# indeterminate middle that project_is_stopped guards — an unreachable
-# manager here reads every project as stopped, which merely mislabels the table
-# (cosmetic), never a data hazard: every destructive path is independently gated
-# by the fail-closed project_is_stopped. Do NOT wire this into a mutate decision.
-project_load_running_state() {
-  local -n _project_result=$1
+_project_load_state_impl() {
+  local -n _project_state_result=$1
   shift
   (( $# )) || return 0
-  local -a names=("$@")
-  local -a units=()
-  local project
-  for project in "${names[@]}"; do
-    units+=("virtdev-${project}")
+
+  local -A _project_state_unit_projects=()
+  local -a _project_state_units=()
+  local _project_state_project
+  for _project_state_project in "$@"; do
+    _project_state_result["${_project_state_project}"]=unknown
+    _project_state_unit_projects["virtdev-${_project_state_project}.service"]="${_project_state_project}"
+    _project_state_units+=("virtdev-${_project_state_project}.service")
   done
-  local -a statuses=()
-  mapfile -t statuses < <(systemctl --user is-active "${units[@]}" 2>/dev/null || true)
-  local i
-  for (( i = 0; i < ${#names[@]}; i++ )); do
-    if [[ "${statuses[i]:-}" == "active" ]]; then
-      _project_result["${names[i]}"]=1
-    else
-      _project_result["${names[i]}"]=0
+
+  local _project_state_output
+  if ! _project_state_output="$(systemctl --user show "${_project_state_units[@]}" \
+      --property=Id --property=ActiveState 2>/dev/null)"; then
+    return 0
+  fi
+
+  local _project_state_id='' _project_state_active='' _project_state_line
+  while IFS= read -r _project_state_line; do
+    if [[ -z "${_project_state_line}" ]]; then
+      if [[ -v _project_state_unit_projects["${_project_state_id}"] ]]; then
+        _project_state_project="${_project_state_unit_projects[${_project_state_id}]}"
+        _project_state_result["${_project_state_project}"]="$(
+          _project_state_from_active "${_project_state_active}"
+        )"
+      fi
+      _project_state_id=''
+      _project_state_active=''
+      continue
     fi
+    case "${_project_state_line}" in
+      Id=*)          _project_state_id="${_project_state_line#Id=}" ;;
+      ActiveState=*) _project_state_active="${_project_state_line#ActiveState=}" ;;
+    esac
+  done <<< "${_project_state_output}"
+  if [[ -v _project_state_unit_projects["${_project_state_id}"] ]]; then
+    _project_state_project="${_project_state_unit_projects[${_project_state_id}]}"
+    _project_state_result["${_project_state_project}"]="$(
+      _project_state_from_active "${_project_state_active}"
+    )"
+  fi
+}
+
+_project_load_state_via_proxy() {
+  local -n _virtdev_load_proxy_result=$1
+  shift
+  local -A _virtdev_load_proxy_values=()
+  _project_load_state_impl _virtdev_load_proxy_values "$@"
+  local _virtdev_load_proxy_project _virtdev_load_proxy_value
+  for _virtdev_load_proxy_project in "${!_virtdev_load_proxy_values[@]}"; do
+    _virtdev_load_proxy_value="${_virtdev_load_proxy_values[${_virtdev_load_proxy_project}]}"
+    _virtdev_load_proxy_result["${_virtdev_load_proxy_project}"]="${_virtdev_load_proxy_value}"
   done
+}
+
+_project_load_state_dispatch() {
+  while [[ -R "${2}" ]]; do
+    if (( ${1} >= 32 )); then
+      printf >&2 'project_load_state: result nameref chain is too deep\n'
+      return 2
+    fi
+    if [[ "$(declare -p "${2}" 2>/dev/null)" \
+          =~ ^declare\ -[a-zA-Z]*n[a-zA-Z]*\ [a-zA-Z_][a-zA-Z0-9_]*=\"([a-zA-Z_][a-zA-Z0-9_]*)\"$ ]]; then
+      set -- "$(( ${1} + 1 ))" "${BASH_REMATCH[1]}" "${@:3}"
+      continue
+    fi
+    printf >&2 'project_load_state: result nameref must target an array name\n'
+    return 2
+  done
+
+  case "${2}" in
+    _project_state_*) _project_load_state_via_proxy "${@:2}" ;;
+    *)                _project_load_state_impl "${@:2}" ;;
+  esac
+}
+
+project_load_state() {
+  # Resolve forwarding namerefs before choosing a disjoint helper namespace.
+  _project_load_state_dispatch 0 "$@"
 }
 
 project_is_outdated() {
