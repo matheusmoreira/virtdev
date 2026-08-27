@@ -27,6 +27,9 @@
 #   8   SSH public key not found
 #   9   socat not found
 #  10   installation failed
+#  11   explicit packages file missing or unreadable
+#  12   explicit install script missing or unreadable
+#  13   explicit inventory script missing or unreadable
 #
 # Configuration via environment variables:
 #
@@ -117,6 +120,19 @@ if [[ $# -eq 1 ]]; then
   VIRTDEV_ISO="${1}"
 fi
 
+if [[ -n "${VIRTDEV_PACKAGES:-}" && \
+      ( ! -f "${VIRTDEV_PACKAGES}" || ! -r "${VIRTDEV_PACKAGES}" ) ]]; then
+  error 11 <<<"Packages file not found or not readable: ${VIRTDEV_PACKAGES}"
+fi
+if [[ -n "${VIRTDEV_SCRIPT:-}" && \
+      ( ! -f "${VIRTDEV_SCRIPT}" || ! -r "${VIRTDEV_SCRIPT}" ) ]]; then
+  error 12 <<<"Install script not found or not readable: ${VIRTDEV_SCRIPT}"
+fi
+if [[ -n "${VIRTDEV_INVENTORY:-}" && \
+      ( ! -f "${VIRTDEV_INVENTORY}" || ! -r "${VIRTDEV_INVENTORY}" ) ]]; then
+  error 13 <<<"Inventory script not found or not readable: ${VIRTDEV_INVENTORY}"
+fi
+
 lock_acquire
 
 if ! command -v socat &>/dev/null; then
@@ -196,11 +212,11 @@ qemu_extra_args=()
 # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
 [[ -d /var/cache/pacman/pkg ]] && qemu_extra_args+=(
   -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=mapped-xattr,readonly=on)
-[[ -n "${VIRTDEV_PACKAGES:-}" && -f "${VIRTDEV_PACKAGES}" ]] && qemu_extra_args+=(
+[[ -n "${VIRTDEV_PACKAGES:-}" ]] && qemu_extra_args+=(
   -fw_cfg "name=opt/virtdev/packages,file=${VIRTDEV_PACKAGES}")
-[[ -n "${VIRTDEV_SCRIPT:-}" && -f "${VIRTDEV_SCRIPT}" ]] && qemu_extra_args+=(
+[[ -n "${VIRTDEV_SCRIPT:-}" ]] && qemu_extra_args+=(
   -fw_cfg "name=opt/virtdev/script,file=${VIRTDEV_SCRIPT}")
-[[ -n "${VIRTDEV_INVENTORY:-}" && -f "${VIRTDEV_INVENTORY}" ]] && qemu_extra_args+=(
+[[ -n "${VIRTDEV_INVENTORY:-}" ]] && qemu_extra_args+=(
   -fw_cfg "name=opt/virtdev/inventory,file=${VIRTDEV_INVENTORY}")
 
 install_display_progress() {
