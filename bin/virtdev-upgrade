@@ -41,6 +41,7 @@
 #   10  no projects found
 #   11  no projects to upgrade after filtering
 #   12  a coupled project would be excluded from the reseal/rebuild set
+#   13  an excluded detached project is not provably stopped
 #   20  backup phase failure
 #   30  maintain phase failure
 #   40  one or more project rebuilds failed
@@ -310,6 +311,24 @@ fi
 
 if [[ ${#included[@]} -eq 0 ]]; then
   error 11 <<<"No projects to upgrade after filtering."
+fi
+
+# virtdev-maintain requires every project unit stopped. Prove excluded detached
+# projects terminal before Phase 1 stops any included VM; otherwise a running
+# excluded project would make Phase 2 fail only after avoidable fleet downtime.
+declare -a excluded_not_stopped=()
+for p in "${excluded[@]}"; do
+  if ! project_is_stopped "${p}"; then
+    excluded_not_stopped+=("${p}")
+  fi
+done
+if [[ ${#excluded_not_stopped[@]} -gt 0 ]]; then
+  {
+    printf 'Excluded detached projects must be stopped before upgrade:\n\n'
+    printf '    %s\n' "${excluded_not_stopped[@]}"
+    printf '\nStop them and retry. No included VM was stopped and the base is unchanged.\n'
+  } >&2
+  error 13 <<<"Aborting."
 fi
 
 # Discover provision scripts for the plan display.
