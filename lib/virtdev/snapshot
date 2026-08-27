@@ -51,6 +51,11 @@
 #   snapshot_tree_count_entries <tree>
 #       Print the number of entries below a snapshot tree.
 #
+#   snapshot_id_from_path <project> <absolute-path>
+#       Convert virtdev-backup's absolute successful output path to its stable
+#       YYYY-MM-DD/HH-MM-SS identifier. Returns 1 if the path is outside that
+#       project's backup root or is not a canonical snapshot identifier.
+#
 # Public constants (readonly):
 #
 #   snapshot_date_regex      ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
@@ -167,4 +172,13 @@ snapshot_tree_has_entries() {
 snapshot_tree_count_entries() {
   local -r tree="${1}"
   find "${tree}" -mindepth 1 -printf 'x' 2>/dev/null | wc -c
+}
+
+snapshot_id_from_path() {
+  local -r project="${1}" path="${2}"
+  local -r prefix="${VIRTDEV_HOME}/backups/${project}/"
+  [[ "${path}" == "${prefix}"* ]] || return 1
+  local -r snapshot="${path#"${prefix}"}"
+  [[ "${snapshot}" =~ ${snapshot_format_regex} ]] || return 1
+  printf '%s' "${snapshot}"
 }

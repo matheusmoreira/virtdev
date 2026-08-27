@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
-# virtdev-recreate [--provision <path>] [--no-backup] [--no-restore]
-#                  [--no-provision] [--yes] [--verbose] <project>
+# virtdev-recreate [--provision <path>] [--snapshot <id>]
+#                  [--no-backup] [--no-restore] [--no-provision]
+#                  [--yes] [--verbose] <project>
 #
 # Takes a project virtual machine through the destroy/rebuild cycle
 # without losing user-curated state. Composes the existing virtdev
@@ -18,7 +19,7 @@
 #     5. virtdev-start         boot the fresh VM
 #     6. virtdev-wait          wait for SSH to come up
 #     7. provision             optional: bash -s the provision script
-#     8. virtdev-restore       overlay the snapshot from step 1
+#     8. virtdev-restore       overlay the exact snapshot produced by step 1
 #
 # Provision discovery (resolves a script path or skips):
 #
@@ -69,6 +70,7 @@ import error validate arguments snapshot manifest confirm terminal project firew
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=(
   [provision]=value
+  [snapshot]=value
   [zone]=value
   [unfiltered]=bool
   [no-backup]=bool
@@ -80,7 +82,7 @@ declare -A spec=(
 # shellcheck disable=SC2034
 declare -A spec_short=([p]=provision [y]=yes [v]=verbose)
 # shellcheck disable=SC2034
-declare -A spec_placeholders=([provision]=path [zone]=zone)
+declare -A spec_placeholders=([provision]=path [snapshot]=snapshot [zone]=zone)
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project)
 declare -A flags=()
@@ -95,6 +97,17 @@ fi
 project="${1}"
 
 validate_project_name "${project}"
+
+pinned_snapshot="${flags[snapshot]:-}"
+if [[ -n "${pinned_snapshot}" ]]; then
+  snapshot_validate_format "${pinned_snapshot}"
+  if (( ! flags[no-backup] )); then
+    error 64 <<<"--snapshot requires --no-backup (a new backup otherwise supplies the exact snapshot)"
+  fi
+  if (( flags[no-restore] )); then
+    error 64 <<<"--snapshot and --no-restore are mutually exclusive"
+  fi
+fi
 
 # Resolve the zone to relaunch into (Phase 2 network isolation). Precedence:
 #   1. an explicit --zone always wins;
@@ -121,6 +134,10 @@ project_directory="${VIRTDEV_HOME}/projects/${project}"
 backups_project_dir="$(snapshot_directory "${project}")"
 
 project_require "${project}"
+
+if [[ -n "${pinned_snapshot}" && ! -d "${backups_project_dir}/${pinned_snapshot}" ]]; then
+  error 9 <<<"Pinned restore snapshot not found: ${backups_project_dir}/${pinned_snapshot}"
+fi
 
 # Capture VM state once. Used for both the precondition check (which
 # requires it active unless --no-backup) and the do_stop decision
@@ -266,7 +283,9 @@ total_steps=$(( 4 + do_backup + do_stop + do_provision + do_restore ))
   fi
   if (( do_restore )); then
     if (( do_backup )); then
-      printf '  %d. restore       (latest snapshot from step 1)\n' "$(( ++step ))"
+      printf '  %d. restore       (exact snapshot produced by step 1)\n' "$(( ++step ))"
+    elif [[ -n "${pinned_snapshot}" ]]; then
+      printf '  %d. restore       (%s)\n' "$(( ++step ))" "${pinned_snapshot}"
     else
       printf '  %d. restore       (latest existing snapshot)\n' "$(( ++step ))"
     fi
@@ -325,14 +344,25 @@ provision() {
 restore() {
   local opts=()
   (( flags[verbose] )) && opts+=(--verbose)
-  "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" "${project}"
+  local snapshot="${backup_snapshot:-${pinned_snapshot}}"
+  if [[ -n "${snapshot}" ]]; then
+    "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" "${project}" "${snapshot}"
+  else
+    "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" "${project}"
+  fi
 }
 
 # Helper to point the user at the most recent snapshot in failure
 # messages. Returns the snapshot's <date>/<time> path component, or
 # the empty string if none exists.
 latest_snapshot() {
-  snapshot_latest "${project}"
+  if [[ -n "${backup_snapshot:-}" ]]; then
+    printf '%s' "${backup_snapshot}"
+  elif [[ -n "${pinned_snapshot}" ]]; then
+    printf '%s' "${pinned_snapshot}"
+  else
+    snapshot_latest "${project}"
+  fi
 }
 
 # Resume-command builders for the failure hints. They reproduce the zone/unfiltered
@@ -361,11 +391,13 @@ recreate_resume() {            # $1 (optional): extra flags, e.g. --no-backup
 # run by hand to resume.
 step=0
 provision_failed=0
+backup_snapshot=""
 
 if (( do_backup )); then
   (( ++step ))
   printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] backup" reset)" >&2
-  if ! backup; then
+  backup_path=""
+  if ! backup_path="$(backup)"; then
     error 20 <<MESSAGE
 backup failed (virtdev-backup exited non-zero).
 Project ${project} is unchanged. Investigate the rsync output above
@@ -373,6 +405,13 @@ and rerun:
     $(recreate_resume)
 MESSAGE
   fi
+  if ! backup_snapshot="$(snapshot_id_from_path "${project}" "${backup_path}")"; then
+    error 20 <<MESSAGE
+virtdev-backup returned an invalid snapshot path: '${backup_path}'
+The project is unchanged and the backup output was not trusted for restore.
+MESSAGE
+  fi
+  printf 'snapshot: %s\n' "${backup_snapshot}" >&2
 fi
 
 if (( do_stop )); then

@@ -56,7 +56,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project confirm terminal firewall
+import error validate arguments manifest project snapshot confirm terminal firewall
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -359,6 +359,7 @@ fi
 
 total_phases=4
 declare -a stopped_projects=()
+declare -A backup_snapshots=()
 
 # Capture each running machine's zone BEFORE Phase 1 stops it (the Slice
 # property reads empty once stopped). Phase 3 passes each captured zone back to
@@ -390,6 +391,9 @@ abort_backup() {
 upgrade_resume() {
   local -r p="${1}"
   local h="virtdev-recreate --no-backup"
+  if [[ -n "${backup_snapshots[${p}]:-}" ]]; then
+    h+=" --snapshot ${backup_snapshots[${p}]}"
+  fi
   if [[ -n "${zone_arg}" ]]; then
     h+=" --zone ${zone_arg}"
   elif [[ -n "${prior_slices[${p}]:-}" ]]; then
@@ -424,13 +428,23 @@ for p in "${included[@]}"; do
 
   backup_opts=()
   (( flags[verbose] )) && backup_opts+=(--verbose)
-  if ! "${virtdev_bin_directory}/virtdev-backup" "${backup_opts[@]}" "${p}"; then
+  backup_path=""
+  if ! backup_path="$("${virtdev_bin_directory}/virtdev-backup" \
+      "${backup_opts[@]}" "${p}")"; then
     if (( ! was_running )); then
       "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
       stopped_projects+=("${p}")
     fi
     abort_backup "Backup failed for ${p}."
   fi
+  if ! backup_snapshots["${p}"]="$(snapshot_id_from_path "${p}" "${backup_path}")"; then
+    if (( ! was_running )); then
+      "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
+      stopped_projects+=("${p}")
+    fi
+    abort_backup "Backup returned an invalid snapshot path for ${p}: ${backup_path}"
+  fi
+  printf '    Snapshot: %s\n' "${backup_snapshots[${p}]}" >&2
 
   printf '    Stopping...\n' >&2
   if ! "${virtdev_bin_directory}/virtdev-stop" "${p}"; then
@@ -472,7 +486,7 @@ declare -A fail_codes=()
 
 for p in "${included[@]}"; do
   printf '\n  Recreating %s...\n' "${p}" >&2
-  recreate_opts=(--no-backup --yes)
+  recreate_opts=(--no-backup --yes --snapshot "${backup_snapshots[${p}]}")
   (( flags[verbose] )) && recreate_opts+=(--verbose)
   # Restore each machine's prior zone across the rebuild (it is already stopped,
   # so recreate cannot recapture it). Precedence mirrors recreate/start: an

@@ -216,8 +216,9 @@ If there is a provision script at
 `~/.config/virtdev/projects/myproject/provision`, recreate discovers and
 runs it automatically between start and restore.
 
-Flags: `--no-backup`, `--no-restore`, `--no-provision`, `--provision <path>`,
-`--yes`/`-y`, `--verbose`/`-v`.
+Flags: `--no-backup`, `--snapshot <YYYY-MM-DD/HH-MM-SS>` (pin an existing
+snapshot when resuming with `--no-backup`), `--no-restore`, `--no-provision`,
+`--provision <path>`, `--yes`/`-y`, `--verbose`/`-v`.
 
 ### Base system maintenance
 

@@ -30,4 +30,14 @@ if [[ "$(snapshot_tree_count_entries "${tree}")" != 1 ]]; then
   exit 1
 fi
 
+snapshot_path="${VIRTDEV_HOME}/backups/probe/2026-08-26/12-00-00"
+if [[ "$(snapshot_id_from_path probe "${snapshot_path}")" != '2026-08-26/12-00-00' ]]; then
+  printf 'backup output path was not converted to its stable snapshot ID\n' >&2
+  exit 1
+fi
+if snapshot_id_from_path other "${snapshot_path}" >/dev/null; then
+  printf 'cross-project backup path was accepted as a snapshot ID\n' >&2
+  exit 1
+fi
+
 printf 'ok - snapshot selection skips empty days and retains directories\n'
