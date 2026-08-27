@@ -2,6 +2,47 @@
 
 set -euo pipefail
 
+state="${SYSTEMCTL_ACTIVE_STATE:-inactive}"
+if [[ -n "${SYSTEMCTL_STATE_FILE:-}" && -f "${SYSTEMCTL_STATE_FILE}" ]]; then
+  state="$(< "${SYSTEMCTL_STATE_FILE}")"
+fi
+
+if [[ " $* " == *" stop "* ]]; then
+  [[ -n "${SYSTEMCTL_STOP_FILE:-}" ]] && : > "${SYSTEMCTL_STOP_FILE}"
+  if [[ "${SYSTEMCTL_UNREACHABLE:-0}" == 1 \
+        || ( -n "${SYSTEMCTL_UNREACHABLE_FILE:-}" \
+             && -e "${SYSTEMCTL_UNREACHABLE_FILE}" ) ]]; then
+    exit 1
+  fi
+  if [[ -n "${SYSTEMCTL_STATE_FILE:-}" ]]; then
+    printf 'inactive\n' > "${SYSTEMCTL_STATE_FILE}"
+  fi
+  exit 0
+fi
+
+if [[ "${SYSTEMCTL_UNREACHABLE:-0}" == 1 \
+      || ( -n "${SYSTEMCTL_UNREACHABLE_FILE:-}" \
+           && -e "${SYSTEMCTL_UNREACHABLE_FILE}" ) ]]; then
+  exit 1
+fi
+
+if [[ " $* " == *" list-units "* ]]; then
+  exit "${SYSTEMCTL_LIST_STATUS:-0}"
+fi
+
 if [[ " $* " == *" show "* ]]; then
-  printf '%s\n' "${SYSTEMCTL_ACTIVE_STATE:-inactive}"
+  if [[ " $* " == *" ExecMainStatus "* ]]; then
+    printf '%s\n' "${SYSTEMCTL_EXEC_MAIN_STATUS:-0}"
+  else
+    printf '%s\n' "${state}"
+  fi
+  exit 0
+fi
+
+if [[ " $* " == *" is-active "* ]]; then
+  printf '%s\n' "${state}"
+  case "${state}" in
+    active|activating|reloading) exit 0 ;;
+    *) exit 3 ;;
+  esac
 fi

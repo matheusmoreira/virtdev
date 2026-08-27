@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+case "${MAINTENANCE_SSH_MODE:-failure}" in
+  ready)
+    exit 0
+    ;;
+  manager-loss)
+    : "${SYSTEMCTL_UNREACHABLE_FILE:?}"
+    : > "${SYSTEMCTL_UNREACHABLE_FILE}"
+    exit 1
+    ;;
+  failure)
+    exit 1
+    ;;
+  *)
+    exit 2
+    ;;
+esac

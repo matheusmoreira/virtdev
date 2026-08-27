@@ -96,6 +96,8 @@
 #       reseal refused to protect the base — fail closed
 #   27  exchange occurred but its post-exchange durability sync failed
 #   28  base generation counter exhausted; reseal refused before mutation
+#   29  submitted maintenance unit state/termination is indeterminate
+#   30  terminal maintenance unit left malformed/unremovable runtime controls
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -202,19 +204,25 @@ fi
 
 # ── Functions ───────────────────────────────────────────────────────
 
+maintenance_unit_owned=0
+maintenance_terminal_proven=0
+
 maintenance_boot() {
   # Gate the launch on the host egress lockdown. This function backs BOTH
   # Boot 1 and Boot 2, so the guard fires before each boot — if the
   # firewall went down between them, Boot 2 refuses (fail-closed) before
   # the reseal commit, leaving maintenance/ intact for a retry.
   if [[ "${maintenance_unfiltered}" != "0" ]]; then
-    firewall_require --unfiltered
+    firewall_require --unfiltered || return $?
   else
-    firewall_require
+    firewall_require || return $?
   fi
 
   local pacman_cache="${VIRTDEV_CACHE}/pacman"
-  mkdir -p "${pacman_cache}"
+  if ! mkdir -p "${pacman_cache}"; then
+    printf >&2 "Could not create maintenance package cache: '%s'\n" "${pacman_cache}"
+    return 1
+  fi
 
   local -a cache_args=()
   # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
@@ -223,14 +231,23 @@ maintenance_boot() {
   [[ -d /var/cache/pacman/pkg ]] && cache_args+=(
     -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=mapped-xattr,readonly=on)
 
-  mkdir -p "${maintenance_project}"
-  chmod 0700 "${maintenance_project}"
-  printf '%d\n' "${maintenance_port}" > "${maintenance_project}/port"
-  # Sweep stale sockets ONLY (runtime_clean_sockets): the port was just
-  # written above and must survive. This diverges from virtdev-start, which
-  # writes its port LAST (after the QMP liveness + firewall checks) and so
-  # full-cleans (runtime_clean) at its pre-launch sweep.
-  runtime_clean_sockets "${maintenance_project}"
+  if ! mkdir -p "${maintenance_project}"; then
+    printf >&2 "Could not create maintenance runtime directory: '%s'\n" \
+      "${maintenance_project}"
+    return 1
+  fi
+  if ! chmod 0700 "${maintenance_project}"; then
+    printf >&2 "Could not secure maintenance runtime directory: '%s'\n" \
+      "${maintenance_project}"
+    return 1
+  fi
+  # Nothing is submitted yet, so every leftover control is stale. The port is
+  # published only after SSH and the post-launch filtering proof succeed.
+  if ! runtime_clean "${maintenance_project}"; then
+    printf >&2 "Could not clear stale maintenance runtime controls: '%s'\n" \
+      "${maintenance_project}"
+    return 1
+  fi
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
   # The QEMU argv (everything after the netexec `--` boundary) is owned by
@@ -240,15 +257,27 @@ maintenance_boot() {
   # two roots are passed separately. cache_args (the -virtfs pacman-cache
   # mounts) are trailing, additive extra args.
   local -a qemu_argv=()
-  qemu_command qemu_argv \
+  if ! qemu_command qemu_argv \
       "${maintenance_directory}" "${maintenance_project}" maintenance \
       "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" "${OVMF_CODE}" \
-      "${cache_args[@]}"
+      "${cache_args[@]}"; then
+    printf >&2 'Could not construct the maintenance QEMU command.\n'
+    return 1
+  fi
 
+  local maintenance_slice
+  maintenance_slice="$(firewall_slice_for wan)" || return $?
+  if [[ -z "${maintenance_slice}" ]]; then
+    printf >&2 'Could not resolve the maintenance systemd slice.\n'
+    return 1
+  fi
+
+  maintenance_terminal_proven=0
+  maintenance_unit_owned=1
   systemd-run \
       --user \
       --unit="${unit}" \
-      --slice="$(firewall_slice_for wan)" \
+      --slice="${maintenance_slice}" \
       --description='virtdev base system maintenance virtual machine' \
       -- \
       "${virtdev_bin_directory}/virtdev-netexec" \
@@ -256,6 +285,65 @@ maintenance_boot() {
           --forward "${maintenance_port}" \
           -- \
           "${qemu_argv[@]}"
+}
+
+maintenance_publish_ready() {
+  local -r port_file="${maintenance_project}/port"
+  rm -f -- "${port_file}.tmp" || return 1
+  printf '%d\n' "${maintenance_port}" > "${port_file}.tmp" || return 1
+  mv -T -- "${port_file}.tmp" "${port_file}"
+}
+
+# Stop a submitted unit and retain its controls unless terminal state is proven.
+# qemu_stop_unit_then_clean_runtime owns the one bounded stop/poll protocol.
+maintenance_stop_and_confirm() {
+  (( maintenance_unit_owned )) || return 0
+  if ! qemu_stop_unit_then_clean_runtime \
+      "${unit}" "${maintenance_project}" "${VIRTDEV_STOP_TIMEOUT}"; then
+    return 1
+  fi
+  maintenance_terminal_proven=1
+}
+
+# Final cleanup is legal only with terminal proof. It intentionally does not
+# stop a live/unknown unit; callers and the EXIT guard use the helper above.
+maintenance_cleanup() {
+  if (( maintenance_unit_owned && ! maintenance_terminal_proven )); then
+    local observed_state
+    observed_state="$(systemctl --user show "${unit}" \
+      --property=ActiveState --value 2>/dev/null || true)"
+    case "${observed_state}" in
+      inactive|failed) maintenance_terminal_proven=1 ;;
+      *) return 1 ;;
+    esac
+  fi
+
+  local cleanup_status=0
+  runtime_clean "${maintenance_project}" || cleanup_status=$?
+  systemctl --user reset-failed "${unit}" 2>/dev/null || true
+  rmdir "${maintenance_project}" 2>/dev/null || true
+  # Once terminal state is proven, a malformed runtime artifact does not keep
+  # ownership of the disks. Clear the lifecycle flags, but propagate the local
+  # cleanup failure so the caller cannot report a fully clean teardown.
+  maintenance_unit_owned=0
+  maintenance_terminal_proven=0
+  return "${cleanup_status}"
+}
+
+maintenance_cleanup_or_error() {
+  local -r context="${1}"
+  if ! maintenance_cleanup; then
+    if (( maintenance_unit_owned )); then
+      error 29 <<MESSAGE
+${context}: the maintenance unit is not provably terminal.
+Runtime controls and staging were preserved; inspect ${unit} before cleanup.
+MESSAGE
+    fi
+    error 30 <<MESSAGE
+${context}: the maintenance unit is terminal, but one or more runtime controls
+could not be removed safely. Inspect '${maintenance_project}' before retrying.
+MESSAGE
+  fi
 }
 
 # maintenance_assert_filtered — post-launch firewall TOCTOU close (mirrors
@@ -274,8 +362,15 @@ maintenance_assert_filtered() {
     sleep 0.2
   done
   firewall_assert_unit_filtered "${control_group}" && return 0
-  systemctl --user stop "${unit}" 2>/dev/null || true
-  maintenance_cleanup
+  if ! maintenance_stop_and_confirm; then
+    error 29 <<MESSAGE
+Maintenance filtering proof failed, and the submitted VM could not be proven
+terminal. Runtime controls and staging were preserved for recovery:
+    ${maintenance_project}
+    ${maintenance_directory}
+MESSAGE
+  fi
+  maintenance_cleanup_or_error 'Filtering-failure cleanup'
   error 25 <<MESSAGE
 host egress lockdown baseline changed during maintenance launch: not filtered.
 virtdev.slice's cgroup inode churned between the pre-boot guard and unit
@@ -311,28 +406,27 @@ maintenance_wait_ssh() {
 #   status the caller reads afterward is the genuine, non-zero one.
 maintenance_wait_exit() {
   local -r escalate="${1:-}"
-  local -r deadline=$(( SECONDS + ${VIRTDEV_STOP_TIMEOUT:-60} ))
-  local escalated=0
+  local -r deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
   while true; do
     local unit_state
-    unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
+    unit_state="$(systemctl --user show "${unit}" \
+      --property=ActiveState --value 2>/dev/null || true)"
     case "${unit_state}" in
-      inactive|failed) return 0 ;;
+      inactive|failed)
+        maintenance_terminal_proven=1
+        return 0
+        ;;
+      '') return 2 ;;
     esac
-    if [[ "${escalate}" == "escalate" ]] && (( ! escalated )) && (( SECONDS >= deadline )); then
+    if [[ "${escalate}" == "escalate" ]] && (( SECONDS >= deadline )); then
       printf >&2 '%s\n' "$(terminal_write fg=yellow "Maintenance virtual machine did not halt within ${VIRTDEV_STOP_TIMEOUT:-60}s; forcing stop..." reset)"
-      systemctl --user stop "${unit}" 2>/dev/null || true
-      escalated=1
+      if maintenance_stop_and_confirm; then
+        return 0
+      fi
+      return 1
     fi
     sleep 2
   done
-}
-
-maintenance_cleanup() {
-  systemctl --user reset-failed "${unit}" 2>/dev/null || true
-  # Full teardown: sockets + the port running-signal (lib/virtdev/runtime).
-  runtime_clean "${maintenance_project}"
-  rmdir "${maintenance_project}" 2>/dev/null || true
 }
 
 maintenance_ssh() {
@@ -380,6 +474,35 @@ restore projects rather than publishing a wrapped generation.
 MESSAGE
 fi
 
+# Check unit ownership before mentioning removal of old staging. A live or
+# indeterminate QEMU may still hold those images; advising rm first would turn
+# an interrupted session into unlinked, still-written disks.
+existing_maintenance_state="$(systemctl --user show virtdev-maintenance \
+  --property=ActiveState --value 2>/dev/null || true)"
+case "${existing_maintenance_state}" in
+  inactive|failed)
+    ;;
+  '')
+    error 29 <<MESSAGE
+Cannot reach the user systemd manager to determine whether an interrupted
+maintenance VM still owns staging. Do not remove '${maintenance_directory}'.
+Restore the user session/systemd manager and retry.
+MESSAGE
+    ;;
+  *)
+    error 8 <<MESSAGE
+An interrupted maintenance virtual machine is still ${existing_maintenance_state}.
+Do not remove its staging directory while QEMU may be writing it.
+Stop and verify the unit first:
+
+    systemctl --user stop virtdev-maintenance
+    systemctl --user show virtdev-maintenance -p ActiveState
+
+Then re-run virtdev-maintain.
+MESSAGE
+    ;;
+esac
+
 if [[ -d "${maintenance_directory}" ]]; then
   error 5 <<MESSAGE
 Maintenance staging directory already exists: '${maintenance_directory}'
@@ -397,26 +520,6 @@ if [[ ! -f "${OVMF_CODE}" ]]; then
 fi
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
-
-# Check for an orphaned virtdev-maintenance unit from a previous
-# session before the generic "any virtdev-*.service active" check
-# below. Both checks would fire here — virtdev-maintenance matches
-# the 'virtdev-*.service' glob — but the generic message tells the
-# user to stop their project VMs, which is not what is wrong when
-# the only active unit is the maintenance unit itself. A user who
-# already cleaned up maintenance/ in response to the "Maintenance
-# staging directory already exists" check should not then be told
-# to stop nonexistent project VMs.
-if systemctl --user --quiet is-active virtdev-maintenance 2>/dev/null; then
-  error 8 <<MESSAGE
-Orphaned maintenance virtual machine is running (virtdev-maintenance).
-A previous virtdev-maintain session was likely interrupted before it
-could stop the virtual machine. Terminate it, then retry:
-
-    systemctl --user stop virtdev-maintenance
-
-MESSAGE
-fi
 
 # Refuse to run if any project virtual machine is still alive: its QEMU holds
 # system/system.qcow2 open as a backing file, and reseal-swapping that file out
@@ -487,6 +590,33 @@ chmod 644 "${system_disk}" "${home_disk}" "${nvram}"
 staging_ready=1
 trap - EXIT
 
+# From this point onward staging is deliberately preserved on every failure.
+# The EXIT guard owns any submitted unit before the shell releases the global
+# lock: stop with one bound, remove controls only after terminal proof, and
+# otherwise leave both runtime endpoints and images intact for recovery.
+maintenance_exit_guard() {
+  local -r exit_status=$?
+  trap - EXIT HUP INT TERM
+  set +e
+  if (( maintenance_unit_owned )); then
+    if maintenance_stop_and_confirm; then
+      if ! maintenance_cleanup; then
+        printf >&2 'warning: %s is terminal, but its runtime controls could not be cleaned completely\n' \
+          "${unit}"
+      fi
+    else
+      printf >&2 'warning: could not prove %s terminal during exit; runtime controls and staging were preserved\n' \
+        "${unit}"
+      printf >&2 'Inspect before cleanup: systemctl --user status %s\n' "${unit}"
+    fi
+  fi
+  exit "${exit_status}"
+}
+trap maintenance_exit_guard EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # The monitor/console/passt sockets live in projects/maintenance/; the set
 # and the cleanup are owned by lib/virtdev/runtime. Only passt_sock is still
 # spelled out here, for maintenance_boot's netexec --socket argument; it comes
@@ -498,11 +628,24 @@ passt_sock="$(runtime_passt_sock "${maintenance_project}")"
 
 printf >&2 'Starting maintenance virtual machine...\n'
 if ! maintenance_boot; then
-  maintenance_cleanup
+  if (( maintenance_unit_owned )); then
+    if ! maintenance_stop_and_confirm; then
+      error 29 <<MESSAGE
+Maintenance launch failed after submission, and the unit could not be proven
+terminal. Runtime controls and staging were preserved for inspection.
+MESSAGE
+    fi
+    maintenance_cleanup_or_error 'Failed-launch cleanup'
+    error 20 <<MESSAGE
+Failed to submit the maintenance virtual machine.
+systemd-run returned an error; the possibly-created unit was stopped and proven
+terminal. Inspect with: journalctl --user -u ${unit}
+Maintenance images preserved: '${maintenance_directory}'
+MESSAGE
+  fi
   error 20 <<MESSAGE
-Failed to start maintenance virtual machine.
-systemd-run exited with an error before the virtual machine could boot.
-Inspect with: journalctl --user -u ${unit}
+Failed a maintenance launch prerequisite before systemd submission.
+The specific prerequisite diagnostic is printed above; no VM was submitted.
 Maintenance images preserved: '${maintenance_directory}'
 MESSAGE
 fi
@@ -527,7 +670,7 @@ case "${activate_classify}" in
       # boot speed (mirrors Boot 2).
     ;;
   "${passt_port_race_exit_code}")
-    maintenance_cleanup
+    maintenance_cleanup_or_error 'Port-race cleanup'
     error 16 <<MESSAGE
 Port ${maintenance_port} is bound by another process.
 Between virtdev-maintain's pre-flight port check and passt's bind()
@@ -538,7 +681,7 @@ Remove manually to retry: rm -rf '${maintenance_directory}'
 MESSAGE
     ;;
   "${passt_missing_exit_code}")
-    maintenance_cleanup
+    maintenance_cleanup_or_error 'Missing-passt cleanup'
     error 21 <<MESSAGE
 passt is not installed: ${unit} exit status ${activate_exit}.
 Install passt and retry: pacman -S passt
@@ -546,7 +689,7 @@ Install passt and retry: pacman -S passt
 MESSAGE
     ;;
   "${passt_init_failure_exit_code}")
-    maintenance_cleanup
+    maintenance_cleanup_or_error 'Passt-initialization cleanup'
     error 22 <<MESSAGE
 passt failed to initialise: ${unit} exit status ${activate_exit}.
 The socket did not come up before the virtual machine was launched.
@@ -556,7 +699,7 @@ Investigate:
 MESSAGE
     ;;
   "${passt_qemu_missing_exit_code}")
-    maintenance_cleanup
+    maintenance_cleanup_or_error 'Missing-QEMU cleanup'
     error 23 <<MESSAGE
 QEMU command not found: ${unit} exit status ${activate_exit}.
 The netexec shim pre-flighted the QEMU binary and could not find it,
@@ -580,19 +723,14 @@ printf >&2 'Waiting for SSH on port %d with timeout %ds...' \
 if ! maintenance_wait_ssh; then
   printf >&2 ' failed.\n'
 
-  systemctl --user stop "${unit}" 2>/dev/null || true
-
-  stop_deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
-  while systemctl --user --quiet is-active "${unit}" 2>/dev/null; do
-    if (( SECONDS >= stop_deadline )); then
-      printf >&2 'warning: %s did not stop within %ds\n' \
-                 "${unit}" "${VIRTDEV_STOP_TIMEOUT}"
-      break
-    fi
-    sleep 0.2
-  done
-
-  maintenance_cleanup
+  if ! maintenance_stop_and_confirm; then
+    error 29 <<MESSAGE
+SSH did not become available, and the submitted maintenance VM could not be
+proven terminal. Runtime controls and staging were preserved. Inspect:
+    systemctl --user status ${unit}
+MESSAGE
+  fi
+  maintenance_cleanup_or_error 'SSH-timeout cleanup'
   error 10 <<MESSAGE
 SSH did not become available within ${VIRTDEV_WAIT_TIMEOUT}s.
 The sealed base images are intact: '${system_directory}'
@@ -608,6 +746,17 @@ printf >&2 ' up.\n'
 # classify deadline still gets the inode re-check before the session runs
 # (mirrors Boot 2). Fails CLOSED on a mismatch (stop + error 25).
 maintenance_assert_filtered
+
+if ! maintenance_publish_ready; then
+  if ! maintenance_stop_and_confirm; then
+    error 29 <<MESSAGE
+Maintenance became ready, but its port signal could not be published and the
+VM could not be proven terminal. Runtime controls and staging were preserved.
+MESSAGE
+  fi
+  maintenance_cleanup_or_error 'Readiness-publication cleanup'
+  error 20 <<<"Could not publish maintenance runtime readiness: '${maintenance_project}/port'"
+fi
 
 # ── Provision ───────────────────────────────────────────────────────
 
@@ -641,18 +790,22 @@ printf >&2 'Waiting for virtual machine to exit...\n'
 printf >&2 'To abort:\n\n'
 printf >&2 '\tvirtdev-stop maintenance\n\n'
 
-trap 'printf >&2 "\n%s\n" "$(terminal_write fg=yellow "Interrupt ignored — the maintenance virtual machine is still running." reset)"; printf >&2 "To abort cleanly: virtdev-stop maintenance\n"' INT TERM HUP
-
-maintenance_wait_exit
-
-trap - INT TERM HUP
+wait_exit_status=0
+maintenance_wait_exit || wait_exit_status=$?
+if (( wait_exit_status != 0 )); then
+  error 29 <<MESSAGE
+Could not observe a terminal maintenance unit state (status ${wait_exit_status}).
+Runtime controls and staging were preserved; the EXIT guard will make one
+bounded stop attempt. Inspect the user systemd manager before deleting anything.
+MESSAGE
+fi
 
 # Capture exit status before reset-failed removes it.
 qemu_exit="$(systemctl --user show "${unit}" \
     --property=ExecMainStatus --value 2>/dev/null || echo 1)"
 qemu_exit="${qemu_exit:-unknown}"
 
-maintenance_cleanup
+maintenance_cleanup_or_error 'Boot 1 terminal cleanup'
 
 printf >&2 '\n'
 
@@ -747,6 +900,13 @@ if [[ -n "${inventory_before}" ]]; then
     if maintenance_wait_ssh; then
       printf >&2 ' up.\n'
       maintenance_assert_filtered
+      if ! maintenance_publish_ready; then
+        if ! maintenance_stop_and_confirm; then
+          error 29 <<<'Boot 2 became ready, but readiness publication and terminal recovery both failed.'
+        fi
+        maintenance_cleanup_or_error 'Boot 2 readiness-publication cleanup'
+        error 24 <<<'Inventory boot readiness could not be published; resealing refused.'
+      fi
       printf >&2 'Taking inventory (after)...\n'
       if maintenance_ssh -- bash -s < "${inventory_path}" > "${inventory_after}"; then
         do_diff=1
@@ -754,12 +914,22 @@ if [[ -n "${inventory_before}" ]]; then
         printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: inventory capture failed' reset)"
       fi
       maintenance_ssh -- sudo poweroff 2>/dev/null || true
+      if ! maintenance_wait_exit escalate; then
+        error 29 <<MESSAGE
+Inventory boot did not reach a provable terminal state.
+Runtime controls and staging were preserved; resealing is refused.
+MESSAGE
+      fi
     else
       printf >&2 ' failed.\n'
       printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: SSH did not come up, skipping inventory' reset)"
-      systemctl --user stop "${unit}" 2>/dev/null || true
+      if ! maintenance_stop_and_confirm; then
+        error 29 <<MESSAGE
+Inventory boot SSH failed and the submitted VM could not be proven terminal.
+Runtime controls and staging were preserved; resealing is refused.
+MESSAGE
+      fi
     fi
-    maintenance_wait_exit escalate
     boot2_exit="$(systemctl --user show "${unit}" \
         --property=ExecMainStatus --value 2>/dev/null || echo 1)"
     boot2_exit="${boot2_exit:-1}"
@@ -773,20 +943,18 @@ if [[ -n "${inventory_before}" ]]; then
     # it. Hard-gate the reseal exactly as Boot 1 does — a dirtied image
     # sealed here is inherited by every project.
     #
-    # 143 is the common case: the SSH-probe-failure path above issues a
-    # `systemctl stop` (SIGTERM → QEMU exit 143), and maintenance_wait_exit
-    # escalate does the same if the guest wedges past VIRTDEV_STOP_TIMEOUT.
+    # 143 is the common case: the SSH-probe-failure path above uses the bounded
+    # stop-and-confirm helper (SIGTERM → QEMU exit 143), and
+    # maintenance_wait_exit escalates through the same helper if the guest
+    # wedges past VIRTDEV_STOP_TIMEOUT.
     #
-    # This gate fires ONLY on the booted-but-unclean path. A Boot 2 that
-    # never started (systemd-run failed) is handled by the `else` branch
-    # below, where the images were never opened and stay clean — that path
-    # keeps the old warn-and-proceed behaviour. maintenance_cleanup runs
-    # FIRST (clears only projects/maintenance/{port,*.sock}), mirroring
-    # Boot 1's cleanup-before-gate ordering, so the refusal leaks no
-    # sockets. Crucially, the reseal commit steps (generation bump,
-    # chmod 444, virtdev-exchange) have NOT run yet, so maintenance/
-    # survives intact and the session can be retried.
-    maintenance_cleanup
+    # This gate fires only on the booted-but-unclean path. A Boot 2 prerequisite
+    # failure before submission remains safe to skip; an ambiguous systemd-run
+    # failure is treated as submitted and refuses resealing because QEMU may
+    # have opened the images. Terminal cleanup runs before this gate. The reseal
+    # commit steps (generation bump, chmod 444, virtdev-exchange) have not run,
+    # so maintenance/ survives intact and the session can be retried.
+    maintenance_cleanup_or_error 'Boot 2 terminal cleanup'
     case "${boot2_exit}" in
       0)
         : # Clean inventory boot. do_diff was set by the capture above.
@@ -821,8 +989,24 @@ MESSAGE
         ;;
     esac
   else
-    printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: second boot failed, skipping inventory' reset)"
-    maintenance_cleanup
+    if (( maintenance_unit_owned )); then
+      if ! maintenance_stop_and_confirm; then
+        error 29 <<MESSAGE
+Inventory launch failed after submission, and the VM could not be proven
+terminal. Runtime controls and staging were preserved; resealing is refused.
+MESSAGE
+      fi
+      maintenance_cleanup_or_error 'Failed Boot 2 launch cleanup'
+      [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
+      [[ -n "${inventory_after}" ]] && rm -f "${inventory_after}"
+      error 24 <<MESSAGE
+Inventory boot submission failed. The unit was proven terminal, but it may have
+opened the maintenance images before failing. Resealing is conservatively
+refused; staging is preserved: '${maintenance_directory}'
+MESSAGE
+    fi
+    printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: second boot prerequisites failed before submission; skipping inventory' reset)"
+    maintenance_cleanup_or_error 'Boot 2 pre-submission cleanup'
   fi
 
   if (( do_diff )); then

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${SYSTEMCTL_STATE_FILE:?}"
+: "${MAINTENANCE_RUNTIME_DIRECTORY:?}"
+
+[[ -n "${SYSTEMD_RUN_MARKER:-}" ]] && : > "${SYSTEMD_RUN_MARKER}"
+printf 'active\n' > "${SYSTEMCTL_STATE_FILE}"
+mkdir -p "${MAINTENANCE_RUNTIME_DIRECTORY}"
+if [[ "${MAINTENANCE_MALFORMED_CONTROL:-0}" == 1 ]]; then
+  mkdir "${MAINTENANCE_RUNTIME_DIRECTORY}/monitor.sock"
+  : > "${MAINTENANCE_RUNTIME_DIRECTORY}/monitor.sock/sentinel"
+else
+  : > "${MAINTENANCE_RUNTIME_DIRECTORY}/monitor.sock"
+fi
+for control in console.sock passt.sock qmp.sock; do
+  : > "${MAINTENANCE_RUNTIME_DIRECTORY}/${control}"
+done
+
+exit "${SYSTEMD_RUN_STATUS:-0}"
