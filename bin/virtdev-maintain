@@ -1077,23 +1077,8 @@ MESSAGE
 fi
 next_generation=$(( old_generation + 1 ))
 
-# Reseal via atomic exchange.
-#
-# The generation counter and chmod 444 are applied to maintenance/
-# BEFORE the swap so the exchange is the single commit point: after
-# it, system/ has the new images with correct generation and
-# read-only permissions. A crash before the exchange leaves the old
-# system/ intact; a crash after leaves system/ fully sealed.
-#
-# virtdev-exchange flushes the staged filesystem, wraps renameat2(2) with
-# RENAME_EXCHANGE, then flushes the exchanged namespace before returning.
-# After the call, system/ holds the durable new images and maintenance/ holds
-# the old ones. There is no intermediate namespace state where system/ is
-# missing or partially populated; a post-exchange sync failure is reported
-# distinctly so the old tree is preserved instead of being deleted.
-#
-# After the exchange, maintenance/ (which now holds the previous
-# base) is removed as best-effort cleanup.
+# Seal staging before the atomic exchange; afterward maintenance/ is the old
+# base and is removed only if the exchange and its durability sync succeed.
 printf >&2 'Incrementing generation counter (%d → %d)...\n' \
        "${old_generation}" "${next_generation}"
 printf '%d\n' "${next_generation}" > "${maintenance_directory}/generation.tmp"
@@ -1103,11 +1088,6 @@ printf >&2 'Marking maintenance images read-only before exchange...\n'
 chmod 444 "${maintenance_directory}"/*
 
 printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
-# Guard the commit explicitly rather than relying on `set -e`: a bare
-# failure here (EXDEV across mounts, or EINVAL/ENOSYS where the
-# filesystem lacks RENAME_EXCHANGE) would abort with an opaque C errno
-# and skip the cleanup below, leaving maintenance/ with the incremented,
-# mode-444 generation. The sealed base stays intact either way.
 exchange_status=0
 "${virtdev_bin_directory}/virtdev-exchange" \
   "${system_directory}" "${maintenance_directory}" || exchange_status=$?
@@ -1137,7 +1117,7 @@ MESSAGE
 esac
 
 if ! rm -rf "${maintenance_directory}"; then
-  printf >&2 'warning: could not remove %s; will be cleaned up on next virtdev-maintain run\n' \
+  printf >&2 'warning: previous-base cleanup remains at %s; remove it manually before the next virtdev-maintain run\n' \
              "${maintenance_directory}"
 fi
 if ! sync -f "${VIRTDEV_HOME}"; then

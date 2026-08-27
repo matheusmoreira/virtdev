@@ -166,4 +166,14 @@ if ! grep -Fq \
   exit 1
 fi
 
+if grep -Fq 'will be cleaned up on next virtdev-maintain run' \
+    "${repository}/bin/virtdev-maintain" \
+    || ! grep -Fq \
+      'remove it manually before the next virtdev-maintain run' \
+      "${repository}/bin/virtdev-maintain"; then
+  printf 'post-reseal cleanup guidance promises an unsupported retry\n' >&2
+  exit 1
+fi
+
 printf 'ok - Boot 2 cannot reuse Boot 1 shutdown proof\n'
+printf 'ok - post-reseal cleanup guidance requires manual recovery\n'
