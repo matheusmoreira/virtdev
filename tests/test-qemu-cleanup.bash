@@ -44,4 +44,33 @@ for name in "${runtime_socket_basenames[@]}" "${runtime_port_name}"; do
   fi
 done
 
+malformed_runtime="${test_tmp}/malformed-runtime"
+mkdir -p "${malformed_runtime}/${runtime_monitor_sock_name}"
+printf 'do not delete recursively\n' \
+  > "${malformed_runtime}/${runtime_monitor_sock_name}/sentinel"
+for name in "${runtime_console_sock_name}" "${runtime_passt_sock_name}" \
+            "${runtime_qmp_sock_name}" "${runtime_port_name}"; do
+  : > "${malformed_runtime}/${name}"
+done
+
+cleanup_status=0
+runtime_clean "${malformed_runtime}" 2>"${test_tmp}/cleanup.output" \
+  || cleanup_status=$?
+if (( cleanup_status == 0 )); then
+  printf 'malformed runtime artifact did not make cleanup report failure\n' >&2
+  exit 1
+fi
+if [[ ! -f "${malformed_runtime}/${runtime_monitor_sock_name}/sentinel" ]]; then
+  printf 'runtime cleanup recursively removed an unexpected directory\n' >&2
+  exit 1
+fi
+for name in "${runtime_console_sock_name}" "${runtime_passt_sock_name}" \
+            "${runtime_qmp_sock_name}" "${runtime_port_name}"; do
+  if [[ -e "${malformed_runtime}/${name}" ]]; then
+    printf 'runtime cleanup short-circuited before removing %s\n' "${name}" >&2
+    exit 1
+  fi
+done
+
 printf 'ok - failed-start cleanup preserves controls until terminal proof\n'
+printf 'ok - runtime cleanup attempts every artifact after a local failure\n'

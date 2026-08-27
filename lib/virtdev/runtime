@@ -39,7 +39,7 @@
 #   These are what qemu_command uses to wire the QEMU argv, so the argv
 #   socket paths and the cleanup set share one source.
 #
-#   runtime_clean_sockets <dir>   rm -f every socket basename under <dir>.
+#   runtime_clean_sockets <dir>   Remove every socket basename under <dir>.
 #                                 Sockets ONLY — leaves the port file. The
 #                                 pre-launch stale-socket sweep uses this;
 #                                 it must not delete a just-written port.
@@ -53,8 +53,9 @@
 #                                 tracks the socket set instead of a magic
 #                                 constant.
 #
-# No exit codes reserved: the accessors are pure and the cleaners are
-# best-effort rm -f; nothing here calls error().
+# No exit codes reserved: the accessors are pure. Cleaners attempt every path,
+# diagnose unexpected directories/removal failures, and return nonzero if any
+# artifact remains; nothing here calls error().
 #
 set -euo pipefail
 
@@ -93,22 +94,39 @@ runtime_qmp_sock() {
   printf '%s' "${1}/${runtime_qmp_sock_name}"
 }
 
-# rm -f every socket basename under <dir>. Sockets only — the port file is
+# Remove every socket basename under <dir>. Sockets only — the port file is
 # deliberately left in place so callers that sweep stale sockets before a
 # launch do not delete a port that has already been written.
+runtime_remove_artifact() {
+  local -r path="${1}"
+  [[ -e "${path}" || -L "${path}" ]] || return 0
+  if [[ -d "${path}" && ! -L "${path}" ]]; then
+    printf >&2 "warning: runtime artifact is a directory; refusing recursive removal: '%s'\n" \
+      "${path}"
+    return 1
+  fi
+  if ! rm -f -- "${path}"; then
+    printf >&2 "warning: could not remove runtime artifact: '%s'\n" "${path}"
+    return 1
+  fi
+}
+
 runtime_clean_sockets() {
   local -r dir="${1}"
-  local name
+  local name status=0
   for name in "${runtime_socket_basenames[@]}"; do
-    rm -f "${dir}/${name}"
+    runtime_remove_artifact "${dir}/${name}" || status=1
   done
+  return "${status}"
 }
 
 # Full teardown: the sockets plus the port "running" signal.
 runtime_clean() {
   local -r dir="${1}"
-  runtime_clean_sockets "${dir}"
-  rm -f "${dir}/${runtime_port_name}"
+  local status=0
+  runtime_clean_sockets "${dir}" || status=1
+  runtime_remove_artifact "${dir}/${runtime_port_name}" || status=1
+  return "${status}"
 }
 
 # The longest socket basename length, in bytes. LC_ALL=C so ${#name}
