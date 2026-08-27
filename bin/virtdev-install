@@ -30,6 +30,7 @@
 #  11   explicit packages file missing or unreadable
 #  12   explicit install script missing or unreadable
 #  13   explicit inventory script missing or unreadable
+#  14   invalid installer lifecycle timeout
 #
 # Configuration via environment variables:
 #
@@ -48,6 +49,9 @@
 #   VIRTDEV_HOME_DISK_SIZE    Default: 48G
 #   VIRTDEV_VM_MEMORY         Default: 4096
 #   VIRTDEV_VM_CPUS           Default: 4
+#   VIRTDEV_INSTALL_SOCKET_TIMEOUT    Default: 120 seconds
+#   VIRTDEV_INSTALL_PROGRESS_TIMEOUT  Default: 1200 seconds
+#   VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT  Default: 120 seconds
 #   OVMF_CODE                 Default: /usr/share/edk2/x64/OVMF_CODE.4m.fd
 #   OVMF_VARS                 Default: /usr/share/edk2/x64/OVMF_VARS.4m.fd
 #
@@ -79,6 +83,9 @@ host_keymap="$(sed -n 's/^KEYMAP=//p' /etc/vconsole.conf 2>/dev/null || true)"
 : "${VIRTDEV_HOME_DISK_SIZE:=48G}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
 : "${VIRTDEV_VM_CPUS:=4}"
+: "${VIRTDEV_INSTALL_SOCKET_TIMEOUT:=120}"
+: "${VIRTDEV_INSTALL_PROGRESS_TIMEOUT:=1200}"
+: "${VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT:=120}"
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 : "${OVMF_VARS:="/usr/share/edk2/x64/OVMF_VARS.4m.fd"}"
 
@@ -88,6 +95,18 @@ fi
 if [[ ! "${VIRTDEV_VM_CPUS}" =~ ^[1-9][0-9]*$ ]]; then
   error 64 <<<"Invalid VIRTDEV_VM_CPUS: must be a positive integer"
 fi
+for timeout_name in VIRTDEV_INSTALL_SOCKET_TIMEOUT \
+                    VIRTDEV_INSTALL_PROGRESS_TIMEOUT \
+                    VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT; do
+  timeout_value="${!timeout_name}"
+  if [[ ! "${timeout_value}" =~ ^[1-9][0-9]*$ \
+        || ${#timeout_value} -gt 5 ]]; then
+    error 14 <<<"Invalid ${timeout_name}: must be an integer from 1 through 86400"
+  fi
+  if (( 10#${timeout_value} > 86400 )); then
+    error 14 <<<"Invalid ${timeout_name}: must be an integer from 1 through 86400"
+  fi
+done
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=([timezone]=value [locale]=value [keymap]=value
@@ -186,13 +205,114 @@ pacman_cache="${VIRTDEV_CACHE}/pacman"
 mkdir -p "${pacman_cache}"
 
 install_succeeded=0
-cleanup_partial_installation() {
-  if ! (( install_succeeded )); then
-    rm -rf "${installation_directory}"
+qemu_pid=''
+socat_pid=''
+
+# Child processes retain open image/socket/cache descriptors after their
+# paths are unlinked. Treat QEMU and the progress bridge as owned resources:
+# TERM, bounded wait, KILL, bounded wait, and reap before deleting anything.
+readonly install_child_term_timeout=5
+readonly install_child_kill_timeout=5
+readonly install_progress_record_limit=256
+readonly install_progress_record_bytes=256
+readonly install_progress_log_bytes=65536
+
+child_is_active() {
+  local -r pid="${1}"
+  [[ -n "${pid}" ]] || return 1
+  kill -0 "${pid}" 2>/dev/null || return 1
+
+  # kill -0 remains true for an exited, unreaped zombie. Recognize that state
+  # so the parent can call wait instead of timing out and needlessly killing.
+  local process_stat
+  if IFS= read -r process_stat < "/proc/${pid}/stat" 2>/dev/null \
+     && [[ "${process_stat}" =~ ^[0-9]+\ \(.*\)\ ([A-Z])\  ]]; then
+    [[ "${BASH_REMATCH[1]}" != Z && "${BASH_REMATCH[1]}" != X ]]
+    return
   fi
-  rm -f "${install_sock:-}" "${console_sock:-}" "${install_progress:-}" "${progress_fifo:-}"
+
+  # An unreadable but signalable process is indeterminate, therefore active.
+  return 0
+}
+
+child_wait_status=0
+child_wait_bounded() {
+  local -r pid="${1}" timeout="${2}"
+  local deadline
+  deadline=$(( SECONDS + timeout ))
+
+  while child_is_active "${pid}" && (( SECONDS < deadline )); do
+    sleep 0.1
+  done
+  child_is_active "${pid}" && return 1
+
+  if wait "${pid}" 2>/dev/null; then
+    child_wait_status=0
+  else
+    child_wait_status=$?
+  fi
+  return 0
+}
+
+child_terminate_and_reap() {
+  local -r pid="${1}" label="${2}"
+  [[ -n "${pid}" ]] || return 0
+
+  if child_is_active "${pid}"; then
+    kill -TERM "${pid}" 2>/dev/null || true
+    if child_wait_bounded "${pid}" "${install_child_term_timeout}"; then
+      return 0
+    fi
+
+    kill -KILL "${pid}" 2>/dev/null || true
+    if child_wait_bounded "${pid}" "${install_child_kill_timeout}"; then
+      return 0
+    fi
+
+    printf >&2 'warning: could not prove %s process %s terminated\n' \
+      "${label}" "${pid}"
+    return 1
+  fi
+
+  # Already exited (possibly a zombie): reap without blocking.
+  child_wait_bounded "${pid}" 0
+}
+
+cleanup_partial_installation() {
+  local -r exit_status=$?
+  trap - EXIT HUP INT TERM
+  set +e
+
+  local children_terminal=1
+  if ! child_terminate_and_reap "${socat_pid}" socat; then
+    children_terminal=0
+  else
+    socat_pid=''
+  fi
+  if ! child_terminate_and_reap "${qemu_pid}" QEMU; then
+    children_terminal=0
+  else
+    qemu_pid=''
+  fi
+
+  if (( children_terminal )); then
+    if ! (( install_succeeded )); then
+      rm -rf -- "${installation_directory}"
+    else
+      rm -f -- "${install_sock:-}" "${console_sock:-}" \
+        "${install_progress:-}" "${progress_fifo:-}"
+    fi
+  else
+    printf >&2 'warning: preserving installation state because child termination is indeterminate: %s\n' \
+      "${installation_directory}"
+  fi
+
+  exit "${exit_status}"
 }
 trap cleanup_partial_installation EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 system_disk="${installation_directory}"/system.qcow2
 printf >&2 "Creating %s system disk image: '%s'\n" \
@@ -284,8 +404,15 @@ qemu-system-x86_64 \
     "${qemu_extra_args[@]+"${qemu_extra_args[@]}"}" &
 qemu_pid=$!
 
+socket_deadline=$(( SECONDS + VIRTDEV_INSTALL_SOCKET_TIMEOUT ))
 while [[ ! -S "${install_sock}" ]]; do
-  kill -0 "${qemu_pid}" 2>/dev/null || break
+  child_is_active "${qemu_pid}" || break
+  if (( SECONDS >= socket_deadline )); then
+    error 10 <<MESSAGE
+Installer VM did not create its progress socket within ${VIRTDEV_INSTALL_SOCKET_TIMEOUT}s.
+The VM will be terminated before partial installation state is removed.
+MESSAGE
+  fi
   sleep 0.1
 done
 
@@ -304,34 +431,100 @@ done
 # and the reader sees no tokens — falsely reporting "did not complete"
 # while the guest installs fine. Reading is unaffected: a guest-side
 # terminal token or QEMU death still EOFs the socket and ends the reader.
+# Reads are capped before Bash allocates an unbounded record. An absolute
+# progress deadline plus record/log budgets prevents a connected guest from
+# retaining the global lock forever by dribbling or flooding status lines.
 progress_fifo="${installation_directory}/progress.fifo"
+progress_failure=''
 if [[ -S "${install_sock}" ]]; then
   mkfifo "${progress_fifo}"
   socat -u UNIX-CONNECT:"${install_sock}" - > "${progress_fifo}" 2>/dev/null &
   socat_pid=$!
 
-  while IFS= read -r token; do
+  progress_deadline=$(( SECONDS + VIRTDEV_INSTALL_PROGRESS_TIMEOUT ))
+  progress_records=0
+  progress_bytes=0
+  while :; do
+    progress_remaining=$(( progress_deadline - SECONDS ))
+    if (( progress_remaining <= 0 )); then
+      progress_failure="no terminal progress token within ${VIRTDEV_INSTALL_PROGRESS_TIMEOUT}s"
+      break
+    fi
+
+    token=''
+    read_status=0
+    IFS= read -r -t "${progress_remaining}" \
+      -n "$(( install_progress_record_bytes + 1 ))" token \
+      || read_status=$?
+
+    if (( ${#token} > install_progress_record_bytes )); then
+      progress_failure="progress record exceeded ${install_progress_record_bytes} bytes"
+      break
+    fi
+    if (( read_status > 128 )); then
+      progress_failure="no complete progress record within ${VIRTDEV_INSTALL_PROGRESS_TIMEOUT}s"
+      break
+    fi
+    if (( read_status != 0 )); then
+      progress_failure='progress channel closed without a terminal token'
+      break
+    fi
+
+    (( progress_records += 1 ))
+    (( progress_bytes += ${#token} + 1 ))
+    if (( progress_records > install_progress_record_limit )); then
+      progress_failure="progress record count exceeded ${install_progress_record_limit}"
+      break
+    fi
+    if (( progress_bytes > install_progress_log_bytes )); then
+      progress_failure="progress log exceeded ${install_progress_log_bytes} bytes"
+      break
+    fi
+
     printf '%s\n' "${token}" >> "${install_progress}"
     install_display_progress "${token}"
     case "${token}" in complete|failed) break ;; esac
   done < "${progress_fifo}"
 
-  kill "${socat_pid}" 2>/dev/null || true
-  wait "${socat_pid}" 2>/dev/null || true
-  rm -f "${progress_fifo}"
+  if ! child_terminate_and_reap "${socat_pid}" socat; then
+    error 10 <<<'Could not terminate the installer progress bridge; installation state was preserved.'
+  fi
+  socat_pid=''
+  rm -f -- "${progress_fifo}"
+fi
+
+if [[ -n "${progress_failure}" ]]; then
+  error 10 <<MESSAGE
+Installation progress failed: ${progress_failure}.
+The VM will be terminated before partial installation state is removed.
+MESSAGE
 fi
 
 if grep -qx 'complete' "${install_progress}" 2>/dev/null; then
+  if ! child_wait_bounded "${qemu_pid}" "${VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT}"; then
+    error 10 <<MESSAGE
+Installer reported completion but did not power off within ${VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT}s.
+The VM will be terminated and the partial installation discarded.
+MESSAGE
+  fi
+  qemu_status="${child_wait_status}"
+  qemu_pid=''
+  if (( qemu_status != 0 )); then
+    error 10 <<MESSAGE
+Installer reported completion, but QEMU exited with status ${qemu_status}.
+The installation is not accepted as cleanly terminated and will be discarded.
+MESSAGE
+  fi
   install_succeeded=1
-  wait "${qemu_pid}" 2>/dev/null || true
   printf >&2 '\n%s\n' "$(terminal_write fg=green 'Installer finished.' reset)"
   printf >&2 'Run virtdev-seal to seal the base system images.\n'
-elif kill -0 "${qemu_pid}" 2>/dev/null; then
+elif child_is_active "${qemu_pid}"; then
   printf >&2 '\n%s\n' "$(terminal_write fg=red 'Installation did not complete successfully.' reset)"
   printf >&2 'Attach to the console for debugging:\n'
   printf >&2 '    socat - UNIX-CONNECT:%s\n' "${console_sock}"
   printf >&2 'Press Ctrl-C to terminate the virtual machine.\n'
   wait "${qemu_pid}" 2>/dev/null || true
+  qemu_pid=''
   exit 10
 else
   printf >&2 '\n%s\n' "$(terminal_write fg=red 'Installation did not complete successfully.' reset)"
@@ -339,4 +532,4 @@ else
   exit 10
 fi
 
-rm -f "${install_progress}" "${install_sock}" "${console_sock}" "${progress_fifo}"
+rm -f -- "${install_progress}" "${install_sock}" "${console_sock}" "${progress_fifo}"

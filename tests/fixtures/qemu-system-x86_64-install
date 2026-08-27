@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+printf '%d\n' "$$" > "${QEMU_PID_FILE:?}"
+
+case "${QEMU_TEST_MODE:-stuck}" in
+  stuck)
+    trap 'printf "terminated\n" > "${QEMU_TERM_FILE:?}"; exit 0' TERM
+    while :; do
+      sleep 1
+    done
+    ;;
+  progress)
+    install_socket=''
+    for argument in "$@"; do
+      case "${argument}" in
+        socket,path=*,server=on,wait=off,id=install_ch)
+          install_socket="${argument#socket,path=}"
+          install_socket="${install_socket%%,*}"
+          ;;
+      esac
+    done
+    [[ -n "${install_socket}" ]] || exit 98
+
+    bridge_pid=''
+    # shellcheck disable=SC2329  # invoked by the signal trap below
+    cleanup_bridge() {
+      if [[ -n "${bridge_pid}" ]]; then
+        kill -TERM "${bridge_pid}" 2>/dev/null || true
+        wait "${bridge_pid}" 2>/dev/null || true
+      fi
+      exit 143
+    }
+    trap cleanup_bridge HUP INT TERM
+
+    /usr/bin/socat -u OPEN:"${QEMU_PROGRESS_FILE:?}" \
+      UNIX-LISTEN:"${install_socket}" &
+    bridge_pid=$!
+    wait "${bridge_pid}"
+    bridge_pid=''
+    exit "${QEMU_EXIT_STATUS:-0}"
+    ;;
+  *)
+    exit 97
+    ;;
+esac

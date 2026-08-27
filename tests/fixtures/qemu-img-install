@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ "${1:-}" != create || $# -lt 3 ]]; then
+  exit 99
+fi
+
+image_index=$(( $# - 1 ))
+image_path="${!image_index}"
+: > "${image_path}"
