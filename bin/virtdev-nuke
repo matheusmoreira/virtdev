@@ -36,14 +36,23 @@ if [[ $# -ne 0 ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
 
-# Refuse to operate on any path that is not strictly under $HOME.
-# This guards against a typo or accidental override of VIRTDEV_HOME or
-# VIRTDEV_CACHE turning 'nuke' into 'rm -rf /usr' or similar.
-# Using realpath -m resolves symlinks so the check applies to the
-# physical target, not the link path.
-home_real="$(realpath "${HOME}")"
-for path in "${VIRTDEV_HOME}" "${VIRTDEV_CACHE}"; do
-  real="$(realpath -m "${path}")"
+# Refuse to operate on any path that is not strictly under $HOME. Resolve each
+# approved root once, then use that exact physical path for every subsequent
+# scan, display, and deletion. A final-component symlink is rejected outright:
+# `rm -rf symlink` removes only the link, not the directory whose containment we
+# approved, which would otherwise leave split state while reporting success.
+home_real="$(realpath -- "${HOME}")"
+declare -a nuke_roots=()
+for variable in VIRTDEV_HOME VIRTDEV_CACHE; do
+  path="${!variable}"
+  if [[ -L "${path}" ]]; then
+    error 3 <<MESSAGE
+Nuke root must not be a symbolic link: '${path}'
+Resolve the configuration to the intended directory explicitly, then retry.
+Nuke aborted.
+MESSAGE
+  fi
+  real="$(realpath -m -- "${path}")"
   if [[ "${real}" != "${home_real}"/?* ]]; then
     error 3 <<MESSAGE
 Path is not strictly under \$HOME: '${path}'
@@ -52,6 +61,8 @@ Path is not strictly under \$HOME: '${path}'
 Nuke aborted.
 MESSAGE
   fi
+  printf -v "${variable}" '%s' "${real}"
+  nuke_roots+=("${real}")
 done
 
 # Taken BEFORE the "any VMs active" check below so a concurrent
@@ -124,7 +135,23 @@ if ! confirm_word "nuke"; then
   error 5 <<<"Aborted."
 fi
 
-[[ -d "${VIRTDEV_HOME}"  ]] && rm -rf "${VIRTDEV_HOME}"
-[[ -d "${VIRTDEV_CACHE}" ]] && rm -rf "${VIRTDEV_CACHE}"
+# Revalidate the exact approved roots after the confirmation boundary. This
+# catches a directory replaced with a symlink while the command was inspecting
+# sizes/backups, before any destructive call runs.
+for path in "${nuke_roots[@]}"; do
+  current="$(realpath -m -- "${path}")"
+  if [[ -L "${path}" || "${current}" != "${path}" \
+        || "${current}" != "${home_real}"/?* ]]; then
+    error 3 <<MESSAGE
+Nuke root changed after validation: '${path}'
+Current resolution: '${current}'
+Nothing was deleted.
+MESSAGE
+  fi
+done
+
+for path in "${nuke_roots[@]}"; do
+  [[ -e "${path}" || -L "${path}" ]] && rm -rf -- "${path}"
+done
 
 printf >&2 '%s\n' "$(terminal_write fg=green 'All virtdev data deleted.' reset)"
