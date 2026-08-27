@@ -23,6 +23,7 @@
 #   6   reserved project name
 #   7   source and target are the same
 #   8   backup snapshots already exist for the target name
+#   9   move transaction journal is invalid or conflicts with the request
 #
 
 set -euo pipefail
@@ -72,18 +73,60 @@ lock_acquire
 
 source_directory="${VIRTDEV_HOME}/projects/${source_name}"
 target_directory="${VIRTDEV_HOME}/projects/${target_name}"
+transaction_file="${VIRTDEV_HOME}/move.transaction"
 
-# Allow recovery: if target exists but source doesn't, a previous run
-# was interrupted after the project dir rename. Skip the checks and
-# resume the critical section below.
+move_transaction_read() {
+  [[ -f "${transaction_file}" && ! -L "${transaction_file}" ]] || return 1
+  local -a lines=()
+  mapfile -t lines < "${transaction_file}"
+  (( ${#lines[@]} == 3 )) || return 1
+  [[ "${lines[0]}" == 'version=1' ]] || return 1
+  [[ "${lines[1]}" == "source=${source_name}" ]] || return 1
+  [[ "${lines[2]}" == "target=${target_name}" ]] || return 1
+}
+
+move_transaction_write() {
+  local -r temporary="${transaction_file}.tmp.$$"
+  ( umask 077; printf 'version=1\nsource=%s\ntarget=%s\n' \
+      "${source_name}" "${target_name}" > "${temporary}" )
+  sync -f "${temporary}"
+  mv -- "${temporary}" "${transaction_file}"
+  sync -f "${VIRTDEV_HOME}"
+}
+
+# Recovery authority is the journal, never endpoint topology. In particular,
+# `source missing + target present` is also the ordinary shape produced by a
+# typo that names an existing unrelated project. Without the exact journal,
+# that shape remains "source not found" and no target/backup marker is touched.
 recovering=0
-if [[ ! -d "${source_directory}" && -d "${target_directory}" ]]; then
+if [[ -e "${transaction_file}" || -L "${transaction_file}" ]]; then
+  if ! move_transaction_read; then
+    error 9 <<MESSAGE
+An unfinished move transaction exists but does not exactly match this request:
+    ${transaction_file}
+Inspect it and resume the recorded source/target pair. It was not modified.
+MESSAGE
+  fi
   recovering=1
-elif [[ ! -d "${source_directory}" ]]; then
-  error 3 <<<"Project not found: ${source_name}"
 fi
 
-if (( ! recovering )); then
+if (( recovering )); then
+  if [[ -d "${source_directory}" && -d "${target_directory}" ]]; then
+    error 9 <<<"Move transaction is inconsistent: both source and target projects exist."
+  fi
+  if [[ ! -d "${source_directory}" && ! -d "${target_directory}" ]]; then
+    error 9 <<<"Move transaction is inconsistent: neither source nor target project exists."
+  fi
+
+  # A target can be started after a crash but before recovery. Re-prove both
+  # possible unit names terminal before touching either endpoint.
+  if ! project_is_stopped "${source_name}" || ! project_is_stopped "${target_name}"; then
+    error 5 <<<"Move transaction project is running or has indeterminate state. Stop it before recovery."
+  fi
+else
+  if [[ ! -d "${source_directory}" ]]; then
+    error 3 <<<"Project not found: ${source_name}"
+  fi
   if [[ -d "${target_directory}" ]]; then
     error 4 <<<"Project already exists: ${target_name}"
   fi
@@ -110,10 +153,21 @@ that directory first.
 MESSAGE
 fi
 
-# Recovery: detect interrupted previous run via leftover target with
-# missing source. This means the project dir was renamed but the
-# script was interrupted before completion. Resume from where it
-# stopped rather than erroring on "source not found".
+if (( recovering )); then
+  if [[ -e "${source_backups}" && -e "${target_backups}" ]]; then
+    error 9 <<<"Move transaction is inconsistent: both source and target backup roots exist."
+  fi
+  if [[ -d "${source_directory}" && -e "${target_backups}" ]]; then
+    error 9 <<<"Move transaction has not renamed the project, but target backups already exist."
+  fi
+else
+  # Commit recovery authority only after every collision and stopped-state
+  # preflight succeeds. The journal is synced before the first rename.
+  move_transaction_write
+fi
+
+# A matching journal makes the partially completed namespace shapes below
+# authoritative. Resume idempotently from whichever rename already landed.
 if (( recovering )); then
   printf >&2 '%s\n' "$(terminal_write fg=yellow 'Recovering from interrupted move...' reset)"
 fi
@@ -142,6 +196,15 @@ if [[ -d "${target_backups}" ]]; then
     printf '%s\n' "${target_name}" > "${marker}"
   done < <(find "${target_backups}" -mindepth 3 -maxdepth 3 -type f -name project -print0)
   printf >&2 'Backup snapshots moved and markers updated.\n'
+fi
+
+# Make the completed namespace/marker state durable before removing its only
+# recovery authority. If this sync fails, set -e leaves the journal in place
+# and a retry safely repeats the idempotent marker update.
+sync -f "${VIRTDEV_HOME}"
+rm -f -- "${transaction_file}"
+if ! sync -f "${VIRTDEV_HOME}"; then
+  printf >&2 'warning: move completed, but journal removal could not be durably synced\n'
 fi
 
 trap - INT TERM HUP QUIT
