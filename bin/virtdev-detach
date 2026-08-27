@@ -103,10 +103,10 @@ detach_generation_require_current() {
   fi
 
   local base_generation project_generation
-  base_generation="$(generation_read "${base_generation_file}")"
-  project_generation="$(generation_read "${generation_file}")"
+  base_generation="$(generation_read_base "${base_generation_file}")"
+  project_generation="$(generation_read_project "${generation_file}")"
 
-  if [[ "${base_generation}" == detached || "${project_generation}" == detached ]]; then
+  if [[ "${project_generation}" == detached ]]; then
     error 7 <<MESSAGE
 Generation metadata does not describe a coupled project and numeric base:
     Base:    ${base_generation}

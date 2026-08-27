@@ -46,7 +46,7 @@ if [[ $# -eq 0 ]]; then
   if [[ ! -f "${generation_file}" ]]; then
     error 5 <<<"Base system generation file not found: '${generation_file}'"
   fi
-  generation="$(generation_read "${generation_file}")"
+  generation="$(generation_read_base "${generation_file}")"
   printf '%s\n' "${generation}"
   exit 0
 fi
@@ -64,10 +64,10 @@ if [[ ! -f "${generation_file}" ]]; then
   error 4 <<<"Generation file not found: '${generation_file}'"
 fi
 
-# Assign, then print. `printf '%s' "$(generation_read …)"` would run the
+# Assign, then print. `printf '%s' "$(generation_read_project …)"` would run the
 # reader in a command substitution whose exit (error 82 on a corrupt
 # file) does not propagate to printf, so the script would print a blank
 # line and exit 0 — defeating the corruption check on its own
 # machine-readable channel. A bare assignment propagates under `set -e`.
-generation="$(generation_read "${generation_file}")"
+generation="$(generation_read_project "${generation_file}")"
 printf '%s\n' "${generation}"

@@ -95,6 +95,7 @@
 #   26  could not enumerate running project machines (user manager unreachable);
 #       reseal refused to protect the base — fail closed
 #   27  exchange occurred but its post-exchange durability sync failed
+#   28  base generation counter exhausted; reseal refused before mutation
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -104,7 +105,7 @@
 #   76  lock setup failure (cannot create/open the lock file) — lock_acquire_for_maintain
 #   77  SSH key not found — ssh_key_validate
 #   78  SSH key permissions too open — ssh_key_validate
-#   82  corrupt base generation file — generation_read
+#   82  corrupt base generation file — generation_read_base
 #   88  host egress lockdown not active / stale baseline / wrong user —
 #       firewall_require (the pre-copy guard and maintenance_boot)
 #
@@ -366,6 +367,18 @@ for file in system.qcow2 home.qcow2 nvram; do
     error 4 <<<"Base system image missing: '${system_directory}/${file}'"
   fi
 done
+
+if [[ ! -f "${system_directory}/generation" ]]; then
+  error 15 <<<"Base system generation file missing: '${system_directory}/generation'"
+fi
+preflight_generation="$(generation_read_base "${system_directory}/generation")"
+if (( preflight_generation >= generation_max )); then
+  error 28 <<MESSAGE
+Base generation counter is exhausted at ${preflight_generation}.
+No maintenance staging or VM was started. Reinstall the base and recreate or
+restore projects rather than publishing a wrapped generation.
+MESSAGE
+fi
 
 if [[ -d "${maintenance_directory}" ]]; then
   error 5 <<MESSAGE
@@ -851,7 +864,14 @@ fi
 if [[ ! -f "${system_directory}/generation" ]]; then
   error 15 <<<"Base system generation file missing: '${system_directory}/generation'"
 fi
-old_generation="$(generation_read "${system_directory}/generation")"
+old_generation="$(generation_read_base "${system_directory}/generation")"
+if (( old_generation >= generation_max )); then
+  error 28 <<MESSAGE
+Base generation counter is exhausted at ${old_generation}.
+The sealed base is unchanged and maintenance staging is preserved.
+MESSAGE
+fi
+next_generation=$(( old_generation + 1 ))
 
 # Reseal via atomic exchange.
 #
@@ -871,8 +891,8 @@ old_generation="$(generation_read "${system_directory}/generation")"
 # After the exchange, maintenance/ (which now holds the previous
 # base) is removed as best-effort cleanup.
 printf >&2 'Incrementing generation counter (%d → %d)...\n' \
-       "${old_generation}" "$(( old_generation + 1 ))"
-printf '%d\n' "$(( old_generation + 1 ))" > "${maintenance_directory}/generation.tmp"
+       "${old_generation}" "${next_generation}"
+printf '%d\n' "${next_generation}" > "${maintenance_directory}/generation.tmp"
 mv "${maintenance_directory}/generation.tmp" "${maintenance_directory}/generation"
 
 printf >&2 'Marking maintenance images read-only before exchange...\n'

@@ -59,19 +59,25 @@
 #   project_require <project>
 #       Errors with code 3 if the project directory does not exist.
 #
-#   generation_read <file>
-#       Reads and validates a generation file. Prints the content
-#       (an integer or 'detached') to stdout. Errors with code 82
-#       if the file content is invalid.
+#   generation_read_base <file>
+#       Reads a base/snapshot generation. Prints a canonical integer in
+#       0..2147483647. Base metadata can never be 'detached'.
 #
-#   generation_read_lenient <file>
-#       Like generation_read but prints '<corrupt>' and returns 0
-#       instead of erroring on invalid content. For display-oriented
-#       commands. Guard with [[ -s <file> ]] for the missing case.
+#   generation_read_project <file>
+#       Reads a project generation. Prints a canonical bounded integer or the
+#       literal 'detached'. Callers that treat detached as authority must also
+#       prove standalone qcow2 topology with project_is_detached.
+#
+#   generation_read_{base,project}_lenient <file>
+#       Display-oriented variants that print '<corrupt>' instead of exiting.
+#
+#   generation_max
+#       Largest accepted numeric generation. The bound makes increment and
+#       every Bash arithmetic consumer safe.
 #
 # Exit codes:
 #   3   project not found (project_require)
-#   82  corrupt generation file (generation_read)
+#   82  corrupt generation file (generation readers)
 #
 
 set -euo pipefail
@@ -79,6 +85,8 @@ set -euo pipefail
 import error
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+readonly generation_max=2147483647
 
 project_list() {
   # LC_ALL=C so the name regex is byte-wise ASCII, matching validate_project_name's
@@ -188,7 +196,7 @@ project_is_outdated() {
   [[ -f "${base_file}" ]] || return 1
   [[ -f "${project_file}" ]] || return 1
   local base_gen project_gen
-  # generation_read panics (exit 82) on corruption, but here it runs
+  # Generation readers panic (exit 82) on corruption, but here they run
   # inside a command substitution, so that exit would be swallowed and
   # the variable left empty — silently reading as "outdated". Capture it
   # explicitly so callers iterating over projects warn and skip instead
@@ -196,8 +204,8 @@ project_is_outdated() {
   # Distinguish the source: 3 = the shared BASE file is corrupt (so every
   # project returns 3), 2 = this project's own file is corrupt. 2>/dev/null
   # suppresses the per-file panic; the caller emits the right message.
-  base_gen="$(generation_read "${base_file}" 2>/dev/null)" || return 3
-  project_gen="$(generation_read "${project_file}" 2>/dev/null)" || return 2
+  base_gen="$(generation_read_base "${base_file}" 2>/dev/null)" || return 3
+  project_gen="$(generation_read_project "${project_file}" 2>/dev/null)" || return 2
   [[ "${project_gen}" != "${base_gen}" ]]
 }
 
@@ -206,7 +214,10 @@ project_is_detached() {
   local -r project_directory="${VIRTDEV_HOME}/projects/${project}"
   local -r generation_file="${project_directory}/generation"
   [[ -f "${generation_file}" ]] || return 1
-  [[ "$(< "${generation_file}")" == "detached" ]] || return 1
+  local generation
+  generation="$(generation_read_project "${generation_file}" 2>/dev/null)" \
+    || return 1
+  [[ "${generation}" == detached ]] || return 1
 
   local disk info
   for disk in system.qcow2 home.qcow2; do
@@ -225,30 +236,87 @@ project_require() {
   fi
 }
 
-generation_read() {
-  local -r file="${1}"
-  # LC_ALL=C so [0-9] is byte-wise ASCII: under a UTF-8 locale a non-ASCII digit
-  # would pass the regex and read as a valid generation, defeating the
-  # corruption-vs-outdated guard that gates virtdev-start and the rebuild paths.
-  local LC_ALL=C
-  local content
-  content="$(< "${file}")"
-  if [[ ! "${content}" =~ ^([0-9]+|detached)$ ]]; then
-    error 82 <<MESSAGE
-Corrupted generation file: '${file}'
-Content: '${content}'
-Repair manually: the file must contain a single non-negative integer or 'detached'.
+_generation_error() {
+  local -r file="${1}" kind="${2}" content="${3}"
+  local escaped_content repair_rule
+  printf -v escaped_content '%q' "${content}"
+  repair_rule="a canonical integer from 0 through ${generation_max}"
+  if [[ "${kind}" == project ]]; then
+    repair_rule+=" or the exact project marker 'detached'"
+  fi
+  error 82 <<MESSAGE
+Corrupted ${kind} generation file: '${file}'
+Content (bounded): ${escaped_content}
+Repair manually with ${repair_rule}.
 MESSAGE
+}
+
+_generation_read() {
+  local -r file="${1}" kind="${2}"
+  # C locale makes byte counts and [0-9] agree. Read at most one byte beyond
+  # the largest valid representation, with a sentinel that prevents command
+  # substitution from stripping meaningful trailing newlines. This bounds
+  # shell allocation and makes multiple trailing records invalid.
+  local LC_ALL=C raw sentinel=$'\x01' file_size content
+  if [[ ! -f "${file}" || -L "${file}" ]]; then
+    _generation_error "${file}" "${kind}" '<missing-or-nonregular>'
+  fi
+  file_size="$(stat -c '%s' -- "${file}" 2>/dev/null)" \
+    || _generation_error "${file}" "${kind}" '<unreadable>'
+  raw="$({ head -c 12 -- "${file}"; printf '%s' "${sentinel}"; } 2>/dev/null)" \
+    || _generation_error "${file}" "${kind}" '<unreadable>'
+  raw="${raw%"${sentinel}"}"
+
+  if [[ ! "${file_size}" =~ ^[0-9]+$ \
+        || ${file_size} -gt 11 \
+        || ${#raw} -ne file_size ]]; then
+    _generation_error "${file}" "${kind}" "${raw}"
+  fi
+
+  content="${raw}"
+  if [[ "${content}" == *$'\n' ]]; then
+    content="${content%$'\n'}"
+  fi
+  if [[ "${content}" == *$'\n'* ]]; then
+    _generation_error "${file}" "${kind}" "${raw}"
+  fi
+
+  if [[ "${kind}" == project && "${content}" == detached ]]; then
+    printf '%s' "${content}"
+    return 0
+  fi
+  if [[ ! "${content}" =~ ^(0|[1-9][0-9]*)$ \
+        || ${#content} -gt 10 ]]; then
+    _generation_error "${file}" "${kind}" "${raw}"
+  fi
+  if (( 10#${content} > generation_max )); then
+    _generation_error "${file}" "${kind}" "${raw}"
   fi
   printf '%s' "${content}"
 }
 
-generation_read_lenient() {
-  local -r file="${1}"
+generation_read_base() {
+  _generation_read "${1}" base
+}
+
+generation_read_project() {
+  _generation_read "${1}" project
+}
+
+_generation_read_lenient() {
+  local -r file="${1}" kind="${2}"
   local result
-  if result="$(generation_read "${file}" 2>/dev/null)"; then
+  if result="$(_generation_read "${file}" "${kind}" 2>/dev/null)"; then
     printf '%s' "${result}"
   else
     printf '%s' '<corrupt>'
   fi
+}
+
+generation_read_base_lenient() {
+  _generation_read_lenient "${1}" base
+}
+
+generation_read_project_lenient() {
+  _generation_read_lenient "${1}" project
 }

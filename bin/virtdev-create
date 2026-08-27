@@ -75,7 +75,7 @@ done
 if [[ ! -f "${system_directory}/generation" ]]; then
   error 7 <<<"Base system generation file missing: '${system_directory}/generation'"
 fi
-generation_read "${system_directory}/generation" >/dev/null
+base_generation="$(generation_read_base "${system_directory}/generation")"
 
 if [[ -d "${project_directory}" ]]; then
   error 6 <<<"Project already exists: '${project_directory}'"
@@ -116,7 +116,7 @@ printf >&2 "Copying NVRAM: '%s'\n" "${nvram}"
 cp "${system_directory}/nvram" "${nvram}"
 chmod 644 "${nvram}"
 
-cp "${system_directory}/generation" "${project_directory}/generation"
+printf '%s\n' "${base_generation}" > "${project_directory}/generation"
 chmod 644 "${project_directory}/generation"
 
 create_succeeded=1

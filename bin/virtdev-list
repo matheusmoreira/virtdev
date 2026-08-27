@@ -53,7 +53,7 @@ terminal_init "" 1
 
 system_generation_file="${VIRTDEV_HOME}/system/generation"
 if [[ -s "${system_generation_file}" ]]; then
-  base_generation="$(generation_read_lenient "${system_generation_file}")"
+  base_generation="$(generation_read_base_lenient "${system_generation_file}")"
 else
   base_generation='-'
   printf >&2 'warning: base system generation file missing: %s\n' "${system_generation_file}"
@@ -112,7 +112,7 @@ for project in "${projects[@]}"; do
   fi
 
   if [[ -s "${generation_file}" ]]; then
-    generation="$(generation_read_lenient "${generation_file}")"
+    generation="$(generation_read_project_lenient "${generation_file}")"
   else
     generation='-'
   fi

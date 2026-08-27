@@ -189,8 +189,8 @@ Recreate this project on top of the current base:
 MESSAGE
 fi
 
-system_generation="$(generation_read "${system_generation_file}")"
-project_generation="$(generation_read "${project_generation_file}")"
+system_generation="$(generation_read_base "${system_generation_file}")"
+project_generation="$(generation_read_project "${project_generation_file}")"
 
 if [[ "${system_generation}" != "${project_generation}" ]]; then
   error 11 <<MESSAGE

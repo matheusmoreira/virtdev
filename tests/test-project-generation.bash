@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # generation_max is provided by the imported project library
 
 set -euo pipefail
 
@@ -40,4 +41,49 @@ if ! project_is_detached probe; then
   exit 1
 fi
 
+generation_case="${test_tmp}/generation"
+output="${test_tmp}/output"
+
+expect_corrupt() {
+  local -r reader="${1}"
+  local status=0
+  ( "${reader}" "${generation_case}" ) >"${output}" 2>&1 || status=$?
+  if (( status != 82 )); then
+    printf '%s accepted corrupt generation (status %d): ' "${reader}" "${status}" >&2
+    cat "${output}" >&2
+    exit 1
+  fi
+}
+
+printf 'detached\n' > "${generation_case}"
+expect_corrupt generation_read_base
+if [[ "$(generation_read_project "${generation_case}")" != detached ]]; then
+  printf 'project reader rejected its detached marker\n' >&2
+  exit 1
+fi
+
+printf '01\n' > "${generation_case}"
+expect_corrupt generation_read_base
+expect_corrupt generation_read_project
+
+printf '2147483648\n' > "${generation_case}"
+expect_corrupt generation_read_base
+
+printf '2147483647\n' > "${generation_case}"
+if [[ "$(generation_read_base "${generation_case}")" != "${generation_max}" ]]; then
+  printf 'base reader rejected the maximum safe generation\n' >&2
+  exit 1
+fi
+
+printf '7\n\n' > "${generation_case}"
+expect_corrupt generation_read_base
+
+truncate -s 1048576 "${generation_case}"
+expect_corrupt generation_read_base
+if (( $(stat -c '%s' "${output}") > 1024 )); then
+  printf 'corrupt scalar diagnostic was not bounded\n' >&2
+  exit 1
+fi
+
 printf 'ok - detached state requires standalone disk topology\n'
+printf 'ok - generation schemas are type-separated, canonical, and bounded\n'

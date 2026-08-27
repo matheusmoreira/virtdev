@@ -49,7 +49,7 @@ _port_value_or_status() {
   [[ -f "${port_file}" ]] || return 1
   # LC_ALL=C so [0-9] is byte-wise ASCII: under a UTF-8 locale a non-ASCII digit would
   # pass the regex and read as a valid port, defeating the corruption guard — the same
-  # locale pin generation_read / project_list carry for their integer files.
+  # locale pin the generation readers / project_list carry for integer files.
   local LC_ALL=C
   local port
   port="$(< "${port_file}")"

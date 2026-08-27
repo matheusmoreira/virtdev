@@ -208,14 +208,14 @@ Project generation file missing: '${project_generation_file}'
 The project's audit trail is incomplete; refusing to proceed.
 MESSAGE
 fi
-project_generation="$(generation_read_lenient "${project_generation_file}")"
+project_generation="$(generation_read_project_lenient "${project_generation_file}")"
 
 # Read the snapshot's recorded base generation for display.
 # Empty/absent is displayed as '-'; corrupt content is non-fatal here
 # (display-only), via the shared lenient reader.
 snapshot_generation='-'
 if [[ -s "${snapshot}/generation" ]]; then
-  snapshot_generation="$(generation_read_lenient "${snapshot}/generation")"
+  snapshot_generation="$(generation_read_base_lenient "${snapshot}/generation")"
 fi
 
 # Display the generation transition. Mismatch is the EXPECTED case in

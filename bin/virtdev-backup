@@ -180,7 +180,7 @@ if (( flags[list] )); then
       # generations are always integers in practice.
       generation='-'
       if [[ -s "${snapshot}/generation" ]]; then
-        generation="$(generation_read_lenient "${snapshot}/generation")"
+        generation="$(generation_read_base_lenient "${snapshot}/generation")"
       fi
       time_colons="${t//-/:}"
       snap_epoch=$(date -u -d "${d} ${time_colons} UTC" +%s 2>/dev/null || echo 0)
@@ -337,7 +337,7 @@ generation_file="${VIRTDEV_HOME}/system/generation"
 if [[ ! -f "${generation_file}" ]]; then
   error 12 <<<"Base system generation file missing: '${generation_file}'"
 fi
-base_generation="$(generation_read "${generation_file}")"
+base_generation="$(generation_read_base "${generation_file}")"
 printf '%s\n' "${base_generation}" > "${partial}/generation"
 
 mkdir -m 0700 "${partial}/tree"
