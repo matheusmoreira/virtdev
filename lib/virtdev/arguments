@@ -23,7 +23,9 @@
 # --color=yes|no|auto is also universal. The parsed value is stored
 # in _virtdev_color_mode (read by terminal_init). Absent means auto.
 # --color without a value is treated as --color=yes, matching the
-# convention of ls --color and similar GNU tools.
+# convention of ls --color and similar GNU tools. The space form consumes a
+# following non-option token as its value; use `--color -- <positional>` when a
+# bare --color is immediately followed by a positional.
 #
 # Spec format (assoc array, key = flag name without leading --):
 #   bool      Flag takes no value; presence sets to 1, absence to 0.
@@ -77,6 +79,17 @@ readonly arguments_usage_exit_code=64
 # Populated by the universal --color handler in arguments_parse.
 # Read by terminal_init when called with no arguments.
 declare -g _virtdev_color_mode=""
+
+arguments_color_set() {
+  local -r value="${1}"
+  case "${value}" in
+    yes|no|auto) _virtdev_color_mode="${value}" ;;
+    *)
+      error "${arguments_usage_exit_code}" \
+        <<<"invalid --color value: '${value}' (expected yes, no, or auto)"
+      ;;
+  esac
+}
 
 arguments_parse() {
   local -n _arguments_spec="${1}"
@@ -148,16 +161,16 @@ arguments_parse() {
         exit 0
         ;;
       --color=*)
-        _virtdev_color_mode="${arg#*=}"
+        arguments_color_set "${arg#*=}"
         shift
         continue
         ;;
       --color)
-        if (( $# >= 2 )) && [[ "${2}" == yes || "${2}" == no || "${2}" == auto ]]; then
-          _virtdev_color_mode="${2}"
+        if (( $# >= 2 )) && [[ "${2}" != -* ]]; then
+          arguments_color_set "${2}"
           shift 2
         else
-          _virtdev_color_mode="yes"
+          arguments_color_set yes
           shift
         fi
         continue
