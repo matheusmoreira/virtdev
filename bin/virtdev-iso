@@ -3,13 +3,15 @@
 # virtdev-iso
 #
 # Builds the virtdev Arch Linux installation ISO.
-# The resulting ISO is written to ${XDG_CACHE_HOME:-~/.cache}/virtdev/virtdev.iso,
+# The resulting ISO is written to ${VIRTDEV_CACHE}/virtdev.iso,
 # which is the default VIRTDEV_ISO consumed by virtdev-install.
 #
 # Configuration via environment variables:
 #
 #   VIRTDEV_HOME           Base directory for virtdev data.
 #                          Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_CACHE          Cache/build/output directory.
+#                          Default: ${XDG_CACHE_HOME:-~/.cache}/virtdev
 #
 #   VIRTDEV_ISO_PROFILE    Path to the virtdev ISO profile directory.
 #                          Detected automatically; set to override.
@@ -23,6 +25,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 import error arguments
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+: "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
 
 # shellcheck disable=SC2034  # spec read via nameref
 declare -A spec=()
@@ -65,7 +68,7 @@ if [[ ! -d "${profile}" ]]; then
   error 5 <<<"archiso releng profile not found: '${profile}'"
 fi
 
-build_directory="${XDG_CACHE_HOME:-${HOME}/.cache}"/virtdev
+build_directory="${VIRTDEV_CACHE}"
 output_directory="${build_directory}"
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile

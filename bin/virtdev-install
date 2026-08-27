@@ -34,7 +34,7 @@
 # Configuration via environment variables:
 #
 #   VIRTDEV_HOME              Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
-#   VIRTDEV_ISO               Default: ${XDG_CACHE_HOME:-~/.cache}/virtdev/virtdev.iso
+#   VIRTDEV_ISO               Default: ${VIRTDEV_CACHE}/virtdev.iso
 #   VIRTDEV_SSH_KEY           Default: ${VIRTDEV_HOME}/ssh/id
 #   VIRTDEV_TIMEZONE          Default: host timezone (UTC fallback)
 #   VIRTDEV_LOCALE            Default: host locale (en_US.UTF-8 fallback)
@@ -60,7 +60,8 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 import error lock arguments terminal ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
-: "${VIRTDEV_ISO:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev/virtdev.iso"}"
+: "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
+: "${VIRTDEV_ISO:="${VIRTDEV_CACHE}/virtdev.iso"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 
 host_timezone="$(readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||')"
@@ -181,7 +182,6 @@ install_sock="${installation_directory}"/install.sock
 console_sock="${installation_directory}"/console.sock
 install_progress="${installation_directory}"/progress.log
 
-: "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
 pacman_cache="${VIRTDEV_CACHE}/pacman"
 mkdir -p "${pacman_cache}"
 
