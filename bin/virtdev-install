@@ -31,6 +31,7 @@
 #  12   explicit install script missing or unreadable
 #  13   explicit inventory script missing or unreadable
 #  14   invalid installer lifecycle timeout
+#  15   invalid DNS address
 #
 # Configuration via environment variables:
 #
@@ -61,7 +62,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments terminal ssh
+import error lock arguments terminal ssh ip
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -119,7 +120,7 @@ declare -A spec_placeholders=([timezone]=tz [locale]=locale [keymap]=keymap
 # shellcheck disable=SC2034
 declare -a spec_positionals=("iso?")
 # shellcheck disable=SC2034
-declare -A flags=()
+declare -A flags=([dns]="${VIRTDEV_DNS}")
 declare -a positional=()
 arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
@@ -127,7 +128,7 @@ set -- "${positional[@]}"
 [[ -n "${flags[timezone]:-}" ]]  && VIRTDEV_TIMEZONE="${flags[timezone]}"
 [[ -n "${flags[locale]:-}" ]]    && VIRTDEV_LOCALE="${flags[locale]}"
 [[ -n "${flags[keymap]:-}" ]]    && VIRTDEV_KEYMAP="${flags[keymap]}"
-[[ -n "${flags[dns]:-}" ]]       && VIRTDEV_DNS="${flags[dns]}"
+VIRTDEV_DNS="${flags[dns]}"
 [[ -n "${flags[packages]:-}" ]]  && VIRTDEV_PACKAGES="${flags[packages]}"
 [[ -n "${flags[script]:-}" ]]    && VIRTDEV_SCRIPT="${flags[script]}"
 [[ -n "${flags[inventory]:-}" ]] && VIRTDEV_INVENTORY="${flags[inventory]}"
@@ -138,6 +139,10 @@ fi
 
 if [[ $# -eq 1 ]]; then
   VIRTDEV_ISO="${1}"
+fi
+
+if ! ip_literal_is_valid "${VIRTDEV_DNS}"; then
+  error 15 <<<"Invalid DNS address: '${VIRTDEV_DNS}' (expected an IPv4 or IPv6 literal)"
 fi
 
 if [[ -n "${VIRTDEV_PACKAGES:-}" && \

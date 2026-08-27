@@ -29,6 +29,21 @@ fw_cfg_dir=/sys/firmware/qemu_fw_cfg/by_name/opt/virtdev
 target=/mnt
 progress=/dev/virtio-ports/org.virtdev.install
 
+ip_literal_is_valid() {
+  local -r address="${1:-}"
+  local octet
+  local LC_ALL=C
+  if [[ "${address}" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]]; then
+    for octet in "${BASH_REMATCH[@]:1}"; do
+      (( 10#${octet} <= 255 )) || return 1
+    done
+    return 0
+  fi
+  [[ "${address}" == *:* \
+      && "${address}" =~ ^[0-9a-fA-F:.]+$ ]] || return 1
+  ip -6 address show to "${address}" &>/dev/null
+}
+
 progress_report() {
   # Best-effort side-channel: never let a missing/unwritable progress
   # device abort the install under `set -e`. As a bare statement, a
@@ -337,11 +352,8 @@ else
   dns=9.9.9.9
 fi
 
-# Validate before baking into the sealed base's resolved.conf: this is
-# the one fw_cfg value written into the base unchecked, and an embedded
-# newline would inject arbitrary [Resolve] directives that every derived
-# guest inherits. Validate-or-fall-back, matching keymap/locale/timezone.
-if [[ ! "${dns}" =~ ^[0-9a-fA-F.:]+$ ]]; then
+# Revalidate fw_cfg before writing shared resolver configuration.
+if ! ip_literal_is_valid "${dns}"; then
   printf >&2 'warning: invalid VIRTDEV_DNS %q; falling back to 9.9.9.9\n' "${dns}"
   dns=9.9.9.9
 fi

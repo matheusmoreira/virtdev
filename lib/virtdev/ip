@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# IP-literal validation.
+
+set -euo pipefail
+
+ip_literal_is_valid() {
+  local -r address="${1:-}"
+  local octet
+  local LC_ALL=C
+  if [[ "${address}" =~ ^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$ ]]; then
+    for octet in "${BASH_REMATCH[@]:1}"; do
+      (( 10#${octet} <= 255 )) || return 1
+    done
+    return 0
+  fi
+  [[ "${address}" == *:* \
+      && "${address}" =~ ^[0-9a-fA-F:.]+$ ]] || return 1
+  ip -6 address show to "${address}" &>/dev/null
+}

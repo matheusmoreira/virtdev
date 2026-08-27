@@ -354,7 +354,7 @@ Environment variables (defaults shown):
 | `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) |
 | `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) |
 | `VIRTDEV_KEYMAP` | host keymap (`us` fallback) |
-| `VIRTDEV_DNS` | `9.9.9.9` |
+| `VIRTDEV_DNS` | `9.9.9.9` (IPv4 or IPv6 literal) |
 | `VIRTDEV_PACKAGES` | (none) |
 | `VIRTDEV_SCRIPT` | (none) |
 | `VIRTDEV_INVENTORY` | (none) |
