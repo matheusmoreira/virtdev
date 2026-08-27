@@ -19,6 +19,9 @@
 # Exit codes:
 #
 #   0   success (key generated or already present)
+#   3   existing private key is invalid or is not ed25519
+#   4   public key path has an unsafe file type
+#   5   ssh-keygen is unavailable
 #   64  usage error
 
 set -euo pipefail
@@ -26,7 +29,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments
+import error arguments lock
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -43,6 +46,12 @@ if [[ $# -ne 0 ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
 
+lock_acquire
+
+if ! command -v ssh-keygen &>/dev/null; then
+  error 5 <<<'ssh-keygen not found; install OpenSSH'
+fi
+
 key_directory="$(dirname "${VIRTDEV_SSH_KEY}")"
 
 if [[ ! -d "${key_directory}" ]]; then
@@ -51,9 +60,71 @@ if [[ ! -d "${key_directory}" ]]; then
   chmod 700 "${key_directory}"
 fi
 
-if [[ -f "${VIRTDEV_SSH_KEY}" ]]; then
-  printf >&2 "SSH key already exists: '%s'\n" "${VIRTDEV_SSH_KEY}"
+public_key="${VIRTDEV_SSH_KEY}.pub"
+
+key_staging=''
+cleanup_key_staging() {
+  [[ -z "${key_staging}" ]] || rm -rf -- "${key_staging}"
+}
+trap cleanup_key_staging EXIT
+
+if [[ ! -e "${VIRTDEV_SSH_KEY}" && ! -L "${VIRTDEV_SSH_KEY}" ]]; then
+  key_staging="$(mktemp -d "${key_directory}/.virtdev-key.XXXXXX")"
+  ssh-keygen -q -t ed25519 -N '' -C 'virtdev' -f "${key_staging}/id"
+  chmod 600 "${key_staging}/id"
+  mv -T -- "${key_staging}/id" "${VIRTDEV_SSH_KEY}"
+  printf >&2 "SSH private key generated: '%s'\n" "${VIRTDEV_SSH_KEY}"
+fi
+
+if [[ ! -f "${VIRTDEV_SSH_KEY}" || -L "${VIRTDEV_SSH_KEY}" ]]; then
+  error 3 <<<"SSH private key is not a regular file: '${VIRTDEV_SSH_KEY}'"
+fi
+chmod 600 "${VIRTDEV_SSH_KEY}"
+
+# -P '' prevents an encrypted/foreign key from prompting on the terminal. The
+# private key is authoritative; derive the exact public type/blob from it and
+# require the ed25519 algorithm promised by this command.
+derived_line=''
+if ! derived_line="$(ssh-keygen -y -P '' -f "${VIRTDEV_SSH_KEY}" 2>/dev/null)"; then
+  error 3 <<MESSAGE
+Existing SSH private key is invalid, encrypted, or not ed25519:
+    '${VIRTDEV_SSH_KEY}'
+The file was preserved. Move it aside or select another VIRTDEV_SSH_KEY.
+MESSAGE
+fi
+derived_type=''
+derived_blob=''
+read -r derived_type derived_blob _ <<< "${derived_line}"
+if [[ "${derived_type}" != ssh-ed25519 \
+      || ! "${derived_blob}" =~ ^[A-Za-z0-9+/=]+$ ]]; then
+  error 3 <<MESSAGE
+Existing SSH private key is valid but is not an ed25519 key:
+    '${VIRTDEV_SSH_KEY}'
+The file was preserved. Move it aside or select another VIRTDEV_SSH_KEY.
+MESSAGE
+fi
+derived_public="${derived_type} ${derived_blob}"
+
+if [[ ( -e "${public_key}" || -L "${public_key}" ) \
+      && ( ! -f "${public_key}" || -L "${public_key}" ) ]]; then
+  error 4 <<<"SSH public key path is not a regular file: '${public_key}'"
+fi
+
+existing_public=''
+if [[ -f "${public_key}" ]]; then
+  existing_public="$(LC_ALL=C awk 'NR == 1 && NF >= 2 { print $1 " " $2; exit }' \
+    "${public_key}" 2>/dev/null || true)"
+fi
+
+if [[ "${existing_public}" != "${derived_public}" ]]; then
+  if [[ -z "${key_staging}" ]]; then
+    key_staging="$(mktemp -d "${key_directory}/.virtdev-key.XXXXXX")"
+  fi
+  printf '%s virtdev\n' "${derived_public}" > "${key_staging}/id.pub"
+  chmod 644 "${key_staging}/id.pub"
+  mv -T -- "${key_staging}/id.pub" "${public_key}"
+  printf >&2 "SSH public key created/repaired from the private key: '%s'\n" \
+    "${public_key}"
 else
-  ssh-keygen -t ed25519 -N '' -C 'virtdev' -f "${VIRTDEV_SSH_KEY}"
-  printf >&2 "SSH key generated: '%s'\n" "${VIRTDEV_SSH_KEY}"
+  printf >&2 "SSH key pair already valid: '%s'\n" "${VIRTDEV_SSH_KEY}"
 fi
