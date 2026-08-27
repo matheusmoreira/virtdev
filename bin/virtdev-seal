@@ -13,6 +13,16 @@
 # Run virtdev-install <iso> first to produce the installation directory.
 # Run virtdev-create <project> after sealing to create a project VM.
 #
+# Exit codes:
+#
+#   3  installation staging directory not found or not a real directory
+#   4  sealed-system path already exists
+#   5  required installation file missing or not a regular file
+#   6  system disk integrity check failed
+#   7  home disk integrity check failed
+#   8  unexpected installation entries would be stranded
+#   9  staging or namespace durability barrier failed
+#
 
 set -euo pipefail
 
@@ -40,14 +50,14 @@ lock_acquire
 installation_directory="${VIRTDEV_HOME}/installation"
 system_directory="${VIRTDEV_HOME}/system"
 
-if [[ ! -d "${installation_directory}" ]]; then
-  error 3 <<<"Installation directory not found: '${installation_directory}'"
+if [[ ! -d "${installation_directory}" || -L "${installation_directory}" ]]; then
+  error 3 <<<"Installation staging is not a real directory: '${installation_directory}'"
 fi
 
-if [[ -d "${system_directory}" ]]; then
+if [[ -e "${system_directory}" || -L "${system_directory}" ]]; then
   error 4 <<MESSAGE
-Sealed base system images already present: '${system_directory}'
-Remove the system directory manually to reseal.
+Sealed base system path already present: '${system_directory}'
+Inspect or remove it manually before sealing.
 MESSAGE
 fi
 
@@ -56,10 +66,38 @@ home_disk="${installation_directory}/home.qcow2"
 nvram="${installation_directory}/nvram"
 
 for f in "${system_disk}" "${home_disk}" "${nvram}"; do
-  if [[ ! -f "${f}" ]]; then
+  if [[ ! -f "${f}" || -L "${f}" ]]; then
     error 5 <<<"Installation file not found: '${f}'"
   fi
 done
+
+# installation/ is the unpublished staging tree. Refuse extras before making
+# any changes: renaming the whole directory is the atomic commit, so no file
+# can be stranded and system/ can never become partially populated.
+declare -a unexpected_entries=()
+while IFS= read -r -d '' entry; do
+  unexpected_entries+=("${entry}")
+done < <(find "${installation_directory}" -mindepth 1 -maxdepth 1 \
+  ! -name system.qcow2 ! -name home.qcow2 ! -name nvram \
+  ! -name generation -print0)
+
+if (( ${#unexpected_entries[@]} )); then
+  unexpected_list=''
+  for entry in "${unexpected_entries[@]}"; do
+    printf -v quoted_entry '%q' "${entry#"${installation_directory}/"}"
+    unexpected_list+="  ${quoted_entry}"$'\n'
+  done
+  error 8 <<MESSAGE
+Installation directory contains unexpected entries: '${installation_directory}'
+${unexpected_list}No base was published. Inspect or remove these entries, then retry.
+MESSAGE
+fi
+
+generation="${installation_directory}/generation"
+if [[ ( -e "${generation}" || -L "${generation}" ) \
+      && ( ! -f "${generation}" || -L "${generation}" ) ]]; then
+  error 5 <<<"Installation generation is not a regular file: '${generation}'"
+fi
 
 printf >&2 'Checking image integrity...\n'
 if ! qemu-img check -q "${system_disk}"; then
@@ -69,32 +107,38 @@ if ! qemu-img check -q "${home_disk}"; then
   error 7 <<<"Home disk image integrity check failed: '${home_disk}'"
 fi
 
-mkdir -p "${system_directory}"
-
-printf >&2 "Sealing base system images to '%s'...\n" "${system_directory}"
-mv "${system_disk}" "${system_directory}"/
-mv "${home_disk}"   "${system_directory}"/
-mv "${nvram}"       "${system_directory}"/
-
 printf >&2 'Writing generation counter...\n'
-printf '1\n' > "${system_directory}/generation"
+# A failed durability barrier from an earlier attempt can leave this staging
+# file mode 0444. It was never authoritative, so recreate it before retrying.
+rm -f -- "${generation}"
+printf '1\n' > "${generation}"
 
 printf >&2 'Marking base system images read-only...\n'
-chmod 444 "${system_directory}"/*
+chmod 444 "${system_disk}" "${home_disk}" "${nvram}" "${generation}"
 
-printf >&2 'Removing installation directory...\n'
-if ! rmdir "${installation_directory}" 2>/dev/null; then
-  # rmdir refused: something is in the directory beyond the three
-  # files we just moved out. Surface what is left so the user can
-  # decide what to do; leave system/ as the successfully sealed
-  # base. Don't rm -rf — the leftover state may be the user's work.
-  remaining="$(find "${installation_directory}" -mindepth 1 -printf '  %P\n' 2>/dev/null)"
-  error 8 <<MESSAGE
-Installation directory not empty after sealing: '${installation_directory}'
-${remaining}
-The base system is sealed at '${system_directory}'.
-Inspect the leftover files and remove the directory manually:
-    rm -rf '${installation_directory}'
+# Commit the fully prepared sibling tree with one rename. Flush staged bytes
+# and metadata before publication and the parent namespace afterward so a
+# power loss cannot expose a half-sealed system directory.
+if ! sync -f "${installation_directory}"; then
+  error 9 <<MESSAGE
+Could not durably flush installation staging: '${installation_directory}'
+No base was published. The installation tree is preserved for retry.
+MESSAGE
+fi
+
+printf >&2 "Publishing sealed base system at '%s'...\n" "${system_directory}"
+if ! mv -T -- "${installation_directory}" "${system_directory}"; then
+  error 9 <<MESSAGE
+Could not atomically publish the sealed base at '${system_directory}'.
+The installation tree is preserved for inspection or retry.
+MESSAGE
+fi
+
+if ! sync -f "${VIRTDEV_HOME}"; then
+  error 9 <<MESSAGE
+The sealed base was published at '${system_directory}', but the namespace
+durability barrier failed. Do not start a project until the filesystem is
+healthy and the directory has been inspected.
 MESSAGE
 fi
 
