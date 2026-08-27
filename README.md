@@ -293,7 +293,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-iso` | Build the Arch Linux installation ISO |
 | `virtdev-install [flags] [iso]` | Install base system to qcow2 disks |
 | `virtdev-seal` | Seal installation as read-only base |
-| `virtdev-maintain [flags]` | Boot sealed base for maintenance, reseal on exit (`--unfiltered` to skip the egress lockdown) |
+| `virtdev-maintain [flags]` | Boot sealed base for maintenance, reseal after confirmed guest poweroff (`--unfiltered` skips the egress lockdown) |
 | `sudo virtdev-firewall apply` | Generate + load the host egress lockdown (root, one-time) |
 | `virtdev-firewall status` | Print `active`/`inactive` for the lockdown (rootless) |
 

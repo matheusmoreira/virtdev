@@ -363,8 +363,9 @@ glob in `PKGBUILD` picks it up automatically.
   Every script defaults it consistently.
 - **Project name `maintenance`** is reserved by `virtdev-maintain`. The
   reservation is enforced at `virtdev-create` time. `virtdev-stop` skips
-  lock acquisition when the target is `maintenance` — that's the
-  documented abort path for a stuck maintenance session.
+  lock acquisition when the target is `maintenance`, providing a lockless
+  ACPI shutdown path for a stuck guest. To cancel the foreground maintenance
+  transaction while preserving staging, press Ctrl-C in its terminal.
 - **Sealed files (`system/*`)** are mode 444 by `chmod 444 system/*` glob
   in `virtdev-seal` and `virtdev-maintain`. Adding new files to `system/`
   means they get swept by the chmod too — fine today, but relevant for

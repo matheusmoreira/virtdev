@@ -70,18 +70,8 @@ if (( flags[acpi-only] )); then
   exit 0
 fi
 
-# The maintenance virtual machine is the one target that skips the
-# virtdev lock. virtdev-maintain holds the exclusive lock for its
-# entire session, so requiring it here would make 'virtdev-stop
-# maintenance' — the documented abort path — fail with lock
-# contention exactly when it is needed. Skipping is safe: maintain
-# has already serialized everything else, and the only virtdev
-# virtual machine that can be running during a maintain session is
-# virtdev-maintenance itself. Concurrent cleanup between this
-# script and maintain's post-exit path is idempotent (rm -f on
-# missing paths, rmdir || true) by construction. Unit state
-# (reset-failed) is owned strictly by maintain; see the conditional
-# guarding the reset-failed call below.
+# Maintenance skips the lock so ACPI shutdown can reach the unit while maintain
+# owns it. Concurrent runtime cleanup is idempotent; maintain owns unit reset.
 if [[ "${project}" != "maintenance" ]]; then
   lock_acquire
 fi

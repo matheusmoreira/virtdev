@@ -53,4 +53,27 @@ if ! grep -Fq 'socat is required for authoritative QMP launch confirmation.' \
   exit 1
 fi
 
+maintain_home="${test_tmp}/maintain-home"
+maintain_marker="${test_tmp}/maintenance-systemd-run.called"
+status=0
+PATH="${fixture_bin}" \
+  HOME="${test_tmp}" \
+  VIRTDEV_HOME="${maintain_home}" \
+  SYSTEMD_RUN_MARKER="${maintain_marker}" \
+  NO_COLOR=1 \
+  "${repository}/bin/virtdev-maintain" \
+    --unfiltered --no-provision --no-inventory \
+    >"${output}" 2>&1 || status=$?
+
+if (( status != 32 )); then
+  printf 'expected maintenance missing-socat exit 32, got %d\n' "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+if [[ -e "${maintain_marker}" || -e "${maintain_home}/maintenance" ]]; then
+  printf 'maintenance mutated state without its QMP shutdown client\n' >&2
+  exit 1
+fi
+
 printf 'ok - start refuses before submission when QMP readiness cannot be probed\n'
+printf 'ok - maintenance refuses before staging when shutdown proof is unavailable\n'

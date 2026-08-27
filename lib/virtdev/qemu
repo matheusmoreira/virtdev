@@ -5,13 +5,8 @@
 # qemu library: the shared QEMU argv and the post-launch activation
 # classifier for project and maintenance virtual machines.
 #
-# This is the network-isolation security boundary. virtdev-start and
-# virtdev-maintain both launch QEMU through the virtdev-netexec passt
-# shim with a byte-identical argv; the only legitimate differences are
-# the per-call scalars (image directory, fw_cfg project string, memory,
-# CPU count) and maintenance's trailing virtfs cache arguments. Keeping
-# the flag set in one place makes a silent drift — a dropped isolation
-# flag, a re-introduced SLIRP netdev — structurally impossible.
+# This owns the shared network-isolation baseline. Start uses it directly;
+# maintenance appends explicit shutdown-policy and cache arguments.
 #
 # Public:
 #   qemu_command <array_name> <disk_dir> <sock_dir> <fw_cfg_project> \
@@ -41,13 +36,10 @@
 #                         image. Callers default it via OVMF_CODE before
 #                         calling. Explicit parameter rather than an ambient
 #                         env read so the contract is visible at call sites.
-#       extra_args      — appended TRAILING, after the fixed flag set.
-#                         Additive only: these cannot alter the -drive or
-#                         -netdev lines, which are fixed literals above
-#                         the insertion point. virtdev-maintain passes its
-#                         -virtfs pacman-cache mounts here.
+#       extra_args      — trusted trailing arguments. Maintenance passes its
+#                         shutdown policy and cache mounts here.
 #
-#       The security-relevant flag set is OWNED here as fixed literals:
+#       The shared isolation baseline is fixed here:
 #       the OVMF pflash read-only firmware, the writable nvram pflash,
 #       the system/home virtio qcow2 drives, the passt -netdev stream
 #       (NO SLIRP -netdev user), virtio-rng, and -display none. There is
@@ -171,9 +163,7 @@ qemu_command() {
     -fw_cfg name=opt/virtdev/project,string="${fw_cfg_project}"
   )
 
-  # Trailing, additive extra args (maintenance's -virtfs cache mounts).
-  # They follow the fixed flag set and structurally cannot rewrite the
-  # -drive/-netdev lines above.
+  # Trailing arguments cannot rewrite the fixed drive/network entries above.
   if (( $# > 0 )); then
     _command+=("$@")
   fi

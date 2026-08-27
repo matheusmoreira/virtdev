@@ -8,7 +8,7 @@
 #
 #   Audit    — verify every included project has a manifest (pre-flight)
 #   Phase 1. Backup   — start, back up, and stop each project sequentially
-#   Phase 2. Maintain — boot the sealed base for maintenance, reseal on exit
+#   Phase 2. Maintain — reseal after confirmed guest shutdown and approval
 #   Phase 3. Rebuild  — recreate every included project on the new base
 #   Phase 4. Summary  — report results per project with resume commands
 #

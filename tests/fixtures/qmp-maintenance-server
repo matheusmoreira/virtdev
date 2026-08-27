@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${SYSTEMCTL_STATE_FILE:?}"
+: "${MAINTENANCE_QMP_EVENT_LOG:?}"
+: "${MAINTENANCE_QMP_SERVER_PID_FILE:?}"
+
+# One connection per socat fork; the listener survives until QMP quit.
+printf '%s\n' '{"QMP":{"version":{"qemu":{"major":11,"minor":1,"micro":0},"package":""},"capabilities":[]}}'
+
+while IFS= read -r request; do
+  case "${request}" in
+    *'"execute":"qmp_capabilities"'*)
+      printf '%s\n' '{"return":{}}'
+      ;;
+    *'"execute":"query-status"'*'"id":"virtdev-query-shutdown"'*)
+      printf 'query-status\n' >> "${MAINTENANCE_QMP_EVENT_LOG}"
+      printf '%s\n' '{"return":{"status":"shutdown","singlestep":false,"running":false},"id":"virtdev-query-shutdown"}'
+      ;;
+    *'"execute":"quit"'*'"id":"virtdev-quit"'*)
+      # Stop this boot's listener before Boot 2 can replace its PID file.
+      qmp_server_pid="$(< "${MAINTENANCE_QMP_SERVER_PID_FILE}")"
+      kill "${qmp_server_pid}" 2>/dev/null || true
+      for (( wait_attempt = 0; wait_attempt < 100; wait_attempt++ )); do
+        kill -0 "${qmp_server_pid}" 2>/dev/null || break
+        sleep 0.01
+      done
+      if kill -0 "${qmp_server_pid}" 2>/dev/null; then
+        printf '%s\n' '{"error":{"class":"GenericError","desc":"test listener did not terminate"},"id":"virtdev-quit"}'
+        exit 1
+      fi
+      # Prevent EXIT cleanup from signalling a recycled PID.
+      : > "${MAINTENANCE_QMP_SERVER_PID_FILE}"
+      printf 'quit\n' >> "${MAINTENANCE_QMP_EVENT_LOG}"
+      printf 'inactive\n' > "${SYSTEMCTL_STATE_FILE}"
+      printf '%s\n' '{"return":{},"id":"virtdev-quit"}'
+      exit 0
+      ;;
+    *)
+      printf '%s\n' '{"error":{"class":"CommandNotFound","desc":"unexpected test command"}}'
+      ;;
+  esac
+done

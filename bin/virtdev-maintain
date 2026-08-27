@@ -6,9 +6,7 @@
 # Boots the sealed base system in a writable maintenance staging area
 # where it is possible to configure and update the system
 # as well as seed dotfiles into the base system home disk.
-# Reseals automatically on clean power off
-# as signaled by the systemd unit exit status
-# after explicit confirmation from the user.
+# Reseals after QMP shutdown evidence, successful QEMU exit, and confirmation.
 #
 # Workflow:
 #
@@ -20,7 +18,7 @@
 #   6. Connect via SSH once the virtual machine is ready: virtdev-ssh maintenance
 #   7. Perform maintenance inside the virtual machine
 #   8. Power off, not reboot: sudo poweroff
-#   9. On clean exit
+#   9. After the two-part shutdown gate succeeds
 #      9.1. Boot again and take inventory (if step 5 succeeded)
 #      9.2. Show diff of before/after inventory
 #      9.3. Integrity check
@@ -38,11 +36,8 @@
 #                boot after the user powers off. The diff is shown
 #                before the reseal prompt. Non-fatal; skipped if absent.
 #
-# If the virtual machine does not exit cleanly,
-# as signaled by a non-zero systemd unit exit status
-# QEMU failure or SIGINT from Ctrl-C or virtdev-stop,
-# maintenance/ is left intact for inspection
-# and the sealed system/ is unchanged.
+# Failed shutdown proof, non-zero QEMU exit, or Ctrl-C preserves maintenance/
+# for inspection and leaves system/ unchanged.
 # Remove maintenance/ manually to retry.
 #
 # The maintenance virtual machine runs as a systemd user service
@@ -98,6 +93,8 @@
 #   28  base generation counter exhausted; reseal refused before mutation
 #   29  submitted maintenance unit state/termination is indeterminate
 #   30  terminal maintenance unit left malformed/unremovable runtime controls
+#   31  Boot 1 QEMU exited zero without positive guest-shutdown evidence
+#   32  socat is unavailable, so QMP shutdown evidence cannot be collected
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -128,7 +125,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm terminal port passt qemu firewall runtime
+import error lock arguments ssh project confirm terminal port passt qemu firewall runtime qmp
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -176,6 +173,14 @@ if [[ $# -ne 0 ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
 
+# QMP proof is mandatory; fail before the lock, staging, or submission.
+if ! command -v socat &>/dev/null; then
+  error 32 <<MESSAGE
+socat is required to collect positive guest-originated shutdown evidence through QMP.
+Install socat and retry: pacman -S socat
+MESSAGE
+fi
+
 # Network isolation (Phase 2). Resolved once here and consulted by
 # maintenance_boot, which gates BOTH Boot 1 (interactive) and Boot 2
 # (inventory) on the host egress lockdown. The maintenance virtual machine runs
@@ -206,8 +211,12 @@ fi
 
 maintenance_unit_owned=0
 maintenance_terminal_proven=0
+maintenance_shutdown_proven=0
 
 maintenance_boot() {
+  # Per-boot proof: Boot 2 must not inherit Boot 1.
+  maintenance_shutdown_proven=0
+
   # Gate the launch on the host egress lockdown. This function backs BOTH
   # Boot 1 and Boot 2, so the guard fires before each boot — if the
   # firewall went down between them, Boot 2 refuses (fail-closed) before
@@ -224,11 +233,12 @@ maintenance_boot() {
     return 1
   fi
 
-  local -a cache_args=()
+  # Expose poweroff as durable QMP shutdown; prevent panic from proving it.
+  local -a qemu_extra_args=(-no-shutdown -action panic=pause)
   # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
-  cache_args+=(-virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=mapped-xattr)
+  qemu_extra_args+=(-virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=mapped-xattr)
   # shellcheck disable=SC2054
-  [[ -d /var/cache/pacman/pkg ]] && cache_args+=(
+  [[ -d /var/cache/pacman/pkg ]] && qemu_extra_args+=(
     -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=mapped-xattr,readonly=on)
 
   if ! mkdir -p "${maintenance_project}"; then
@@ -250,17 +260,12 @@ maintenance_boot() {
   fi
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
-  # The QEMU argv (everything after the netexec `--` boundary) is owned by
-  # lib/virtdev/qemu so it cannot drift from virtdev-start's copy — it is
-  # the network-isolation security boundary. Maintenance's disks live in
-  # maintenance/ while its sockets live in projects/maintenance/, so the
-  # two roots are passed separately. cache_args (the -virtfs pacman-cache
-  # mounts) are trailing, additive extra args.
+  # Disk and runtime roots differ; shared flags own the isolation boundary.
   local -a qemu_argv=()
   if ! qemu_command qemu_argv \
       "${maintenance_directory}" "${maintenance_project}" maintenance \
       "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" "${OVMF_CODE}" \
-      "${cache_args[@]}"; then
+      "${qemu_extra_args[@]}"; then
     printf >&2 'Could not construct the maintenance QEMU command.\n'
     return 1
   fi
@@ -386,25 +391,8 @@ maintenance_wait_ssh() {
   ssh_poll_until_ready "${VIRTDEV_SSH_KEY}" "${maintenance_port}" "${unit}" "${VIRTDEV_WAIT_TIMEOUT}"
 }
 
-# maintenance_wait_exit [escalate]
-#   Block until the maintenance unit reaches a TERMINAL state
-#   (inactive/failed), then return 0. Waiting for terminal — not merely
-#   "no longer active" — matters because ExecMainStatus is final only
-#   once QEMU has exited, and a still-active unit reports
-#   ExecMainStatus=0: breaking on the transient 'deactivating' state, or
-#   returning on a timeout, would let the caller misread a wedged guest
-#   as a clean poweroff and reseal a live, dirty image.
-#
-#   Default (no argument): wait indefinitely. The interactive session
-#   uses this — the user decides when to `sudo poweroff`, which can take
-#   arbitrarily long; force-stopping a working session would be wrong.
-#
-#   "escalate": for an automated caller that has ALREADY requested
-#   shutdown. After VIRTDEV_STOP_TIMEOUT with no terminal state, force
-#   `systemctl stop` once; systemd's own TimeoutStopSec then escalates
-#   SIGTERM→SIGKILL, so the unit is guaranteed to terminate. We still
-#   return only on a real terminal state (never on the timeout), so the
-#   status the caller reads afterward is the genuine, non-zero one.
+# Wait for final ExecMainStatus. `escalate` delegates TERM/KILL to systemd;
+# process status never substitutes for QMP proof.
 maintenance_wait_exit() {
   local -r escalate="${1:-}"
   local -r deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
@@ -428,6 +416,42 @@ maintenance_wait_exit() {
     fi
     sleep 2
   done
+}
+
+# maintenance_wait_clean_shutdown <deadline-seconds>
+#
+# Returns:
+#   0  QMP shutdown evidence plus terminal unit
+#   1  terminal unit without shutdown evidence
+#   2  indeterminate ownership or terminal state
+maintenance_wait_clean_shutdown() {
+  local -r deadline_seconds="${1}"
+  local wait_status=0
+  qmp_wait_shutdown "${qmp_sock}" "${deadline_seconds}" "${unit}" \
+    || wait_status=$?
+
+  if (( wait_status == 0 )); then
+    maintenance_shutdown_proven=1
+    # Quit acknowledgement is best-effort; terminal unit state is authoritative.
+    qmp_quit "${qmp_sock}" 3 || true
+    maintenance_wait_exit escalate || return 2
+    return 0
+  fi
+
+  case "${VIRTDEV_QMP_WAIT_STATE}" in
+    terminal)
+      maintenance_terminal_proven=1
+      return 1
+      ;;
+    timeout)
+      # Force terminal ownership without converting timeout into proof.
+      maintenance_stop_and_confirm || return 2
+      return 1
+      ;;
+    manager-unreachable|nonterminal|*)
+      return 2
+      ;;
+  esac
 }
 
 maintenance_ssh() {
@@ -624,6 +648,7 @@ trap 'exit 143' TERM
 # from the same runtime source so it cannot drift from the qemu_command /
 # cleanup set.
 passt_sock="$(runtime_passt_sock "${maintenance_project}")"
+qmp_sock="$(runtime_qmp_sock "${maintenance_project}")"
 maintenance_launch_phase_file="$(runtime_launch_phase_file "${maintenance_project}")"
 
 # ── Boot 1: interactive maintenance session ─────────────────────────
@@ -788,15 +813,15 @@ printf >&2 '\nConnect to the maintenance virtual machine:\n\n'
 printf >&2 '\tvirtdev-ssh maintenance\n\n'
 printf >&2 'When done, power off to trigger resealing:\n\n'
 printf >&2 '\tsudo poweroff\n\n'
-printf >&2 'Waiting for virtual machine to exit...\n'
-printf >&2 'To abort:\n\n'
-printf >&2 '\tvirtdev-stop maintenance\n\n'
+printf >&2 'Waiting for a positively confirmed guest shutdown...\n'
+printf >&2 'To abort and preserve staging, press Ctrl-C in this terminal.\n\n'
 
-wait_exit_status=0
-maintenance_wait_exit || wait_exit_status=$?
-if (( wait_exit_status != 0 )); then
+shutdown_wait_status=0
+maintenance_wait_clean_shutdown 0 || shutdown_wait_status=$?
+if (( shutdown_wait_status == 2 )); then
   error 29 <<MESSAGE
-Could not observe a terminal maintenance unit state (status ${wait_exit_status}).
+Could not establish maintenance shutdown/terminal state.
+QMP wait state: ${VIRTDEV_QMP_WAIT_STATE}
 Runtime controls and staging were preserved; the EXIT guard will make one
 bounded stop attempt. Inspect the user systemd manager before deleting anything.
 MESSAGE
@@ -811,27 +836,26 @@ maintenance_cleanup_or_error 'Boot 1 terminal cleanup'
 
 printf >&2 '\n'
 
-# Any non-zero exit means the maintenance session did not finish
-# with a clean guest poweroff. The sealed base must NOT be
-# overwritten in that case: ext4 journal replay needs write
-# access, half-applied pacman transactions produce inconsistent
-# package state, and so on. Preserve maintenance/ for inspection
-# in every non-zero path, and let the user retry from a clean
-# start. See DESIGN.md 'Base System Maintenance' for the ext4
-# unclean-shutdown rationale.
-#
-# 143 is called out specifically because it is the common case: a
-# 'virtdev-stop maintenance' whose ACPI powerdown timed out and
-# fell back to SIGTERM, a 'systemctl --user stop
-# virtdev-maintenance', or an external kill -TERM all route here.
-# The message distinguishes the likely cause and explains why
-# SIGTERM-to-QEMU is not equivalent to a guest-level shutdown —
-# users who don't know the distinction are tempted to just say
-# 'y' to a reseal prompt, so we refuse the prompt entirely and
-# tell them how to redo the session cleanly.
+# Require QMP shutdown evidence and QEMU exit 0. SIGTERM may surface as 143 or
+# 0, so process status alone never authorizes reseal.
 case "${qemu_exit}" in
   0)
-    : # Clean guest poweroff. Fall through to the reseal prompt below.
+    if (( ! maintenance_shutdown_proven || shutdown_wait_status != 0 )); then
+      [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
+      error 31 <<MESSAGE
+Maintenance QEMU exited with status 0, but guest shutdown was not proven.
+
+A zero QEMU exit can be caused by monitor 'quit' and does not establish that
+the guest flushed filesystems or completed its shutdown services. Resealing is
+refused because QMP never observed status=shutdown under -no-shutdown.
+
+The sealed base images are intact: '${system_directory}'
+Maintenance images preserved for inspection: '${maintenance_directory}'
+Remove the staging directory manually after inspection, then retry and finish
+inside the guest with 'sudo poweroff'.
+MESSAGE
+    fi
+    :
     ;;
   143)
     [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
@@ -861,8 +885,8 @@ Discard the staging directory and re-enter maintenance:
     rm -rf '${maintenance_directory}'
     virtdev-maintain
 
-Inside the virtual machine, finish with 'sudo poweroff' — that triggers a
-proper guest-level shutdown and QEMU will then exit 0.
+Inside the virtual machine, finish with 'sudo poweroff'. The host will observe
+QEMU's guest-originated shutdown state, ask QEMU to quit, and require exit 0.
 MESSAGE
     ;;
   *)
@@ -871,9 +895,10 @@ MESSAGE
 Maintenance virtual machine exited abnormally.
 Unit exit status: ${qemu_exit}
 
-This is not a clean guest poweroff. Whatever happened may have
-left the guest filesystem in an inconsistent state (dirty ext4
-journal, half-applied writes). Resealing is refused.
+The complete shutdown gate failed: virtdev-maintain requires both positive
+guest-originated shutdown evidence and successful QEMU termination. Whatever
+happened may have left the guest filesystem inconsistent (dirty ext4 journal,
+half-applied writes). Resealing is refused.
 
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
@@ -882,12 +907,7 @@ MESSAGE
     ;;
 esac
 
-# qemu_exit == 0 only confirms the QEMU process exited without a
-# signal — it does not prove the guest actually ran its shutdown
-# sequence rather than being, say, manually 'exit 0' from a
-# foreground shell inside the guest. Require explicit user
-# confirmation before overwriting the sealed base system.
-printf >&2 '%s\n' "$(terminal_write fg=green 'Virtual machine exited cleanly.' reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green 'Guest-originated shutdown and QEMU termination confirmed.' reset)"
 
 # ── Boot 2: inventory capture ──────────────────────────────────────
 
@@ -896,6 +916,7 @@ if [[ -n "${inventory_before}" ]]; then
 
   inventory_after="$(mktemp)"
   do_diff=0
+  boot2_shutdown_status=1
 
   if maintenance_boot; then
     printf >&2 'Waiting for SSH...'
@@ -916,9 +937,13 @@ if [[ -n "${inventory_before}" ]]; then
         printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: inventory capture failed' reset)"
       fi
       maintenance_ssh -- sudo poweroff 2>/dev/null || true
-      if ! maintenance_wait_exit escalate; then
+      boot2_shutdown_status=0
+      maintenance_wait_clean_shutdown "${VIRTDEV_STOP_TIMEOUT}" \
+        || boot2_shutdown_status=$?
+      if (( boot2_shutdown_status == 2 )); then
         error 29 <<MESSAGE
-Inventory boot did not reach a provable terminal state.
+Inventory boot shutdown/terminal state is indeterminate.
+QMP wait state: ${VIRTDEV_QMP_WAIT_STATE}
 Runtime controls and staging were preserved; resealing is refused.
 MESSAGE
       fi
@@ -936,30 +961,22 @@ MESSAGE
         --property=ExecMainStatus --value 2>/dev/null || echo 1)"
     boot2_exit="${boot2_exit:-1}"
 
-    # Boot 2 DID launch (the `if maintenance_boot` above succeeded), so
-    # the guest opened the maintenance images and may have written to
-    # them. A non-zero terminal status therefore means the same thing it
-    # does for Boot 1: the guest did not power off cleanly, its ext4
-    # journal is potentially dirty, and qemu-img check (which only
-    # validates the qcow2 container, not the guest filesystem) cannot see
-    # it. Hard-gate the reseal exactly as Boot 1 does — a dirtied image
-    # sealed here is inherited by every project.
-    #
-    # 143 is the common case: the SSH-probe-failure path above uses the bounded
-    # stop-and-confirm helper (SIGTERM → QEMU exit 143), and
-    # maintenance_wait_exit escalates through the same helper if the guest
-    # wedges past VIRTDEV_STOP_TIMEOUT.
-    #
-    # This gate fires only on the booted-but-unclean path. A Boot 2 prerequisite
-    # failure before submission remains safe to skip; an ambiguous systemd-run
-    # failure is treated as submitted and refuses resealing because QEMU may
-    # have opened the images. Terminal cleanup runs before this gate. The reseal
-    # commit steps (generation bump, chmod 444, virtdev-exchange) have not run,
-    # so maintenance/ survives intact and the session can be retried.
+    # A submitted Boot 2 needs its own QMP proof and QEMU exit 0. qemu-img cannot
+    # validate the guest filesystem, so failed proof preserves staging.
     maintenance_cleanup_or_error 'Boot 2 terminal cleanup'
     case "${boot2_exit}" in
       0)
-        : # Clean inventory boot. do_diff was set by the capture above.
+        if (( ! maintenance_shutdown_proven || boot2_shutdown_status != 0 )); then
+          [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
+          [[ -n "${inventory_after}" ]] && rm -f "${inventory_after}"
+          error 24 <<MESSAGE
+Inventory boot QEMU exited with status 0, but QMP did not prove guest shutdown.
+A monitor quit or another process-only exit can leave the guest filesystem
+dirty despite status 0. Resealing is refused; staging is preserved:
+    ${maintenance_directory}
+MESSAGE
+        fi
+        :
         ;;
       *)
         [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
@@ -970,8 +987,9 @@ Unit exit status: ${boot2_exit}$( [[ "${boot2_exit}" == "143" ]] && printf ' (SI
 
 After a clean interactive session, virtdev-maintain boots the
 to-be-sealed images a second time to capture the after-inventory.
-That boot did not end with a clean guest poweroff, so the maintenance
-image may now carry a dirty ext4 journal or half-applied writes.
+The required positive guest-originated shutdown evidence plus successful QEMU
+termination gate did not complete, so the maintenance image may now carry a
+dirty ext4 journal or half-applied writes.
 qemu-img check validates only the qcow2 container, not the guest
 filesystem, so resealing in this state would bake the dirty state
 into the base every project inherits. Resealing is refused.

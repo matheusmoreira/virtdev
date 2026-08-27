@@ -6,6 +6,19 @@ case "${MAINTENANCE_SSH_MODE:-failure}" in
   ready)
     exit 0
     ;;
+  ready-exit)
+    : "${SYSTEMCTL_STATE_FILE:?}"
+    printf 'inactive\n' > "${SYSTEMCTL_STATE_FILE}"
+    exit 0
+    ;;
+  ready-boot2-exit)
+    : "${SYSTEMCTL_STATE_FILE:?}"
+    : "${MAINTENANCE_BOOT_COUNT_FILE:?}"
+    if [[ "$(< "${MAINTENANCE_BOOT_COUNT_FILE}")" == 2 ]]; then
+      printf 'inactive\n' > "${SYSTEMCTL_STATE_FILE}"
+    fi
+    exit 0
+    ;;
   manager-loss)
     : "${SYSTEMCTL_UNREACHABLE_FILE:?}"
     : > "${SYSTEMCTL_UNREACHABLE_FILE}"

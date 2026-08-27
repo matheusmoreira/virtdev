@@ -5,7 +5,35 @@ set -euo pipefail
 : "${SYSTEMCTL_STATE_FILE:?}"
 : "${MAINTENANCE_RUNTIME_DIRECTORY:?}"
 
+if [[ -n "${MAINTENANCE_BOOT_COUNT_FILE:-}" ]]; then
+  maintenance_boot_count=0
+  if [[ -f "${MAINTENANCE_BOOT_COUNT_FILE}" ]]; then
+    maintenance_boot_count="$(< "${MAINTENANCE_BOOT_COUNT_FILE}")"
+  fi
+  (( ++maintenance_boot_count ))
+  printf '%d\n' "${maintenance_boot_count}" \
+    > "${MAINTENANCE_BOOT_COUNT_FILE}"
+fi
+
 [[ -n "${SYSTEMD_RUN_MARKER:-}" ]] && : > "${SYSTEMD_RUN_MARKER}"
+if [[ -n "${MAINTENANCE_NO_SHUTDOWN_MARKER:-}" ]]; then
+  for argument in "$@"; do
+    if [[ "${argument}" == -no-shutdown ]]; then
+      : > "${MAINTENANCE_NO_SHUTDOWN_MARKER}"
+      break
+    fi
+  done
+fi
+if [[ -n "${MAINTENANCE_PANIC_PAUSE_MARKER:-}" ]]; then
+  previous_argument=""
+  for argument in "$@"; do
+    if [[ "${previous_argument}" == -action && "${argument}" == panic=pause ]]; then
+      : > "${MAINTENANCE_PANIC_PAUSE_MARKER}"
+      break
+    fi
+    previous_argument="${argument}"
+  done
+fi
 printf 'active\n' > "${SYSTEMCTL_STATE_FILE}"
 mkdir -p "${MAINTENANCE_RUNTIME_DIRECTORY}"
 printf 'qemu\n' > "${MAINTENANCE_RUNTIME_DIRECTORY}/launch.phase"
@@ -15,8 +43,18 @@ if [[ "${MAINTENANCE_MALFORMED_CONTROL:-0}" == 1 ]]; then
 else
   : > "${MAINTENANCE_RUNTIME_DIRECTORY}/monitor.sock"
 fi
-for control in console.sock passt.sock qmp.sock; do
+for control in console.sock passt.sock; do
   : > "${MAINTENANCE_RUNTIME_DIRECTORY}/${control}"
 done
+
+if [[ -n "${MAINTENANCE_QMP_HANDLER:-}" ]]; then
+  : "${MAINTENANCE_QMP_SERVER_PID_FILE:?}"
+  socat UNIX-LISTEN:"${MAINTENANCE_RUNTIME_DIRECTORY}/qmp.sock",fork \
+    EXEC:"${MAINTENANCE_QMP_HANDLER}" &
+  qmp_server_pid=$!
+  printf '%d\n' "${qmp_server_pid}" > "${MAINTENANCE_QMP_SERVER_PID_FILE}"
+else
+  : > "${MAINTENANCE_RUNTIME_DIRECTORY}/qmp.sock"
+fi
 
 exit "${SYSTEMD_RUN_STATUS:-0}"

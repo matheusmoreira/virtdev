@@ -248,8 +248,17 @@ use but worth knowing if any tool relies on it for namespacing.
 
 **Note on unclean shutdown:** ext4 requires journal replay on unclean shutdown,
 which needs write access. The base image must be cleanly shut down before
-sealing. `virtdev-maintain` enforces this by requiring a clean
-poweroff before resealing.
+sealing. Maintenance QEMU runs with `-no-shutdown` and `-action panic=pause`;
+`virtdev-maintain` requires QMP `query-status` to report `status=shutdown` and
+`running=false`, then asks QEMU to quit and proves its systemd unit terminated
+successfully. A bare QEMU exit status—including zero from monitor `quit`—is not
+accepted as guest-shutdown evidence.
+
+This is positive **guest-originated shutdown evidence**, not attestation that a
+particular userspace finalizer ran: a privileged guest can request emergency
+poweroff without completing normal systemd shutdown services. The maintenance
+guest is trusted; a future stronger contract can add a per-boot, nonce-bound
+finalizer acknowledgement after its last sync step.
 
 ### Home Disk
 
@@ -271,8 +280,9 @@ detached and attached to another.
 4. Takes inventory if present (captures diffable state for later comparison)
 5. User performs maintenance in a separate terminal: `pacman -Syu`, etc.
 6. User powers off the virtual machine: `sudo poweroff`
-7. On clean exit, if inventory was captured: boots a second time,
-   captures inventory again, shows a diff of what changed
+7. After QMP positively confirms guest shutdown and QEMU exits successfully,
+   if inventory was captured: boots a second time, captures inventory again,
+   and requires the same shutdown proof before showing a diff
 8. User confirms reseal; `virtdev-exchange` flushes the staged filesystem,
    atomically swaps `system/` and `maintenance/` via `renameat2(2)` with
    `RENAME_EXCHANGE`, then flushes the exchanged namespace before the old tree
@@ -307,8 +317,9 @@ Two optional hooks live in `${XDG_CONFIG_HOME}/virtdev/maintenance/`:
   start (the images were never opened and stay clean): in those cases
   the second boot and diff are skipped and the reseal proceeds
   normally. However, if the second (inventory) boot launches and then
-  exits unclean (e.g. SSH never came up and the boot was stopped,
-  exit 143), the reseal is refused (`error 24`) to avoid sealing a
+  lacks shutdown proof (e.g. SSH never came up and the boot was force-stopped,
+  whether QEMU reports exit 0 or a signal-derived status), the reseal is
+  refused (`error 24`) to avoid sealing a
   potentially dirty image into the base; the maintenance staging is
   preserved so the session can be retried.
 
@@ -465,8 +476,10 @@ QEMU flags of note:
   ACPI `system_powerdown`, interactive `virtdev-monitor`)
 - `-chardev socket,id=qmp,...,server=on,wait=off -mon chardev=qmp,mode=control` — host-side
   QMP control channel; `virtdev-start` probes it with `query-status` to confirm QEMU actually
-  launched before publishing the port. Host-only, guest-unreachable (bound only to `-mon`, no
-  guest `-device`), same exposure class as the HMP monitor
+  launched before publishing the port. Maintenance additionally launches with
+  `-no-shutdown` and `-action panic=pause`, requires QMP's durable `shutdown`
+  runstate, and only then sends QMP `quit`. Host-only, guest-unreachable (bound
+  only to `-mon`, no guest `-device`), same exposure class as the HMP monitor
 - `-chardev socket ... -serial` — serial console via Unix socket
 
 Stopping a VM sends `system_powerdown` via the monitor socket (ACPI power
@@ -500,11 +513,12 @@ The transient unit is **not** launched with `--collect`. Leaving the default
 `CollectMode=inactive` in place means that a failed unit persists until
 `systemctl reset-failed` is called, so `virtdev-stop` can reliably query
 `ExecMainStatus` and `ActiveState` after the wait completes. `virtdev-stop`
-reports the QEMU exit status alongside the stop confirmation (`0` for a
-clean guest poweroff, `143` for a SIGTERM fallback, etc.) and asserts that
-the unit has reached a terminal state (`inactive` or `failed`) before
-removing sockets. `virtdev-start` calls `reset-failed` before `systemd-run`
-to clear any residual state from a previous failed start.
+reports QEMU's final exit status alongside the stop confirmation and asserts
+that the unit has reached a terminal state (`inactive` or `failed`) before
+removing sockets. A host SIGTERM may surface as a signal-derived status or as
+0 when QEMU handles the signal; neither value proves guest shutdown.
+`virtdev-start` calls `reset-failed` before `systemd-run` to clear any residual
+state from a previous failed start.
 
 ### Host egress lockdown (Phase 2 network isolation)
 
@@ -770,9 +784,8 @@ public entry points cover the observed flavors:
   is already running" instead, since the user invoked `maintain`
   expecting a fresh session.
 
-`virtdev-stop`'s special case for the maintenance project (skip the
-lock entirely so `virtdev-stop maintenance` can still abort a stuck
-session) lives at the call site:
+`virtdev-stop`'s special case for the maintenance project (skip the lock so an
+ACPI shutdown request can still reach a stuck session) lives at the call site:
 
 ```bash
 if [[ "${project}" != "maintenance" ]]; then
@@ -887,7 +900,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets, `port` running-signal, and atomic `launch.phase` exit-provenance marker (`runtime_socket_basenames`, `runtime_control_basenames`, path/phase accessors, `runtime_clean`/`runtime_clean_sockets`, `runtime_socket_name_maxlen`); feeds `validate`'s sun_path cap so the project-name limit tracks the socket set | none |
 | `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags. The forward-port bind race is detected via `port_in_use`, not a passt helper | 83, 84, 85, 86 |
 | `qemu` | the shared QEMU argv and post-launch activation classifier (`qemu_command`, `qemu_activation_classify`); the network-isolation security boundary keeping `start` and `maintain`'s QEMU flags byte-identical. Derives socket paths from `runtime` and wires an additive host-side QMP control socket | 90, 91 |
-| `qmp` | minimal QMP control client (`qmp_query_running` liveness probe over a socat coproc, internal `_qmp_exchange`); host↔QEMU only. `virtdev-start`'s post-launch confirmation reads it | none |
+| `qmp` | bounded QMP control client (`qmp_query_running`, `qmp_wait_shutdown`, `qmp_quit` over a socat coproc, internal `_qmp_exchange`); host↔QEMU only. Start uses it for launch readiness; maintenance uses it for positive guest-shutdown evidence before reseal | none |
 | `firewall` | host egress lockdown policy single-source-of-truth (`firewall_slice_for`, `firewall_zone_of_slice`, `firewall_zone_default`, `firewall_require`, `firewall_is_active`, `firewall_assert_unit_filtered`, `firewall_zone_valid`, `firewall_zones`) + zone/destination-set constants. Root-only ruleset generation and apply live in `bin/virtdev-firewall`, not here | 88 |
 | `confirm` | interactive confirmation prompts (`confirm_word`, `confirm_proceed`) | none (caller-supplied) |
 | `terminal` | terminal-aware output via terminfo/tput (`terminal_init`, `terminal_write`, `terminal` array); lazy-inits on first `terminal_write` call using the color mode from `arguments_parse` | none |
@@ -1096,8 +1109,9 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
                         before the reseal prompt. Non-fatal when absent,
                         when the before-capture fails, or when the second
                         boot fails to start (images stay clean). If the
-                        second boot launches but exits unclean, the reseal
-                        is refused to protect the base (exit 24); the
+                        second boot launches but lacks positive QMP shutdown
+                        evidence or exits unclean, the reseal is refused to
+                        protect the base (exit 24); the
                         staging is preserved for retry. Suppressible with
                         --no-inventory.
   projects/
