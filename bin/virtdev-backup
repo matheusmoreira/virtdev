@@ -222,7 +222,17 @@ Blank lines and '#' comments are ignored.
 MESSAGE
 fi
 
-if ! manifest_has_entries "${manifest_path}"; then
+# Freeze the exact manifest bytes that this backup will validate, record, and
+# pass to rsync. Validating the mutable source path and copying it later would
+# allow a replacement between those steps to bypass the checks.
+manifest_copy="$(mktemp)"
+cleanup_manifest_copy() {
+  rm -f "${manifest_copy}"
+}
+trap cleanup_manifest_copy EXIT
+cp -- "${manifest_path}" "${manifest_copy}"
+
+if ! manifest_has_entries "${manifest_copy}"; then
   error 9 <<MESSAGE
 Backup manifest has no paths: ${manifest_path}
 Every line is blank, a comment, or indented. Add at least one path
@@ -237,7 +247,7 @@ fi
 # omitted from the snapshot. Surface this as a hard error rather
 # than allow a silently-incomplete backup. Match leading-slash
 # entries even with surrounding whitespace.
-abs_lines="$(grep -nE '^\s*/' "${manifest_path}" || true)"
+abs_lines="$(grep -nE '^\s*/' "${manifest_copy}" || true)"
 if [[ -n "${abs_lines}" ]]; then
   error 15 <<MESSAGE
 Backup manifest contains absolute paths: ${manifest_path}
@@ -261,7 +271,7 @@ bad_shape="$(awk '
   /^[[:space:]]/  { printf("%d: leading whitespace: %s\n", NR, $0); next }
   /[[:space:]]$/  { printf("%d: trailing whitespace: %s\n", NR, $0); next }
   /[[:cntrl:]]/   { printf("%d: control character: %s\n", NR, $0); next }
-' "${manifest_path}")"
+' "${manifest_copy}")"
 if [[ -n "${bad_shape}" ]]; then
   error 16 <<MESSAGE
 Backup manifest has malformed path entries: ${manifest_path}
@@ -298,6 +308,7 @@ rsync_log=
 rsync_wrapper=
 cleanup_partial() {
   (( backup_succeeded )) || rm -rf "${partial}"
+  [[ -n "${manifest_copy}" ]] && rm -f "${manifest_copy}"
   [[ -n "${rsync_log}" ]] && rm -f "${rsync_log}"
   [[ -n "${rsync_wrapper}" ]] && rm -f "${rsync_wrapper}"
   # The trap's last statement must succeed: a short-circuited `[[ … ]] && rm` above
@@ -309,7 +320,8 @@ cleanup_partial() {
 }
 trap cleanup_partial EXIT
 
-cp "${manifest_path}" "${partial}/manifest"
+mv -- "${manifest_copy}" "${partial}/manifest"
+manifest_copy=
 
 # Record the source project. virtdev-restore reads this and refuses
 # to proceed if its <project> argument disagrees, which catches the
@@ -337,20 +349,21 @@ ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 # manifest entry (e.g. the '.claude/projects/' Claude state) is recreated
 # as an EMPTY directory in the snapshot and its contents are silently
 # skipped — the backup reports success while capturing nothing.
-rsync_opts=(-a -r --no-D --ignore-missing-args --stats --safe-links)
+rsync_opts=(
+  -a -r --no-D --ignore-missing-args --stats --safe-links
+  --one-file-system --sparse
+)
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
-# KNOWN LIMITATION (left unfixed): --safe-links filters symlinks found DURING
-# traversal, not a --files-from root that is itself a trailing-slash directory
-# symlink (the manifest convention, e.g. '.claude/projects/'). A compromised
-# guest that swaps such a root for a symlink to an out-of-tree path
-# (`ln -sfn / ~/.claude/projects`) makes rsync follow it and pull an unbounded
-# subtree — a host disk-exhaustion DoS (no host-file disclosure). No rsync flag
-# fixes it (tested --munge-links / --copy-unsafe-links on 3.4.4; making
-# --safe-links cover --files-from roots would be an upstream change). Dropping the
-# trailing slash blocks the follow but also stops capturing legitimate
-# symlinked-dir entries, so it is NOT applied: a guest compromised enough to plant
-# this already controls its own backed-up content, so the bounded-snapshot
-# guarantee is moot for that guest anyway.
+# rsync gives a trailing-slash --files-from root special directory-following
+# behavior before --safe-links gets a chance to filter it. Normalize those
+# slashes away in a private files-from copy: -r still recurses into real
+# directories, while a root swapped to a symlink is preserved as a symlink and
+# cannot redirect traversal to / or another out-of-tree hierarchy.
+# --one-file-system additionally prevents a compromised guest from grafting a
+# larger/network/pseudo filesystem beneath a legitimate manifest directory;
+# --sparse prevents a huge sparse guest file from expanding on the host.
+rsync_files_from="${partial}/files-from"
+manifest_write_rsync_files_from "${partial}/manifest" "${rsync_files_from}"
 #
 # --copy-links is appended AFTER --safe-links and overrides it: rsync
 # dereferences symlinks on the sender (guest) side, so a guest symlink
@@ -377,7 +390,7 @@ printf >&2 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
 # locale rsync would emit a translated label and the awk match would
 # fail silently.
 if ! LC_ALL=C rsync "${rsync_opts[@]}" \
-    --files-from=<(grep -Ev '^\s*(#|$)' "${partial}/manifest") \
+    --files-from="${rsync_files_from}" \
     -e "${ssh_command}" \
     "dev@127.0.0.1:/home/dev/" \
     "${partial}/tree/" \
@@ -422,6 +435,8 @@ MESSAGE
       ;;
   esac
 fi
+
+rm -f "${rsync_files_from}"
 
 # Refuse a snapshot whose tree captured nothing. The manifest may
 # reference paths that are all absent on the guest (typo, wrong
