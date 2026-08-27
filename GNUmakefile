@@ -16,6 +16,9 @@ SCDOC := $(SCDOC)
 
 scripts := $(filter-out bin/virtdev-exchange,$(wildcard bin/virtdev bin/virtdev-*))
 libraries := $(wildcard lib/virtdev/*)
+iso_scripts := iso/profiledef.sh \
+	iso/airootfs/root/virtdev/install.sh \
+	iso/airootfs/root/virtdev/virtdev-ssh-hostkeys
 test_scripts := $(wildcard tests/run tests/test-*.bash tests/fixtures/*)
 manpages := $(patsubst %.scd,%,$(wildcard man/*.scd))
 
@@ -31,8 +34,8 @@ clean:
 	rm -f bin/virtdev-exchange $(manpages)
 
 check: bin/virtdev-exchange
-	bash -n $(scripts) $(libraries) $(test_scripts)
-	shellcheck $(scripts) $(libraries) $(test_scripts)
+	bash -n $(scripts) $(libraries) $(iso_scripts) $(test_scripts)
+	shellcheck $(scripts) $(libraries) $(iso_scripts) $(test_scripts)
 	bash tests/run
 	cd network && cargo test --all-targets --locked --offline
 

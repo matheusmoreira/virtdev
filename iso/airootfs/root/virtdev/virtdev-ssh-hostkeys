@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_file="${VIRTDEV_FW_CFG_PROJECT:-/sys/firmware/qemu_fw_cfg/by_name/opt/virtdev/project/raw}"
+ssh_directory="${VIRTDEV_SSH_DIRECTORY:-/etc/ssh}"
+runtime_directory="${VIRTDEV_SSH_RUNTIME_DIRECTORY:-/run/virtdev-sshd}"
+keygen="${VIRTDEV_SSH_KEYGEN:-/usr/bin/ssh-keygen}"
+runtime_key="${runtime_directory}/ssh_host_ed25519_key"
+maintenance_marker="${runtime_directory}/maintenance"
+
+read_project() {
+  local project=""
+  if [[ ! -r "${project_file}" ]] \
+      || IFS= read -r -d '' project < "${project_file}"; then
+    printf >&2 'virtdev: missing or malformed fw_cfg project identity\n'
+    return 1
+  fi
+  local LC_ALL=C
+  if [[ ! "${project}" =~ ^[a-zA-Z0-9_-]+$ ]] \
+      || (( ${#project} > 64 )); then
+    printf >&2 'virtdev: invalid fw_cfg project identity\n'
+    return 1
+  fi
+  printf %s "${project}"
+}
+
+scrub() {
+  local host_key
+  local -a host_keys=()
+  shopt -s nullglob
+  host_keys=(
+    "${ssh_directory}"/ssh_host_*_key
+    "${ssh_directory}"/ssh_host_*_key.pub
+  )
+  for host_key in "${host_keys[@]}"; do
+    if [[ ! -f "${host_key}" && ! -L "${host_key}" ]]; then
+      printf >&2 'virtdev: refusing unsafe SSH host-key entry: %s\n' \
+        "${host_key}"
+      return 1
+    fi
+  done
+  (( ${#host_keys[@]} == 0 )) || rm -f -- "${host_keys[@]}"
+  sync -f "${ssh_directory}"
+}
+
+prepare() {
+  local project
+  project="$(read_project)" || return 1
+  [[ "${project}" == maintenance ]] || return 0
+
+  install -d -m 0700 "${runtime_directory}"
+  rm -f -- "${runtime_key}" "${runtime_key}.pub" \
+    "${runtime_directory}/hostkey.conf" "${maintenance_marker}"
+  umask 077
+  "${keygen}" -q -t ed25519 -N '' -f "${runtime_key}"
+  printf 'HostKey %s\n' "${runtime_key}" \
+    > "${runtime_directory}/hostkey.conf"
+
+  scrub
+  : > "${maintenance_marker}"
+}
+
+generate() {
+  local project
+  project="$(read_project)" || return 1
+  if [[ "${project}" == maintenance ]]; then
+    if [[ ! -f "${maintenance_marker}" ]]; then
+      printf >&2 'virtdev: maintenance host-key preparation is incomplete\n'
+      return 1
+    fi
+    return 0
+  fi
+  exec "${keygen}" -A
+}
+
+case "${1:-}" in
+  scrub) scrub ;;
+  prepare) prepare ;;
+  generate) generate ;;
+  *) printf >&2 'usage: %s {scrub|prepare|generate}\n' "${0##*/}"; exit 64 ;;
+esac

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ "${1:-}" == -A ]]; then
+  : "${SSH_KEYGEN_ALL_MARKER:?}"
+  : > "${SSH_KEYGEN_ALL_MARKER}"
+  if [[ -n "${SSH_KEYGEN_DIRECTORY:-}" ]]; then
+    install -d -m 0700 "${SSH_KEYGEN_DIRECTORY}"
+    host_key="${SSH_KEYGEN_DIRECTORY}/ssh_host_ed25519_key"
+    if [[ ! -e "${host_key}" && ! -e "${host_key}.pub" ]]; then
+      /usr/bin/ssh-keygen -q -t ed25519 -N '' -f "${host_key}"
+    fi
+  fi
+  exit 0
+fi
+
+key=""
+while (( $# > 0 )); do
+  if [[ "${1}" == -f ]]; then
+    key="${2}"
+    break
+  fi
+  shift
+done
+[[ -n "${key}" ]] || exit 2
+printf 'private fixture\n' > "${key}"
+printf 'public fixture\n' > "${key}.pub"
+chmod 600 "${key}"
+chmod 644 "${key}.pub"

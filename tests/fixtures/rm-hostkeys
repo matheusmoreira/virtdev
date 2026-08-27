@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+for argument in "$@"; do
+  [[ "${argument}" != "${SSH_RM_FAIL_TARGET:-}" ]] || exit 1
+done
+exec /usr/bin/rm "$@"

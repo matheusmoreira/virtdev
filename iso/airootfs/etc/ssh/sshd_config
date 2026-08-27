@@ -8,6 +8,7 @@
 # Port 22
 
 PubkeyAuthentication     yes
+Include                  /run/virtdev-sshd/*.conf
 HostKey                  /etc/ssh/ssh_host_ed25519_key
 AuthorizedKeysFile       .ssh/authorized_keys
 RequiredRSASize          4096

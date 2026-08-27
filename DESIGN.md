@@ -405,7 +405,13 @@ The installed system runs a hardened `sshd`:
   adding `AcceptEnv` and `StreamLocalBindUnlink`)
 
 The same `sshd_config` is used in both the live ISO environment and the
-installed system.
+installed system. The installer scrubs host keys after all customization, so
+the sealed base starts keyless. Ordinary projects generate keys in their
+writable system delta and keep their identity across restarts. Before
+maintenance sshd starts, `virtdev-ssh-hostkeys` scrubs persistent keys, syncs
+the deletion, creates an ephemeral ed25519 key under `/run`, and makes
+`sshdgenkeys` skip persistent generation. Resealing cannot clone that identity
+into future projects, even if the guest later powers off without a finalizer.
 
 Client-side, `virtdev-ssh` assembles an SSH config from up to four
 sources (per-project trigger output, system trigger output, per-project
@@ -419,12 +425,11 @@ Other host-to-VM SSH invocations (`virtdev-wait`, `virtdev-maintain`,
 options directly via command-line flags.
 
 All host-to-VM connections pass
-`-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`. The
-host key changes on every base reseal and every project recreate, so
-a persistent `known_hosts` entry would produce a host-key-mismatch
-warning on every legitimate operation. The SSH forward is bound to
-loopback only (passt `-t 127.0.0.1/<port>:22`), so the man-in-the-middle
-attacks that `StrictHostKeyChecking` defends against do not apply.
+`-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`. A project key is
+stable until recreation; maintenance uses a new ephemeral key per boot. The SSH
+forward is bound to loopback only (passt `-t 127.0.0.1/<port>:22`), so the
+man-in-the-middle attacks that `StrictHostKeyChecking` defends against do not
+apply.
 
 **Serial console autologin:** the serial console (`console.sock`)
 auto-logs in as `dev` via a systemd drop-in on `serial-getty@ttyS0`.

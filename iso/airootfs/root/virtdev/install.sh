@@ -261,12 +261,7 @@ printf 'virtdev\n' > "${target}"/etc/hostname
 
 cp /root/virtdev/virtdev-hostname.service "${target}"/etc/systemd/system/
 
-# Force qemu_fw_cfg to load via systemd-modules-load.service so the
-# hostname unit's `After=systemd-modules-load.service` ordering and its
-# ConditionPathExists on the fw_cfg sysfs path are satisfied
-# deterministically. Otherwise the module is only udev-coldplug-loaded,
-# which can race the early sysinit.target unit and silently skip
-# hostname injection (guest stays named 'virtdev').
+# Load fw_cfg before services consume the project identity.
 install -d "${target}"/etc/modules-load.d
 printf 'qemu_fw_cfg\n' > "${target}"/etc/modules-load.d/virtdev.conf
 
@@ -397,6 +392,14 @@ chmod 440 "${target}"/etc/sudoers.d/dev
 
 progress_report user:sshd
 cp /etc/ssh/sshd_config "${target}"/etc/ssh/sshd_config
+install -Dm755 /root/virtdev/virtdev-ssh-hostkeys \
+  "${target}"/usr/local/lib/virtdev/ssh-hostkeys
+install -Dm644 /root/virtdev/virtdev-ssh-hostkeys.service \
+  "${target}"/etc/systemd/system/virtdev-ssh-hostkeys.service
+install -Dm644 /root/virtdev/sshd-virtdev-hostkeys.conf \
+  "${target}"/etc/systemd/system/sshd.service.d/virtdev-hostkeys.conf
+install -Dm644 /root/virtdev/sshdgenkeys-virtdev-hostkeys.conf \
+  "${target}"/etc/systemd/system/sshdgenkeys.service.d/virtdev-hostkeys.conf
 
 printf 'virtdev: user and SSH configured\n'
 
@@ -477,6 +480,9 @@ fi
 # ---------------------------------------------------------------------------
 # 20. Finalize
 # ---------------------------------------------------------------------------
+
+# Hooks may generate distro host keys; scrub after all target customization.
+arch-chroot "${target}" /usr/local/lib/virtdev/ssh-hostkeys scrub
 
 # shellcheck disable=SC2034  # read inside the EXIT trap
 install_failed=0

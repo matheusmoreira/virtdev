@@ -1,0 +1,8 @@
+[Unit]
+Description=Prepare the virtdev SSH host identity
+After=systemd-modules-load.service
+Before=sshdgenkeys.service sshd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/virtdev/ssh-hostkeys prepare

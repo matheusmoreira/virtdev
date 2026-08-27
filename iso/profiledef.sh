@@ -26,4 +26,5 @@ file_permissions=(
 
 file_permissions+=(
   ["/root/virtdev/install.sh"]="0:0:755"
+  ["/root/virtdev/virtdev-ssh-hostkeys"]="0:0:755"
 )
