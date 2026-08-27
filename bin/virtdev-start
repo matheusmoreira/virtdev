@@ -253,30 +253,41 @@ passt_sock="$(runtime_passt_sock "${project_directory}")"
 qmp_sock="$(runtime_qmp_sock "${project_directory}")"
 
 # Cleanup-on-failure: every error path between here and the wait-loop
-# success marker must leave the host in the same shape it found it.
+# success marker either proves the submitted unit terminal before removing its
+# controls, or preserves those controls for recovery when state is unknown.
 # The presence of port_file is virtdev's signal that a VM is running
 # (consulted by virtdev-ssh, virtdev-list, virtdev-backup, etc.); a
 # leftover port_file after an aborted start would lure later commands
 # into trusting a unit that does not exist. The trap fires on any
 # exit (set -e error, signal, or explicit error N) before vm_started=1 is
-# set; if the systemd unit is still active it best-effort stops it so file
-# and unit state stay consistent. The active-unit teardown paths are the
+# set. Once submission is attempted, cleanup requests a stop and waits for a
+# provable inactive/failed state before unlinking anything. The active-unit
+# teardown paths are the
 # QMP liveness gate (error 13) and the firewall assert (error 21) — both
 # leave the unit active. A crash before active (error 12, unit
 # failed/inactive) and a slow boot still activating past the 5s classify
-# deadline (error 16) leave the unit NOT active, so the is-active guard
-# below skips the stop for them; runtime_clean still runs. On these early
-# failures port_file has not been written yet (it is published only after
-# the liveness + firewall checks), so runtime_clean's rm -f is a no-op for
-# it.
+# deadline (error 16) are handled by the same terminal-proof primitive. On
+# these early failures port_file has not been written yet (it is published
+# only after the liveness + firewall checks), so a confirmed runtime cleanup's
+# rm -f is a no-op for it.
 vm_started=0
+unit_submission_attempted=0
 cleanup_failed_start() {
   (( vm_started )) && return 0
-  if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
-    systemctl --user stop "${unit}" 2>/dev/null || true
+  if (( unit_submission_attempted )); then
+    if ! qemu_stop_unit_then_clean_runtime \
+        "${unit}" "${project_directory}" "${VIRTDEV_STOP_TIMEOUT}"; then
+      printf >&2 '%s\n' "$(terminal_write fg=yellow \
+        'warning: failed start could not prove the submitted VM terminal; runtime controls were preserved.' reset)"
+      printf >&2 'Unit: %s (last state: %s)\n' \
+        "${unit}" "${VIRTDEV_QEMU_STOP_STATE}"
+      printf >&2 'Inspect/stop the unit before removing files under: %s\n' \
+        "${project_directory}"
+    fi
+  else
+    # Submission never began, so no process can own these pre-launch paths.
+    runtime_clean "${project_directory}"
   fi
-  # Full teardown: sockets + the port running-signal (runtime_clean).
-  runtime_clean "${project_directory}"
 }
 trap cleanup_failed_start EXIT
 
@@ -332,6 +343,7 @@ if (( open_host_map )); then
   netexec_opts+=(--allow-host-loopback)
 fi
 
+unit_submission_attempted=1
 systemd-run \
     --user \
     --unit="${unit}" \

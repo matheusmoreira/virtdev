@@ -71,6 +71,12 @@
 #       NOT wrap in $(): a subshell would discard the VIRTDEV_QEMU_*
 #       globals and the return code both.
 #
+#   qemu_stop_unit_then_clean_runtime <unit> <runtime-dir> <deadline-seconds>
+#       Request systemd stop for a submitted QEMU unit, then poll until its
+#       ActiveState is provably inactive/failed. Only after that terminal proof
+#       removes the runtime sockets and port signal. Returns 1 and preserves all
+#       controls when the manager is unreachable or the deadline expires.
+#
 #       unit             — transient unit name (virtdev-<project>).
 #       deadline_seconds — budget, in seconds, for the unit to reach
 #                          active before the still-activating verdict.
@@ -106,6 +112,9 @@ import passt runtime
 readonly qemu_active=0
 readonly qemu_crashed=90
 readonly qemu_still_activating=91
+
+# Last state observed by qemu_stop_unit_then_clean_runtime. Diagnostic only.
+VIRTDEV_QEMU_STOP_STATE=unknown
 
 qemu_command() {
   local -n _command="${1}"
@@ -164,6 +173,36 @@ qemu_command() {
   if (( $# > 0 )); then
     _command+=("$@")
   fi
+}
+
+qemu_stop_unit_then_clean_runtime() {
+  local -r unit="${1}" runtime_directory="${2}" deadline_seconds="${3}"
+  local -r deadline=$(( SECONDS + deadline_seconds ))
+  local state
+
+  VIRTDEV_QEMU_STOP_STATE=unknown
+  # Queue the stop without letting systemctl consume an unbounded/additional
+  # wait; the poll below owns the one explicit deadline.
+  systemctl --user stop --no-block "${unit}" >/dev/null 2>&1 || true
+
+  while true; do
+    state="$(systemctl --user show "${unit}" \
+        --property=ActiveState --value 2>/dev/null || true)"
+    VIRTDEV_QEMU_STOP_STATE="${state:-unknown}"
+    case "${state}" in
+      inactive|failed)
+        runtime_clean "${runtime_directory}"
+        return 0
+        ;;
+      '')
+        # An empty observation is an unreachable manager, not proof that QEMU
+        # died. Preserve its sockets/port so recovery retains control paths.
+        return 1
+        ;;
+    esac
+    (( SECONDS >= deadline )) && return 1
+    sleep 0.1
+  done
 }
 
 qemu_activation_classify() {
