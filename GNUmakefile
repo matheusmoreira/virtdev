@@ -16,7 +16,7 @@ SCDOC := $(SCDOC)
 
 scripts := $(filter-out bin/virtdev-exchange,$(wildcard bin/virtdev bin/virtdev-*))
 libraries := $(wildcard lib/virtdev/*)
-test_scripts := $(wildcard tests/run tests/test-*.bash)
+test_scripts := $(wildcard tests/run tests/test-*.bash tests/fixtures/*)
 manpages := $(patsubst %.scd,%,$(wildcard man/*.scd))
 
 all: bin/virtdev-exchange $(manpages)

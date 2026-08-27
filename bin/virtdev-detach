@@ -40,6 +40,7 @@
 #   4   virtual machine is running
 #   5   already detached
 #   6   disk has no backing file
+#   7   project/base generation mismatch or invalid detach generation state
 #   8   user aborted at confirmation prompt
 #   10  rebase failed for system disk (--in-place)
 #   11  rebase failed for home disk (--in-place)
@@ -91,6 +92,43 @@ project_require "${project}"
 system_disk="${project_directory}/system.qcow2"
 home_disk="${project_directory}/home.qcow2"
 generation_file="${project_directory}/generation"
+base_generation_file="${VIRTDEV_HOME}/system/generation"
+
+detach_generation_require_current() {
+  if [[ ! -f "${base_generation_file}" ]]; then
+    error 7 <<<"Base generation file missing: ${base_generation_file}"
+  fi
+  if [[ ! -f "${generation_file}" ]]; then
+    error 7 <<<"Project generation file missing: ${generation_file}"
+  fi
+
+  local base_generation project_generation
+  base_generation="$(generation_read "${base_generation_file}")"
+  project_generation="$(generation_read "${generation_file}")"
+
+  if [[ "${base_generation}" == detached || "${project_generation}" == detached ]]; then
+    error 7 <<MESSAGE
+Generation metadata does not describe a coupled project and numeric base:
+    Base:    ${base_generation}
+    Project: ${project_generation}
+Refusing to rewrite qcow2 backing data from inconsistent metadata.
+MESSAGE
+  fi
+
+  if [[ "${project_generation}" != "${base_generation}" ]]; then
+    error 7 <<MESSAGE
+Project generation does not match the currently installed base:
+    Base:    ${base_generation}
+    Project: ${project_generation}
+
+Detaching now would flatten the delta against replacement base bytes and can
+silently corrupt the resulting standalone image. Recover the exact historical
+base or restore/recreate the project instead.
+MESSAGE
+  fi
+
+  printf '%s' "${project_generation}"
+}
 
 has_backing() {
   qemu-img info --output=json "${1}" \
@@ -157,7 +195,7 @@ if ! has_backing "${home_disk}"; then
   error 6 <<<"Home disk has no backing file: ${home_disk}"
 fi
 
-current_generation="$(< "${generation_file}")"
+current_generation="$(detach_generation_require_current)"
 
 # Print summary.
 {
@@ -211,6 +249,11 @@ fi
 if ! has_backing "${home_disk}"; then
   error 6 <<<"Home disk has no backing file: ${home_disk}"
 fi
+
+# Maintenance and generation metadata are protected by this same lock. Repeat
+# the equality proof after acquiring it so neither a concurrent reseal nor a
+# concurrent metadata repair can change the composition after confirmation.
+current_generation="$(detach_generation_require_current)"
 
 if (( flags[in-place] )); then
   # ── In-place mode (rebase) ──────────────────────────────────────

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ " $* " == *" show "* ]]; then
+  printf '%s\n' "${SYSTEMCTL_ACTIVE_STATE:-inactive}"
+fi
