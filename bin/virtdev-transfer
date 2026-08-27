@@ -143,4 +143,4 @@ trap 'rm -f "${rsync_wrapper}"' EXIT
 # outside-pointing symlink in your own tree still uploads.
 rsync_opts=(-a)
 (( src_is_remote )) && rsync_opts+=(--safe-links)
-rsync "${rsync_opts[@]}" -e "${ssh_command}" "${rsync_src}" "${rsync_dest}"
+rsync "${rsync_opts[@]}" -e "${ssh_command}" -- "${rsync_src}" "${rsync_dest}"
