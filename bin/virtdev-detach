@@ -48,6 +48,7 @@
 #   13  convert failed for system disk
 #   14  convert failed for home disk
 #   15  in-place: detached but verification failed (images may be corrupt)
+#   16  detach recovery state is missing, corrupt, or does not match the disks
 #
 # Configuration via environment variables:
 #
@@ -148,15 +149,105 @@ fi
 
 system_bak="${system_disk}.bak"
 home_bak="${home_disk}.bak"
+detach_transaction="${project_directory}/.detach.transaction"
+detach_transaction_tmp="${detach_transaction}.tmp"
 
-# ── Interrupted-detach recovery (BEFORE the guards below) ───────────
-# A prior detach interrupted mid-swap leaves .bak files AND a state the
-# detached/has-backing guards below would mis-reject: a half-swapped project has
-# standalone disks (no backing -> err 6), and a completed-but-uncleaned swap has
-# generation=detached (-> err 5). So recover HERE — ahead of those guards — then
-# exit. Recovery mutates disks, so it takes the lock and refuses a running VM.
-# Re-run virtdev-detach afterward to detach a freshly-recovered (coupled) project.
-if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
+disk_identity() {
+  local -r disk="${1}"
+  [[ -f "${disk}" && ! -L "${disk}" ]] || return 1
+  stat -c '%d:%i' -- "${disk}"
+}
+
+detach_transaction_load() {
+  if [[ ! -f "${detach_transaction}" || -L "${detach_transaction}" ]]; then
+    error 16 <<<"Detach transaction is not a regular file: ${detach_transaction}"
+  fi
+
+  local LC_ALL=C file_size raw body sentinel=$'\x01'
+  file_size="$(stat -c '%s' -- "${detach_transaction}" 2>/dev/null)" \
+    || error 16 <<<"Cannot read detach transaction: ${detach_transaction}"
+  raw="$({ head -c 513 -- "${detach_transaction}"; printf '%s' "${sentinel}"; } 2>/dev/null)"
+  raw="${raw%"${sentinel}"}"
+  if [[ ! "${file_size}" =~ ^[0-9]+$ || ${file_size} -gt 512 \
+        || ${#raw} -ne file_size || "${raw}" != *$'\n' ]]; then
+    error 16 <<<"Detach transaction is malformed or oversized: ${detach_transaction}"
+  fi
+
+  body="${raw%$'\n'}"
+  local -a transaction_lines=()
+  mapfile -t transaction_lines <<< "${body}"
+  if (( ${#transaction_lines[@]} != 6 )) \
+     || [[ "${transaction_lines[0]}" != version=1 \
+        || "${transaction_lines[1]}" != "project=${project}" \
+        || "${transaction_lines[2]}" != generation=* \
+        || "${transaction_lines[3]}" != system_identity=* \
+        || "${transaction_lines[4]}" != home_identity=* \
+        || "${transaction_lines[5]}" != phase=swapping ]]; then
+    error 16 <<<"Detach transaction identity does not match this operation: ${detach_transaction}"
+  fi
+
+  detach_txn_generation="${transaction_lines[2]#generation=}"
+  detach_txn_system_identity="${transaction_lines[3]#system_identity=}"
+  detach_txn_home_identity="${transaction_lines[4]#home_identity=}"
+  if [[ ! "${detach_txn_generation}" =~ ^(0|[1-9][0-9]*)$ \
+        || ${#detach_txn_generation} -gt 10 \
+        || ! "${detach_txn_system_identity}" =~ ^[0-9]+:[0-9]+$ \
+        || ! "${detach_txn_home_identity}" =~ ^[0-9]+:[0-9]+$ ]]; then
+    error 16 <<<"Detach transaction fields are invalid: ${detach_transaction}"
+  fi
+  # shellcheck disable=SC2154  # generation_max comes from the project library
+  if (( 10#${detach_txn_generation} > generation_max )); then
+    error 16 <<<"Detach transaction generation is out of range: ${detach_transaction}"
+  fi
+}
+
+detach_transaction_require_identity() {
+  local -r path="${1}" expected="${2}" role="${3}"
+  local actual
+  actual="$(disk_identity "${path}" 2>/dev/null)" \
+    || error 16 <<<"Detach recovery ${role} is missing or not a regular file: ${path}"
+  if [[ "${actual}" != "${expected}" ]]; then
+    error 16 <<MESSAGE
+Detach recovery ${role} does not match the journaled original disk: ${path}
+    Expected identity: ${expected}
+    Actual identity:   ${actual}
+No recovery mutation was attempted.
+MESSAGE
+  fi
+}
+
+detach_transaction_write() {
+  local -r generation="${1}" system_identity="${2}" home_identity="${3}"
+  printf 'version=1\nproject=%s\ngeneration=%s\nsystem_identity=%s\nhome_identity=%s\nphase=swapping\n' \
+    "${project}" "${generation}" "${system_identity}" "${home_identity}" \
+    > "${detach_transaction_tmp}"
+  chmod 600 "${detach_transaction_tmp}"
+  if ! sync -f "${detach_transaction_tmp}"; then
+    error 16 <<<"Could not durably write detach transaction: ${detach_transaction_tmp}"
+  fi
+  mv -T -- "${detach_transaction_tmp}" "${detach_transaction}"
+  if ! sync -f "${project_directory}"; then
+    error 16 <<<"Could not durably publish detach transaction: ${detach_transaction}"
+  fi
+}
+
+# ── Journaled interrupted-detach recovery ──────────────────────────
+# A .bak name alone is not transaction authority: it may be stale or manual.
+# Only a durable journal tied to both original disk inodes may authorize cleanup
+# or rollback. Recovery happens before the normal detached/backing guards because
+# a partially swapped project intentionally violates those steady-state shapes.
+if [[ ( -e "${system_bak}" || -L "${system_bak}" \
+        || -e "${home_bak}" || -L "${home_bak}" ) \
+      && ! -e "${detach_transaction}" && ! -L "${detach_transaction}" ]]; then
+  error 16 <<MESSAGE
+Unexplained detach backup file found without a matching transaction journal.
+No disk was changed. Inspect these paths manually:
+    ${system_bak}
+    ${home_bak}
+MESSAGE
+fi
+
+if [[ -e "${detach_transaction}" || -L "${detach_transaction}" ]]; then
   lock_acquire
   # TOCTOU re-check under the lock: a concurrent start may have booted the VM.
   # Fail CLOSED: an unreachable manager reads as not-stopped, never as safe.
@@ -166,20 +257,77 @@ Virtual machine is running: ${project}
 Stop it first: virtdev-stop ${project}
 MESSAGE
   fi
-  if [[ -f "${system_bak}" || -f "${home_bak}" ]]; then
-    if project_is_detached "${project}"; then
-      printf >&2 '%s\n' "$(terminal_write fg=yellow 'Cleaning up .bak files from a completed previous detach...' reset)"
-      rm -f "${system_bak}" "${home_bak}"
-      printf >&2 '%s\n' "$(terminal_write fg=green "Project is already detached: ${project}" reset)"
-    else
-      printf >&2 '%s\n' "$(terminal_write fg=yellow 'Detected an interrupted detach swap. Recovering...' reset)"
-      [[ -f "${system_bak}" ]] && mv -f "${system_bak}" "${system_disk}"
-      [[ -f "${home_bak}" ]]   && mv -f "${home_bak}" "${home_disk}"
-      rm -f "${system_disk}.detach" "${home_disk}.detach"
-      printf >&2 '%s\n' "$(terminal_write fg=green 'Recovery complete. Project restored to its pre-detach (coupled) state.' reset)"
-      printf >&2 'Re-run virtdev-detach to detach it.\n'
+  detach_transaction_load
+
+  if project_is_detached "${project}"; then
+    [[ ! -e "${system_bak}" && ! -L "${system_bak}" ]] \
+      || detach_transaction_require_identity \
+           "${system_bak}" "${detach_txn_system_identity}" 'system backup'
+    [[ ! -e "${home_bak}" && ! -L "${home_bak}" ]] \
+      || detach_transaction_require_identity \
+           "${home_bak}" "${detach_txn_home_identity}" 'home backup'
+    if ! sync -f "${project_directory}"; then
+      error 16 <<<'Could not make the completed detach durable; recovery files were preserved.'
     fi
+    rm -f -- "${system_bak}" "${home_bak}" \
+      "${system_disk}.detach" "${home_disk}.detach" \
+      "${detach_transaction_tmp}"
+    if ! sync -f "${project_directory}"; then
+      error 16 <<<'Completed detach is safe, but recovery-file cleanup could not be made durable; the journal was preserved.'
+    fi
+    rm -f -- "${detach_transaction}"
+    sync -f "${project_directory}" || true
+    printf >&2 '%s\n' "$(terminal_write fg=green "Project is already detached: ${project}" reset)"
+    exit 0
   fi
+
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'Detected an interrupted journaled detach. Rolling back...' reset)"
+  current_metadata=''
+  current_metadata="$(generation_read_project "${generation_file}" 2>/dev/null)" \
+    || error 16 <<<"Project generation is corrupt during detach recovery: ${generation_file}"
+  if [[ "${current_metadata}" != "${detach_txn_generation}" \
+        && "${current_metadata}" != detached ]]; then
+    error 16 <<<"Project generation no longer matches the detach transaction; no recovery mutation was attempted."
+  fi
+
+  if [[ -e "${system_bak}" || -L "${system_bak}" ]]; then
+    detach_transaction_require_identity \
+      "${system_bak}" "${detach_txn_system_identity}" 'system backup'
+  else
+    detach_transaction_require_identity \
+      "${system_disk}" "${detach_txn_system_identity}" 'system disk'
+  fi
+  if [[ -e "${home_bak}" || -L "${home_bak}" ]]; then
+    detach_transaction_require_identity \
+      "${home_bak}" "${detach_txn_home_identity}" 'home backup'
+  else
+    detach_transaction_require_identity \
+      "${home_disk}" "${detach_txn_home_identity}" 'home disk'
+  fi
+
+  [[ ! -e "${system_bak}" && ! -L "${system_bak}" ]] \
+    || mv -fT -- "${system_bak}" "${system_disk}"
+  [[ ! -e "${home_bak}" && ! -L "${home_bak}" ]] \
+    || mv -fT -- "${home_bak}" "${home_disk}"
+  if ! has_backing "${system_disk}" || ! has_backing "${home_disk}"; then
+    error 16 <<<'Journaled originals were restored, but their backing topology could not be verified; recovery state was preserved.'
+  fi
+  rm -f -- "${generation_file}.tmp"
+  printf '%s\n' "${detach_txn_generation}" > "${generation_file}.tmp"
+  mv -T -- "${generation_file}.tmp" "${generation_file}"
+  chmod 644 "${generation_file}"
+  if ! sync -f "${project_directory}"; then
+    error 16 <<<'Detach rollback completed in memory but could not be made durable; transaction state was preserved.'
+  fi
+  rm -f -- "${system_disk}.detach" "${home_disk}.detach" \
+    "${detach_transaction_tmp}"
+  if ! sync -f "${project_directory}"; then
+    error 16 <<<'Detach rollback is safe, but temporary-file cleanup could not be made durable; the journal was preserved.'
+  fi
+  rm -f -- "${detach_transaction}"
+  sync -f "${project_directory}" || true
+  printf >&2 '%s\n' "$(terminal_write fg=green 'Recovery complete. Project restored to its pre-detach (coupled) state.' reset)"
+  printf >&2 'Re-run virtdev-detach to detach it.\n'
   exit 0
 fi
 
@@ -219,13 +367,24 @@ fi
 
 lock_acquire
 
-# No .bak here — the interrupted-detach recovery near the top handles that case
-# and exits, so the originals are intact. A SIGKILL during a prior convert can
+# A concurrent detach may have created recovery state while this invocation was
+# waiting for the global lock. Never overwrite it: release the lock by exiting
+# and let a fresh invocation enter the journaled recovery branch above.
+if [[ -e "${detach_transaction}" || -L "${detach_transaction}" \
+      || -e "${system_bak}" || -L "${system_bak}" \
+      || -e "${home_bak}" || -L "${home_bak}" ]]; then
+  error 16 <<MESSAGE
+Detach recovery state appeared while acquiring the lock.
+No mutation was attempted; re-run virtdev-detach to validate and recover it.
+MESSAGE
+fi
+
+# No journal/.bak exists here, so the originals are intact. A SIGKILL during a prior convert can
 # still leave orphaned .detach temp files (a full base-sized copy each, not
-# touched by the .bak-keyed recovery); sweep them for disk-space/orphan hygiene.
+# created before the journaled commit); sweep them for disk-space/orphan hygiene.
 # The convert's own EXIT trap covers ordinary signals; this covers a SIGKILL or
 # power loss between runs.
-rm -f "${system_disk}.detach" "${home_disk}.detach"
+rm -f -- "${system_disk}.detach" "${home_disk}.detach" "${detach_transaction_tmp}"
 
 # Post-lock re-checks: close the TOCTOU window between the pre-lock
 # checks and lock acquisition. A concurrent virtdev-start could have
@@ -338,20 +497,44 @@ Project is unchanged. The converted images have been removed.
 MESSAGE
   fi
 
-  # Swap: rename originals aside, move converted images into place,
-  # write the generation marker, then remove the originals. Signals
-  # are trapped for the critical section — a SIGKILL or power loss
-  # would leave .bak files which the recovery block above handles on
-  # the next invocation.
+  system_original_identity="$(disk_identity "${system_disk}")" \
+    || error 16 <<<"System disk is not a regular file: ${system_disk}"
+  home_original_identity="$(disk_identity "${home_disk}")" \
+    || error 16 <<<"Home disk is not a regular file: ${home_disk}"
+  detach_transaction_write "${current_generation}" \
+    "${system_original_identity}" "${home_original_identity}"
+
+  # Swap: the durable journal is the authority for the exact originals. The
+  # fully detached topology and marker are flushed before backups are removed;
+  # any interruption is deterministically rolled back or cleanup-completed by
+  # the recovery branch above.
   trap '' INT TERM HUP QUIT
   printf >&2 'Swapping...\n'
-  mv "${system_disk}" "${system_bak}"
-  mv "${system_detach}" "${system_disk}"
-  mv "${home_disk}" "${home_bak}"
-  mv "${home_detach}" "${home_disk}"
-  printf 'detached\n' > "${generation_file}"
+  mv -T -- "${system_disk}" "${system_bak}"
+  mv -T -- "${system_detach}" "${system_disk}"
+  mv -T -- "${home_disk}" "${home_bak}"
+  mv -T -- "${home_detach}" "${home_disk}"
+  rm -f -- "${generation_file}.tmp"
+  printf 'detached\n' > "${generation_file}.tmp"
+  mv -T -- "${generation_file}.tmp" "${generation_file}"
   chmod 644 "${generation_file}"
-  rm -f "${system_bak}" "${home_bak}"
+  if ! sync -f "${project_directory}"; then
+    error 16 <<MESSAGE
+The detach swap completed but could not be made durable.
+Journal and original disks were preserved for recovery: ${detach_transaction}
+MESSAGE
+  fi
+  rm -f -- "${system_bak}" "${home_bak}"
+  if ! sync -f "${project_directory}"; then
+    error 16 <<MESSAGE
+The project is safely detached, but original-disk cleanup could not be made
+durable. The transaction journal was preserved for a cleanup retry.
+MESSAGE
+  fi
+  rm -f -- "${detach_transaction}"
+  if ! sync -f "${project_directory}"; then
+    printf >&2 'warning: detached project is committed, but cleanup durability could not be confirmed; a harmless transaction marker may reappear after power loss\n'
+  fi
   trap - INT TERM HUP QUIT
 
   detach_succeeded=1
