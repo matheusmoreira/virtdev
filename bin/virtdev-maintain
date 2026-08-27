@@ -94,6 +94,7 @@
 #       TOCTOU re-check failed); machine stopped, reseal refused
 #   26  could not enumerate running project machines (user manager unreachable);
 #       reseal refused to protect the base — fail closed
+#   27  exchange occurred but its post-exchange durability sync failed
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -860,11 +861,12 @@ old_generation="$(generation_read "${system_directory}/generation")"
 # read-only permissions. A crash before the exchange leaves the old
 # system/ intact; a crash after leaves system/ fully sealed.
 #
-# virtdev-exchange wraps renameat2(2) with RENAME_EXCHANGE: a single
-# syscall that atomically swaps system/ and maintenance/. After the
-# call, system/ holds the new images and maintenance/ holds the old
-# ones. There is no intermediate state where system/ is missing or
-# partially populated — not even under SIGKILL or power loss.
+# virtdev-exchange flushes the staged filesystem, wraps renameat2(2) with
+# RENAME_EXCHANGE, then flushes the exchanged namespace before returning.
+# After the call, system/ holds the durable new images and maintenance/ holds
+# the old ones. There is no intermediate namespace state where system/ is
+# missing or partially populated; a post-exchange sync failure is reported
+# distinctly so the old tree is preserved instead of being deleted.
 #
 # After the exchange, maintenance/ (which now holds the previous
 # base) is removed as best-effort cleanup.
@@ -882,17 +884,40 @@ printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${sy
 # filesystem lacks RENAME_EXCHANGE) would abort with an opaque C errno
 # and skip the cleanup below, leaving maintenance/ with the incremented,
 # mode-444 generation. The sealed base stays intact either way.
-if ! "${virtdev_bin_directory}/virtdev-exchange" "${system_directory}" "${maintenance_directory}"; then
-  error 19 <<MESSAGE
+exchange_status=0
+"${virtdev_bin_directory}/virtdev-exchange" \
+  "${system_directory}" "${maintenance_directory}" || exchange_status=$?
+case "${exchange_status}" in
+  0)
+    ;;
+  1)
+    error 19 <<MESSAGE
 Failed to swap the new images into place (virtdev-exchange).
 This needs renameat2(RENAME_EXCHANGE); system/ and maintenance/ must be
 on the same filesystem and it must support it (ext4/btrfs/xfs). The
 sealed base is unchanged. Staged images preserved: '${maintenance_directory}'
 MESSAGE
-fi
+    ;;
+  2)
+    error 27 <<MESSAGE
+The system/ and maintenance/ names were exchanged, but the durability sync
+failed. Both trees are preserved. Do not delete either one or start a project
+until their generations/images are inspected and the filesystem is healthy:
+    system:      '${system_directory}'
+    previous:    '${maintenance_directory}'
+MESSAGE
+    ;;
+  *)
+    error 27 <<<"virtdev-exchange returned unexpected status ${exchange_status}; both trees were preserved."
+    ;;
+esac
 
 if ! rm -rf "${maintenance_directory}"; then
   printf >&2 'warning: could not remove %s; will be cleaned up on next virtdev-maintain run\n' \
+             "${maintenance_directory}"
+fi
+if ! sync -f "${VIRTDEV_HOME}"; then
+  printf >&2 'warning: could not durably sync cleanup of %s; the new base itself was already committed\n' \
              "${maintenance_directory}"
 fi
 

@@ -273,17 +273,20 @@ detached and attached to another.
 6. User powers off the virtual machine: `sudo poweroff`
 7. On clean exit, if inventory was captured: boots a second time,
    captures inventory again, shows a diff of what changed
-8. User confirms reseal; `virtdev-exchange` atomically swaps `system/`
-   and `maintenance/` via `renameat2(2)` with `RENAME_EXCHANGE`
+8. User confirms reseal; `virtdev-exchange` flushes the staged filesystem,
+   atomically swaps `system/` and `maintenance/` via `renameat2(2)` with
+   `RENAME_EXCHANGE`, then flushes the exchanged namespace before the old tree
+   is eligible for cleanup
 
-The reseal commit point is the `renameat2` syscall — a single atomic
-operation that swaps the two directory names. There is no intermediate
-state where `system/` is missing or partially populated, not even under
-SIGKILL or power loss. The generation counter increment and `chmod 444`
-are applied to `maintenance/` *before* the exchange, so the swap is the
-single commit point: a crash before it leaves the old `system/` intact,
-and a crash after it leaves `system/` fully sealed — new images, correct
-generation, and read-only permissions.
+The namespace commit point is the `renameat2` syscall — a single atomic
+operation that swaps the two directory names. Durability is a separate part of
+the protocol: `syncfs` commits staged image bytes and metadata before the
+exchange and commits the exchanged namespace afterward. The generation counter
+increment and `chmod 444` are applied to `maintenance/` before those barriers.
+A pre-exchange failure leaves the old `system/` authoritative; a
+post-exchange-sync failure preserves both trees and refuses cleanup so the
+operator can inspect them. After successful barriers, `system/` contains the
+new images, generation, and read-only permissions even across power loss.
 
 ### Maintenance hooks
 
