@@ -453,9 +453,9 @@ rm -f "${rsync_files_from}"
 # state (and virtdev-recreate's first step), so counting transfers
 # would wrongly reject — and the EXIT trap would delete — a valid
 # snapshot. Mirrors the equivalent guard in virtdev-restore.
-files_captured="$(find "${partial}/tree" \( -type f -o -type l \) -printf 'x' | wc -c)"
+entries_captured="$(snapshot_tree_count_entries "${partial}/tree")"
 
-if (( files_captured == 0 )); then
+if (( entries_captured == 0 )); then
   error 11 <<MESSAGE
 No files captured during backup of ${project}.
 Every manifest entry was skipped — most commonly because the
@@ -479,5 +479,5 @@ fi
 mv "${partial}" "${final}"
 backup_succeeded=1
 
-printf >&2 '%s\n' "$(terminal_write fg=green "Backed up ${files_captured} files." reset)"
+printf >&2 '%s\n' "$(terminal_write fg=green "Backed up ${entries_captured} entries." reset)"
 printf '%s\n' "${final}"

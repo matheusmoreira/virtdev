@@ -131,13 +131,15 @@ backups_project_dir="$(snapshot_directory "${project}")"
 # 17 = date directory empty (no times under it), 18 = time directory
 # absent within an existing date.
 if [[ -z "${given_date}" ]]; then
-  resolved_date="$(snapshot_list_days "${project}" | tail -n1)"
-  if [[ -z "${resolved_date}" ]]; then
+  resolved_snapshot="$(snapshot_latest "${project}")"
+  if [[ -z "${resolved_snapshot}" ]]; then
     error 8 <<MESSAGE
 No snapshots for this project: ${project}
 Create one with: virtdev-backup ${project}
 MESSAGE
   fi
+  resolved_date="${resolved_snapshot%%/*}"
+  resolved_time="${resolved_snapshot##*/}"
 else
   if [[ ! -d "${backups_project_dir}/${given_date}" ]]; then
     error 16 <<<"Snapshot date not found: ${given_date}"
@@ -146,7 +148,7 @@ else
 fi
 
 # Resolve time component.
-if [[ -z "${given_time}" ]]; then
+if [[ -z "${given_time}" && -z "${resolved_time:-}" ]]; then
   resolved_time="$(snapshot_list_times "${project}" "${resolved_date}" | tail -n1)"
   if [[ -z "${resolved_time}" ]]; then
     error 17 <<<"No snapshots on date ${resolved_date}"
@@ -315,10 +317,10 @@ files_transferred="${files_transferred:-0}"
 # count: a re-run against a guest that already matches transfers zero
 # files while the snapshot is fully populated (the rollback-retry
 # case), and rejecting that would be a false failure. Mirrors backup.
-if [[ -z "$(find "${snapshot}/tree" \( -type f -o -type l \) -print -quit 2>/dev/null)" ]]; then
+if ! snapshot_tree_has_entries "${snapshot}/tree"; then
   error 11 <<MESSAGE
 Empty snapshot: ${resolved_date}/${resolved_time}
-The snapshot's tree contains no files to restore.
+The snapshot's tree contains no entries to restore.
 MESSAGE
 fi
 
