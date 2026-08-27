@@ -20,9 +20,11 @@
 # the others from being rebuilt. Failures are collected and reported
 # in the summary with per-project resume commands.
 #
-# Projects excluded via --only, --except, or --skip-outdated are left
-# on their current base generation. They cannot be booted until individually
-# recreated.
+# Resealing replaces the one path every coupled qcow2 delta uses as its
+# backing file. Therefore --only, --except, and --skip-outdated may exclude
+# detached projects only. Leaving a coupled project out would discard the
+# exact old base bytes its delta still requires, so the audit fails closed
+# before backup or maintenance begins.
 #
 # Lock model: no top-level lock. Each subprocess acquires locks as needed.
 #
@@ -38,6 +40,7 @@
 #   9   base system generation file missing
 #   10  no projects found
 #   11  no projects to upgrade after filtering
+#   12  a coupled project would be excluded from the reseal/rebuild set
 #   20  backup phase failure
 #   30  maintain phase failure
 #   40  one or more project rebuilds failed
@@ -195,6 +198,21 @@ else
   included=("${valid_projects[@]}")
 fi
 
+# Auto-skip detached projects before manifest audit. They are independent of
+# the base and do not need either a backup manifest or a rebuild. Doing this
+# first keeps an intentionally manifest-less detached archive from blocking an
+# otherwise valid fleet upgrade.
+declare -a included_after_detach=()
+for p in "${included[@]}"; do
+  if project_is_detached "${p}"; then
+    excluded+=("${p}")
+    excluded_reasons["${p}"]="detached"
+  else
+    included_after_detach+=("${p}")
+  fi
+done
+included=("${included_after_detach[@]}")
+
 # ── Audit ───────────────────────────────────────────────────────────
 
 declare -a audit_failures=()
@@ -214,22 +232,10 @@ if [[ ${#audit_failures[@]} -gt 0 ]]; then
     for failure in "${audit_failures[@]}"; do
       printf '    %s\n' "${failure}"
     done
-    printf '\nCreate a manifest for each, or exclude them with --except.\n'
+    printf '\nCreate a manifest for each. A coupled project cannot be safely excluded from a reseal; detach it first if it must remain independent.\n'
   } >&2
   error 6 <<<"Aborting."
 fi
-
-# Auto-skip detached projects — they are independent of the base.
-declare -a included_after_detach=()
-for p in "${included[@]}"; do
-  if project_is_detached "${p}"; then
-    excluded+=("${p}")
-    excluded_reasons["${p}"]="detached"
-  else
-    included_after_detach+=("${p}")
-  fi
-done
-included=("${included_after_detach[@]}")
 
 # Check for already-outdated + stopped projects that can't be backed up.
 declare -a outdated_blocked=()
@@ -275,6 +281,32 @@ if [[ ${#outdated_blocked[@]} -gt 0 ]]; then
 fi
 
 included=("${included_after_skip[@]}")
+
+# The maintenance phase replaces system/ in place and retires the old base.
+# Every non-detached delta therefore has to be backed up and rebuilt in this
+# same transaction. A backup alone is not enough: an omitted project's live
+# qcow2 delta still names system/{system,home}.qcow2 and would silently compose
+# against the replacement bytes. Fail before the plan/confirmation and before
+# any VM is stopped.
+declare -a excluded_coupled=()
+for p in "${excluded[@]}"; do
+  if ! project_is_detached "${p}"; then
+    excluded_coupled+=("${p}")
+  fi
+done
+
+if [[ ${#excluded_coupled[@]} -gt 0 ]]; then
+  {
+    printf 'Cannot reseal while coupled projects are excluded.\n\n'
+    printf 'These projects still depend on the exact current base bytes:\n\n'
+    for p in "${excluded_coupled[@]}"; do
+      printf '    %-30s (%s)\n' "${p}" "${excluded_reasons[${p}]}"
+    done
+    printf '\nInclude and rebuild them in this upgrade, or detach them before the base changes.\n'
+    printf 'No virtual machine was stopped and the base is unchanged.\n'
+  } >&2
+  error 12 <<<"Aborting."
+fi
 
 if [[ ${#included[@]} -eq 0 ]]; then
   error 11 <<<"No projects to upgrade after filtering."
@@ -532,7 +564,7 @@ if [[ ${#excluded[@]} -gt 0 ]]; then
   for p in "${excluded[@]}"; do
     printf >&2 '    %-30s (%s)\n' "${p}" "${excluded_reasons[${p}]}"
   done
-  printf >&2 '\nThese projects remain on their current base generation.\n'
+  printf >&2 '\nThese projects are detached and remain independent of the base.\n'
 fi
 
 printf >&2 '\nBase generation: %s → %s\n' "${base_generation}" "${new_generation}"

@@ -16,6 +16,7 @@ SCDOC := $(SCDOC)
 
 scripts := $(filter-out bin/virtdev-exchange,$(wildcard bin/virtdev bin/virtdev-*))
 libraries := $(wildcard lib/virtdev/*)
+test_scripts := $(wildcard tests/run tests/test-*.bash)
 manpages := $(patsubst %.scd,%,$(wildcard man/*.scd))
 
 all: bin/virtdev-exchange $(manpages)
@@ -30,7 +31,9 @@ clean:
 	rm -f bin/virtdev-exchange $(manpages)
 
 check: bin/virtdev-exchange
-	bash -n $(scripts) $(libraries)
-	shellcheck $(scripts) $(libraries)
+	bash -n $(scripts) $(libraries) $(test_scripts)
+	shellcheck $(scripts) $(libraries) $(test_scripts)
+	bash tests/run
+	cd network && cargo test --all-targets --locked --offline
 
 .PHONY: all clean check

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+test_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+
+status=0
+while IFS= read -r test_file; do
+  printf 'TEST %s\n' "$(basename "${test_file}")"
+  if ! bash "${test_file}"; then
+    status=1
+  fi
+done < <(find "${test_directory}" -maxdepth 1 -type f -name 'test-*.bash' -print | LC_ALL=C sort)
+
+exit "${status}"

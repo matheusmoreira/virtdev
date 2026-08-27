@@ -51,8 +51,10 @@
 #       each project in turn.
 #
 #   project_is_detached <project>
-#       Returns 0 if the project's generation file contains the
-#       literal string 'detached'.
+#       Returns 0 only if the project's generation file contains the literal
+#       string 'detached' AND both qcow2 disks are readable standalone images
+#       with no backing filename. Metadata alone is not sufficient authority
+#       to bypass generation safety.
 #
 #   project_require <project>
 #       Errors with code 3 if the project directory does not exist.
@@ -201,8 +203,18 @@ project_is_outdated() {
 
 project_is_detached() {
   local project="${1}"
-  local -r generation_file="${VIRTDEV_HOME}/projects/${project}/generation"
-  [[ -f "${generation_file}" ]] && [[ "$(< "${generation_file}")" == "detached" ]]
+  local -r project_directory="${VIRTDEV_HOME}/projects/${project}"
+  local -r generation_file="${project_directory}/generation"
+  [[ -f "${generation_file}" ]] || return 1
+  [[ "$(< "${generation_file}")" == "detached" ]] || return 1
+
+  local disk info
+  for disk in system.qcow2 home.qcow2; do
+    [[ -f "${project_directory}/${disk}" ]] || return 1
+    info="$(qemu-img info --output=json "${project_directory}/${disk}" 2>/dev/null)" \
+      || return 1
+    [[ ! "${info}" =~ \"backing-filename\"[[:space:]]*: ]] || return 1
+  done
 }
 
 project_require() {

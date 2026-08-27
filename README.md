@@ -257,6 +257,12 @@ virtdev upgrade
 Flags: `--only=a,b`, `--except=c,d`, `--skip-outdated`, `--yes`/`-y`,
 `--verbose`/`-v`.
 
+Because every coupled qcow2 delta depends on the exact current base bytes, a
+reseal cannot safely leave a coupled project behind. Filtering options may
+exclude detached projects only; otherwise `virtdev upgrade` fails before it
+stops a VM or changes the base. Include and rebuild every coupled project, or
+detach it before maintenance.
+
 ### Detaching a project
 
 A project can be detached from the sealed base, converting its delta images
