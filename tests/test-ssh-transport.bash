@@ -42,6 +42,11 @@ alpha_known="$(ssh_host_identity_known_hosts alpha)"
 alpha_alias="$(ssh_host_identity_alias alpha)"
 declare -a expected_base=(
   ssh -F /dev/null -i "${VIRTDEV_SSH_KEY}" -p 2222
+  -o HostName=127.0.0.1
+  -o AddressFamily=inet
+  -o CanonicalizeHostname=no
+  -o ProxyCommand=none
+  -o ProxyJump=none
   -o IdentitiesOnly=yes
   -o ForwardAgent=no
   -o GSSAPIDelegateCredentials=no
@@ -110,6 +115,11 @@ printf '%s\n' \
   '  HostKeyAlgorithms ssh-rsa' \
   '  ForwardAgent yes' \
   '  GSSAPIDelegateCredentials yes' \
+  '  HostName 203.0.113.9' \
+  '  AddressFamily any' \
+  '  CanonicalizeHostname always' \
+  '  ProxyCommand /usr/bin/false' \
+  '  ProxyJump attacker.example' \
   '  ControlMaster yes' > "${weak_config}"
 ssh_transport_argv actual interactive alpha "${VIRTDEV_SSH_KEY}" 2222 \
   "${weak_config}"
@@ -121,6 +131,13 @@ grep -Fqx 'hostkeyalgorithms ssh-ed25519' <<< "${effective}"
 grep -Fqx 'forwardagent no' <<< "${effective}"
 grep -Fqx 'gssapidelegatecredentials no' <<< "${effective}"
 grep -Fqx 'controlmaster false' <<< "${effective}"
+grep -Fqx 'hostname 127.0.0.1' <<< "${effective}"
+grep -Fqx 'addressfamily inet' <<< "${effective}"
+grep -Fqx 'canonicalizehostname false' <<< "${effective}"
+if grep -Eq '^proxy(command|jump) ' <<< "${effective}"; then
+  printf 'configured proxy escaped the fixed loopback transport\n' >&2
+  exit 1
+fi
 
 ssh_transport_argv actual interactive beta "${VIRTDEV_SSH_KEY}" 2222 /dev/null
 beta_known="$(ssh_host_identity_known_hosts beta)"

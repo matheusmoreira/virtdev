@@ -352,6 +352,11 @@ ssh_transport_argv() {
     -F "${__ssh_transport_config}"
     -i "${__ssh_transport_key}"
     -p "${__ssh_transport_port}"
+    -o HostName=127.0.0.1
+    -o AddressFamily=inet
+    -o CanonicalizeHostname=no
+    -o ProxyCommand=none
+    -o ProxyJump=none
     -o IdentitiesOnly=yes
     -o ForwardAgent=no
     -o GSSAPIDelegateCredentials=no
