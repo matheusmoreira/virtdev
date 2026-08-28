@@ -8,8 +8,7 @@
 #
 #   project_list
 #       Prints sorted valid project names, one per line.
-#       Excludes the reserved 'maintenance' name and entries
-#       that don't match the project name regex. Prints nothing
+#       Excludes the reserved 'maintenance' name. Prints nothing
 #       and returns 0 if no projects exist.
 #
 #   project_is_running <project>
@@ -84,25 +83,20 @@
 
 set -euo pipefail
 
-import error machine
+import error machine validate
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
 readonly generation_max=2147483647
 
 project_list() {
-  # LC_ALL=C so the name regex is byte-wise ASCII, matching validate_project_name's
-  # charset exactly (a UTF-8 locale would let [a-zA-Z] also match accented letters).
   local LC_ALL=C
   local -r projects_dir="${VIRTDEV_HOME}/projects"
   [[ -d "${projects_dir}" ]] || return 0
   local name
-  # NUL-delimited (-printf %f\0 + read -d '' + sort -z) so a directory name
-  # containing a newline is read as ONE entry and rejected by the regex below,
-  # instead of splitting into phantom project names (an owner-creatable dir
-  # would otherwise feed bogus names into upgrade/recreate iteration).
+  # NUL delimiters keep owner-created newline names indivisible and rejectable.
   while IFS= read -r -d '' name; do
-    [[ "${name}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+    project_name_is_valid "${name}" || continue
     [[ "${name}" == "maintenance" ]] && continue
     printf '%s\n' "${name}"
   done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' | sort -z)

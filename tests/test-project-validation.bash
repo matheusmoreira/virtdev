@@ -3,9 +3,11 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+list_home="$(mktemp -d)"
+trap 'rm -rf -- "${list_home}"' EXIT
 # shellcheck disable=SC1091
 source "${repo_root}/lib/virtdev/import"
-import validate runtime
+import validate runtime project
 
 repeat() {
   local -r count="${1}" character="${2}"
@@ -22,6 +24,16 @@ if ( validate_project_name "$(repeat 65 p)" ) >/dev/null 2>&1; then
   exit 1
 fi
 
+list_projects="${list_home}/projects"
+name_64="$(repeat 64 q)"
+name_65="$(repeat 65 q)"
+mkdir -p "${list_projects}/${name_64}" "${list_projects}/${name_65}" \
+  "${list_projects}/alpha" "${list_projects}/maintenance"
+mapfile -t listed < <(VIRTDEV_HOME="${list_home}" project_list)
+if [[ "${listed[*]}" != "alpha ${name_64}" ]]; then
+  printf 'project enumeration disagrees with project validation\n' >&2
+  exit 1
+fi
 for name in none wan lan full; do
   if validate_project_name_reserved "${name}" >/dev/null; then
     printf 'network zone remained reserved as a project name: %s\n' "${name}" >&2
