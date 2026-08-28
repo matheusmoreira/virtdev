@@ -43,6 +43,8 @@ alpha_alias="$(ssh_host_identity_alias alpha)"
 declare -a expected_base=(
   ssh -F /dev/null -i "${VIRTDEV_SSH_KEY}" -p 2222
   -o IdentitiesOnly=yes
+  -o ForwardAgent=no
+  -o GSSAPIDelegateCredentials=no
   -o StrictHostKeyChecking=yes
   -o UserKnownHostsFile="${alpha_known}"
   -o GlobalKnownHostsFile=/dev/null
@@ -73,7 +75,7 @@ declare -a expected_poll=(
 ssh_transport_argv actual poll alpha "${VIRTDEV_SSH_KEY}" 2222 /dev/null 3
 assert_argv actual expected_poll
 
-for invalid in '' -- -o -L target -f -G -V -vvf -Zvalue -F/dev/null \
+for invalid in '' -- -o -L target -A -K -f -G -V -vvf -Zvalue -F/dev/null \
     -i/tmp/key -p22 -oStrictHostKeyChecking=no -S/tmp/socket -M; do
   if ssh_client_option_valid "${invalid}"; then
     printf 'unsafe client option token accepted: %q\n' "${invalid}" >&2
@@ -98,6 +100,27 @@ grep -Fqx 'globalknownhostsfile /dev/null' <<< "${effective}"
 grep -Fqx 'hostkeyalgorithms ssh-ed25519' <<< "${effective}"
 grep -Fqx 'controlmaster false' <<< "${effective}"
 grep -Fqx 'controlpersist no' <<< "${effective}"
+
+weak_config="${test_tmp}/weak-config"
+printf '%s\n' \
+  'Host *' \
+  '  StrictHostKeyChecking no' \
+  '  UserKnownHostsFile /tmp/wrong-known-hosts' \
+  '  HostKeyAlias wrong-alias' \
+  '  HostKeyAlgorithms ssh-rsa' \
+  '  ForwardAgent yes' \
+  '  GSSAPIDelegateCredentials yes' \
+  '  ControlMaster yes' > "${weak_config}"
+ssh_transport_argv actual interactive alpha "${VIRTDEV_SSH_KEY}" 2222 \
+  "${weak_config}"
+effective="$({ "${actual[@]}" -G dev@127.0.0.1; } 2>/dev/null)"
+grep -Fqx 'stricthostkeychecking true' <<< "${effective}"
+grep -Fqx "userknownhostsfile ${alpha_known}" <<< "${effective}"
+grep -Fqx "hostkeyalias ${alpha_alias}" <<< "${effective}"
+grep -Fqx 'hostkeyalgorithms ssh-ed25519' <<< "${effective}"
+grep -Fqx 'forwardagent no' <<< "${effective}"
+grep -Fqx 'gssapidelegatecredentials no' <<< "${effective}"
+grep -Fqx 'controlmaster false' <<< "${effective}"
 
 ssh_transport_argv actual interactive beta "${VIRTDEV_SSH_KEY}" 2222 /dev/null
 beta_known="$(ssh_host_identity_known_hosts beta)"
@@ -149,9 +172,9 @@ done
 
 status=0
 PATH="${fixture_bin}:${repository}/tests/fixtures:${PATH}" \
-  "${repository}/bin/virtdev-ssh" alpha \
+  "${repository}/bin/virtdev-ssh" --color=no alpha \
     --client-option=-L3000:localhost:3000 \
-    --client-option=-N -- --help -h -dash 'two words' '' \
+    --client-option=-N -- --help -h --color=yes -dash 'two words' '' \
     >/dev/null 2>"${test_tmp}/cli.stderr" || status=$?
 (( status == 42 ))
 mapfile -d '' -t cli_argv < "${SSH_ARGV_FILE}"
@@ -167,7 +190,7 @@ done
 expected_cli=("${expected_base[@]:1}")
 expected_cli[1]="${config_path}"
 expected_cli+=(
-  -L3000:localhost:3000 -N dev@127.0.0.1 --help -h -dash 'two words' ''
+  -L3000:localhost:3000 -N dev@127.0.0.1 --help -h --color=yes -dash 'two words' ''
 )
 assert_argv cli_argv expected_cli
 
@@ -179,8 +202,11 @@ for invalid_cli in \
     'alpha --client-option=-i/tmp/key --' \
     'alpha --client-option=-p22 --' \
     'alpha --client-option=-f --' \
+    'alpha --client-option=-A --' \
+    'alpha --client-option=-K --' \
     'alpha --client-option=-G --' \
     'alpha --client-option=-V --' \
+    'alpha --color=bogus --' \
     'alpha --client-option=-oStrictHostKeyChecking=no --'; do
   read -r -a invalid_argv <<< "${invalid_cli}"
   status=0

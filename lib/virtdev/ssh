@@ -353,6 +353,8 @@ ssh_transport_argv() {
     -i "${__ssh_transport_key}"
     -p "${__ssh_transport_port}"
     -o IdentitiesOnly=yes
+    -o ForwardAgent=no
+    -o GSSAPIDelegateCredentials=no
     -o StrictHostKeyChecking=yes
     -o UserKnownHostsFile="${__ssh_transport_known_hosts}"
     -o GlobalKnownHostsFile=/dev/null
@@ -381,7 +383,7 @@ ssh_transport_argv() {
 
 ssh_client_option_valid() {
   (( $# == 1 && ${#1} > 1 && ${#1} <= 4096 )) || return 1
-  [[ "${1}" =~ ^-[46AaCgKkNnqTtvXxYy]+$ \
+  [[ "${1}" =~ ^-[46aCgknNqTtvXxYy]+$ \
       || "${1}" =~ ^-[DELR].+ ]]
 }
 

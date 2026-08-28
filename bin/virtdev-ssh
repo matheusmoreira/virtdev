@@ -41,7 +41,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate ssh trigger port project
+import error validate arguments ssh trigger port project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -54,6 +54,34 @@ for argument in "$@"; do
     --) break ;;
   esac
 done
+
+declare -a parsed_arguments=()
+while (( $# > 0 )); do
+  case "${1}" in
+    --)
+      parsed_arguments+=("$@")
+      break
+      ;;
+    --color=*)
+      arguments_color_set "${1#*=}"
+      shift
+      ;;
+    --color)
+      if (( $# >= 2 )) && [[ "${2}" != -* ]]; then
+        arguments_color_set "${2}"
+        shift 2
+      else
+        arguments_color_set yes
+        shift
+      fi
+      ;;
+    *)
+      parsed_arguments+=("${1}")
+      shift
+      ;;
+  esac
+done
+set -- "${parsed_arguments[@]}"
 
 if [[ $# -lt 1 ]]; then
   error 64 <<<"${usage}"
