@@ -225,13 +225,11 @@ fi
 # Resolve SSH port
 port_file="${project_directory}"/port
 
-explicit_port=0
 if [[ $# -eq 2 ]]; then
   # Explicit port from command line.
   # Require the same canonical representation that is persisted and consumed;
   # accepting a leading-zero spelling here would make Bash printf/arithmetic,
   # passt, and later readers disagree about the endpoint.
-  explicit_port=1
   port="${2}"
   if ! port_is_valid "${port}"; then
     error 7 <<<"Invalid port: '${port}' (must be canonical decimal 1024-65535, without leading zeros)"
@@ -382,14 +380,10 @@ systemd-run \
 # message instead of a generic timeout:
 #
 #   - qemu_active:           normal — continue.
-#   - 83/84/85/86:           passt-shim failures, accepted only with the
+#   - 83/84/86:              passt-shim failures, accepted only with the
 #                            host-owned `shim` launch-phase marker. The same
 #                            numeric QEMU exits carry `qemu` and classify as a
 #                            generic crash.
-#                            passt now binds the forward port (not QEMU),
-#                            so exit code 85 is the authoritative bind-race
-#                            signal — the legacy post-hoc port re-probe is
-#                            gone.
 #   - qemu_crashed:          failed/inactive with a non-passt status
 #                            (bad firmware path, bad qcow2 header, KVM
 #                            init failure, …) — fail fast with the captured
@@ -406,27 +400,6 @@ launch_phase="${VIRTDEV_QEMU_LAUNCH_PHASE}"
 case "${classify}" in
   "${qemu_active}")
     : # Unit is active; fall through.
-    ;;
-  "${passt_port_race_exit_code}")
-    if (( explicit_port )); then
-      error 17 <<MESSAGE
-Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
-Between virtdev-start's pre-flight port check and passt's bind() call,
-a non-virtdev process took the port. The explicit port cannot be
-retried until that process releases it.
-Retry with a different port, or omit the port arg to auto-assign:
-    virtdev-start ${project} <other-port>
-    virtdev-start ${project}
-MESSAGE
-    else
-      error 17 <<MESSAGE
-Port ${port} is bound by another process: ${unit} exit status ${exit_status}.
-Auto-assignment selected this port, but a non-virtdev process took
-it between the port check and passt's bind() call. Retry —
-auto-assignment will pick the next free port:
-    virtdev-start ${project}
-MESSAGE
-    fi
     ;;
   "${passt_missing_exit_code}")
     error 18 <<MESSAGE

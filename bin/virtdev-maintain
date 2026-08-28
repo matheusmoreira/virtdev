@@ -76,7 +76,7 @@
 #   13  system disk integrity check (qemu-img) failed
 #   14  home disk integrity check (qemu-img) failed
 #   15  base system generation file missing
-#   16  passt forward-port bind race during Boot 1 activation
+#   16  reserved (legacy passt bind-race diagnosis; no longer emitted)
 #   17  virtdev-exchange helper not found (run 'make')
 #   18  Boot 1 exited abnormally (non-zero, non-143); reseal refused
 #   19  virtdev-exchange (renameat2 RENAME_EXCHANGE) swap failed
@@ -684,13 +684,13 @@ MESSAGE
 fi
 
 # Early activation check: briefly poll the unit state so that a passt
-# failure (missing, init error, port race) fails fast with a targeted
+# failure (missing or init error) fails fast with a targeted
 # message instead of falling through to the full 120s SSH wait and a
 # misleading "SSH did not become available" report.
 #
 # Mirrors virtdev-start's post-launch poll via the shared
 # qemu_activation_classify (lib/virtdev/qemu). The launch-phase marker keeps a
-# real QEMU exit of 83..86 distinct from the shim's reserved diagnostics.
+# real QEMU exit of 83, 84, or 86 distinct from the shim diagnostics.
 qemu_activation_classify \
   "${unit}" 5 "${maintenance_launch_phase_file}" \
   && activate_classify=0 || activate_classify=$?
@@ -701,17 +701,6 @@ case "${activate_classify}" in
       # (below), NOT here: a boot that activates past this 5s classify deadline
       # falls through to the SSH wait, so anchoring the check there covers every
       # boot speed (mirrors Boot 2).
-    ;;
-  "${passt_port_race_exit_code}")
-    maintenance_cleanup_or_error 'Port-race cleanup'
-    error 16 <<MESSAGE
-Port ${maintenance_port} is bound by another process.
-Between virtdev-maintain's pre-flight port check and passt's bind()
-call, another process took the port. The sealed base images are
-intact: '${system_directory}'
-Maintenance images preserved for inspection: '${maintenance_directory}'
-Remove manually to retry: rm -rf '${maintenance_directory}'
-MESSAGE
     ;;
   "${passt_missing_exit_code}")
     maintenance_cleanup_or_error 'Missing-passt cleanup'

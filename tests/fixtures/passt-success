@@ -2,4 +2,4 @@
 
 set -euo pipefail
 
-exit 0
+exit "${PASST_EXIT_STATUS:-0}"

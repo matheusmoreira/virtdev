@@ -5,7 +5,15 @@ set -euo pipefail
 
 repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
-trap 'rm -rf -- "${test_tmp}"' EXIT
+listener_pid=''
+cleanup() {
+  if [[ -n "${listener_pid}" ]]; then
+    kill "${listener_pid}" 2>/dev/null || true
+    wait "${listener_pid}" 2>/dev/null || true
+  fi
+  rm -rf -- "${test_tmp}"
+}
+trap cleanup EXIT
 
 fixture_bin="${test_tmp}/bin"
 runtime_directory="${test_tmp}/runtime"
@@ -33,6 +41,46 @@ if [[ "$(< "${phase_file}")" != shim ]]; then
   exit 1
 fi
 
+# A later port observation cannot authenticate why passt failed.
+export PATH="${repository}/tests/fixtures:${fixture_bin}:${PATH}"
+# shellcheck disable=SC1090
+source "${repository}/lib/virtdev/import"
+import qemu port
+occupied_port=30000
+while port_in_use "${occupied_port}"; do
+  (( occupied_port++ ))
+  (( occupied_port <= 40000 )) || exit 1
+done
+socat TCP-LISTEN:"${occupied_port}",bind=127.0.0.1,reuseaddr,fork \
+  SYSTEM:'sleep 30' >"${test_tmp}/listener-output" 2>&1 &
+listener_pid=$!
+for _ in {1..50}; do
+  port_in_use "${occupied_port}" && break
+  sleep 0.02
+done
+if ! port_in_use "${occupied_port}"; then
+  printf 'test listener did not bind port %s\n' "${occupied_port}" >&2
+  kill "${listener_pid}" 2>/dev/null || true
+  wait "${listener_pid}" 2>/dev/null || true
+  exit 1
+fi
+
+status=0
+PASST_EXIT_STATUS=42 PATH="${fixture_bin}:${PATH}" \
+  "${repository}/bin/virtdev-netexec" \
+    --socket "${runtime_directory}/passt.sock" \
+    --phase-file "${phase_file}" \
+    --forward "${occupied_port}" \
+    -- qemu-test >"${output}" 2>&1 || status=$?
+kill "${listener_pid}" 2>/dev/null || true
+wait "${listener_pid}" 2>/dev/null || true
+listener_pid=''
+if (( status != passt_init_failure_exit_code )); then
+  printf 'unrelated port occupancy changed passt failure to %d\n' "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
 for qemu_status in 83 84 85 86; do
   status=0
   PATH="${fixture_bin}:${PATH}" QEMU_EXIT_STATUS="${qemu_status}" \
@@ -52,10 +100,6 @@ for qemu_status in 83 84 85 86; do
   fi
 done
 
-export PATH="${repository}/tests/fixtures:${PATH}"
-# shellcheck disable=SC1090
-source "${repository}/lib/virtdev/import"
-import qemu
 export SYSTEMCTL_ACTIVE_STATE=failed
 export SYSTEMCTL_EXEC_MAIN_STATUS=83
 

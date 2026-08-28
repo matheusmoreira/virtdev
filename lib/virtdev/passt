@@ -7,7 +7,6 @@ set -euo pipefail
 
 readonly passt_missing_exit_code=83
 readonly passt_init_failure_exit_code=84
-readonly passt_port_race_exit_code=85
 readonly passt_qemu_missing_exit_code=86
 
 passt_command() {

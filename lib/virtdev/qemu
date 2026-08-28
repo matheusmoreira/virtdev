@@ -76,7 +76,7 @@
 #       On return, three namespaced globals carry the detail the caller
 #       needs for its own diagnostics:
 #         VIRTDEV_QEMU_EXIT_STATUS  — the unit's ExecMainStatus (the shim
-#                                     exit code 83/84/85/86 when QEMU was
+#                                     exit code 83/84/86 when QEMU was
 #                                     never exec'd, otherwise QEMU's own
 #                                     code), or "unknown".
 #         VIRTDEV_QEMU_ACTIVE_STATE — the last ActiveState observed.
@@ -91,10 +91,9 @@
 #                                authenticated QEMU phase became ready.
 #   83  (passt_missing)          passt binary not found (shim pre-exec).
 #   84  (passt_init_failure)     passt failed to initialise (shim).
-#   85  (passt_port_race)        forward-port bind race (shim).
 #   86  (passt_qemu_missing)     QEMU pre-flight found no binary (shim).
 #
-# The 83/84/85/86 constants are owned by lib/virtdev/passt and reused here
+# The 83/84/86 constants are owned by lib/virtdev/passt and reused here
 # verbatim. Numeric status alone is not provenance: QEMU may legitimately exit
 # with the same value. They are interpreted as shim failures only when the
 # host-owned launch phase file says `shim`; missing/malformed/`qemu` state maps
@@ -245,7 +244,6 @@ qemu_activation_classify() {
         VIRTDEV_QEMU_LAUNCH_PHASE="${VIRTDEV_QEMU_LAUNCH_PHASE:-unknown}"
         if [[ "${VIRTDEV_QEMU_LAUNCH_PHASE}" == "${runtime_launch_phase_shim}" ]]; then
           case "${exit_status}" in
-            "${passt_port_race_exit_code}") return "${passt_port_race_exit_code}" ;;
             "${passt_missing_exit_code}")   return "${passt_missing_exit_code}" ;;
             "${passt_init_failure_exit_code}") return "${passt_init_failure_exit_code}" ;;
             "${passt_qemu_missing_exit_code}") return "${passt_qemu_missing_exit_code}" ;;
