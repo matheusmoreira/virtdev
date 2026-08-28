@@ -346,6 +346,17 @@ MESSAGE
     <<<"Could not durably rebind SSH host alias for project: ${project}"
 }
 
+_ssh_config_quote_path() {
+  (( $# == 1 )) || return 2
+  local value="${1}" environment_expansion="\${"
+  [[ "${value}" != *$'\n'* && "${value}" != *$'\r'* \
+      && "${value}" != *"${environment_expansion}"* ]] || return 1
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//%/%%}"
+  printf '"%s"' "${value}"
+}
+
 ssh_transport_argv() {
   (( $# == 6 || $# == 7 )) || return 2
   local -r __ssh_transport_output_name="${1}"
@@ -373,9 +384,20 @@ ssh_transport_argv() {
   ssh_host_identity_require "${__ssh_transport_project}"
   ssh_config_require_safe "${__ssh_transport_config}"
 
-  local __ssh_transport_known_hosts __ssh_transport_alias
+  local __ssh_transport_known_hosts __ssh_transport_known_hosts_option \
+    __ssh_transport_alias
   __ssh_transport_known_hosts="$(ssh_host_identity_known_hosts \
     "${__ssh_transport_project}")" || return 2
+  __ssh_transport_known_hosts="$(realpath -- \
+    "${__ssh_transport_known_hosts}")" || {
+    error "${ssh_host_identity_exit_code}" \
+      <<<"Could not resolve SSH known-host state for project: ${__ssh_transport_project}"
+  }
+  __ssh_transport_known_hosts_option="$(_ssh_config_quote_path \
+    "${__ssh_transport_known_hosts}")" || {
+    error "${ssh_host_identity_exit_code}" \
+      <<<"SSH known-host path cannot be represented safely for project: ${__ssh_transport_project}"
+  }
   __ssh_transport_alias="$(ssh_host_identity_alias \
     "${__ssh_transport_project}")" || return 2
 
@@ -404,7 +426,7 @@ ssh_transport_argv() {
     -o ForwardAgent=no
     -o GSSAPIDelegateCredentials=no
     -o StrictHostKeyChecking=yes
-    -o UserKnownHostsFile="${__ssh_transport_known_hosts}"
+    -o "UserKnownHostsFile=${__ssh_transport_known_hosts_option}"
     -o GlobalKnownHostsFile=/dev/null
     -o HostKeyAlias="${__ssh_transport_alias}"
     -o CheckHostIP=no

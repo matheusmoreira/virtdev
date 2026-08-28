@@ -5,7 +5,15 @@ set -euo pipefail
 
 repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
-trap 'rm -rf -- "${test_tmp}"' EXIT
+sshd_pid=''
+cleanup() {
+  if [[ -n "${sshd_pid}" ]]; then
+    kill -TERM "${sshd_pid}" 2>/dev/null || true
+    wait "${sshd_pid}" 2>/dev/null || true
+  fi
+  rm -rf -- "${test_tmp}"
+}
+trap cleanup EXIT
 
 export VIRTDEV_HOME="${test_tmp}/store with spaces"
 export VIRTDEV_SSH_KEY="${test_tmp}/client key"
@@ -65,7 +73,7 @@ declare -a expected_base=(
   -o ForwardAgent=no
   -o GSSAPIDelegateCredentials=no
   -o StrictHostKeyChecking=yes
-  -o UserKnownHostsFile="${alpha_known}"
+  -o "UserKnownHostsFile=\"${alpha_known}\""
   -o GlobalKnownHostsFile=/dev/null
   -o HostKeyAlias="${alpha_alias}"
   -o CheckHostIP=no
@@ -140,6 +148,65 @@ fi
 grep -Fqx 'controlmaster false' <<< "${effective}"
 grep -Fqx 'controlpersist no' <<< "${effective}"
 
+live_port=$(( 40000 + BASHPID % 20000 ))
+while /usr/bin/ss -H -ltn "sport = :${live_port}" | grep -q .; do
+  (( live_port++ ))
+  (( live_port <= 65535 )) || {
+    printf 'could not reserve a local SSH test port\n' >&2
+    exit 1
+  }
+done
+sshd_config="${test_tmp}/sshd_config"
+sshd_log="${test_tmp}/sshd.log"
+client_log="${test_tmp}/client.log"
+alpha_host_key="$(ssh_host_identity_key alpha)"
+printf '%s\n' \
+  "Port ${live_port}" \
+  'ListenAddress 127.0.0.1' \
+  "HostKey \"${alpha_host_key}\"" \
+  "PidFile \"${test_tmp}/sshd.pid\"" \
+  "AuthorizedKeysFile \"${VIRTDEV_SSH_KEY}.pub\"" \
+  "TrustedUserCAKeys \"${certificate_authority}.pub\"" \
+  'PasswordAuthentication no' \
+  'KbdInteractiveAuthentication no' \
+  'UsePAM no' \
+  'StrictModes no' \
+  "AllowUsers $(id -un)" > "${sshd_config}"
+/usr/bin/sshd -D -e -f "${sshd_config}" >"${sshd_log}" 2>&1 &
+sshd_pid=$!
+sshd_ready=0
+for _ in {1..100}; do
+  if /usr/bin/ss -H -ltn "sport = :${live_port}" | grep -q .; then
+    sshd_ready=1
+    break
+  fi
+  kill -0 "${sshd_pid}" 2>/dev/null || break
+  sleep 0.02
+done
+if (( ! sshd_ready )); then
+  printf 'local sshd did not become ready\n' >&2
+  cat "${sshd_log}" >&2
+  exit 1
+fi
+
+declare -a live_argv=()
+ssh_transport_argv live_argv batch alpha "${VIRTDEV_SSH_KEY}" \
+  "${live_port}" /dev/null
+status=0
+"${live_argv[@]}" -vvv "$(id -un)@127.0.0.1" true \
+  >/dev/null 2>"${client_log}" || status=$?
+if (( status != 0 )) \
+    || grep -Eq 'ED25519-CERT|-cert\.pub' "${client_log}" \
+    || ! grep -Eq 'Offering public key: .* ED25519 ' "${client_log}"; then
+  printf 'SSH offered an adjacent certificate or failed raw-key authentication\n' >&2
+  cat "${client_log}" >&2
+  cat "${sshd_log}" >&2
+  exit 1
+fi
+kill -TERM "${sshd_pid}"
+wait "${sshd_pid}" 2>/dev/null || true
+sshd_pid=''
+
 weak_config="${test_tmp}/weak-config"
 printf '%s\n' \
   'Host *' \
@@ -213,7 +280,7 @@ beta_known="$(ssh_host_identity_known_hosts beta)"
 [[ "${alpha_known}" != "${beta_known}" ]]
 [[ "$(< "${VIRTDEV_HOME}/projects/alpha/ssh-host/host_key.pub")" \
       != "$(< "${VIRTDEV_HOME}/projects/beta/ssh-host/host_key.pub")" ]]
-[[ " ${actual[*]} " == *" UserKnownHostsFile=${beta_known} "* ]]
+[[ " ${actual[*]} " == *" UserKnownHostsFile=\"${beta_known}\" "* ]]
 [[ " ${actual[*]} " == *' HostKeyAlias=virtdev-beta '* ]]
 if ssh-keygen -F virtdev-alpha -f "${beta_known}" >/dev/null; then
   printf 'beta host state accepted alpha alias\n' >&2
