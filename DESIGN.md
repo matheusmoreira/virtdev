@@ -847,7 +847,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `trigger` | run user-supplied trigger scripts at explicit lifecycle points (`trigger_fire`); bounds execution and stdout before returning text through namerefs | 80 |
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
 | `manifest` | resolve and normalize backup manifests; reject parent escapes and intermediate restore symlinks | none (caller-supplied) |
-| `mount` | inspect mountinfo before bounded recursive operations | none (caller-supplied) |
+| `mount` | locate containing and nested mounts before recursive operations | none (caller-supplied) |
 | `machine` | resolve project and maintenance machine targets into explicit kind, unit, data-root, and runtime-root descriptors; owns authoritative single-machine state mapping and fail-closed predicates | 2, 3 (returned) |
 | `project` | enumerate projects and enforce ordinary-project data operations (`project_require_ordinary`, batch state, generation and detached-state readers); compatibility state predicates delegate to `machine` | 3, 82 |
 | `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets, atomic `port` readiness signal, and `launch.phase` exit-provenance marker | none |
@@ -1099,8 +1099,10 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
 ```
 
 `virtdev-iso` refuses cleanup when mountinfo contains a mount at or below
-`work/` or `profile/`. Ownership recovery uses the caller's numeric IDs and a
-non-crossing traversal; deletion is also restricted to one filesystem.
+`work/` or `profile/`. It atomically moves each tree to a root-owned quarantine
+on the same filesystem, checks mounts again, and performs privileged deletion
+only inside that locked directory. `virtdev-destroy` and `virtdev-nuke` also
+refuse nested mounts and restrict recursive removal to one filesystem.
 
 The host egress lockdown (Phase 2) stores root-owned state outside
 `${VIRTDEV_HOME}`, established by `sudo virtdev firewall apply`:

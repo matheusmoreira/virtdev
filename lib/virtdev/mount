@@ -29,3 +29,30 @@ mount_find_below() {
   done
   [[ -n "${_mount_find_ref}" ]]
 }
+
+mount_find_containing() {
+  local -r path="${1}"
+  local -n _mount_containing_ref="${2}"
+  local line mount_id parent_id device filesystem_root encoded_path remainder
+  local decoded_path
+  local -a mountinfo=()
+
+  _mount_containing_ref=""
+  [[ "${path}" == /* ]] || return 2
+  mapfile -t mountinfo < /proc/self/mountinfo || return 2
+  (( ${#mountinfo[@]} > 0 )) || return 2
+  for line in "${mountinfo[@]}"; do
+    IFS=' ' read -r mount_id parent_id device filesystem_root encoded_path \
+      remainder <<< "${line}"
+    [[ "${mount_id}" =~ ^[0-9]+$ && "${parent_id}" =~ ^[0-9]+$ \
+        && "${device}" =~ ^[0-9]+:[0-9]+$ && "${filesystem_root}" == /* \
+        && "${encoded_path}" == /* && -n "${remainder}" ]] || return 2
+    printf -v decoded_path '%b' "${encoded_path}"
+    if [[ "${decoded_path}" == / || "${path}" == "${decoded_path}" \
+        || "${path}" == "${decoded_path}/"* ]] \
+        && (( ${#decoded_path} > ${#_mount_containing_ref} )); then
+      _mount_containing_ref="${decoded_path}"
+    fi
+  done
+  [[ -n "${_mount_containing_ref}" ]] || return 2
+}

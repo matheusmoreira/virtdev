@@ -18,7 +18,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments snapshot confirm terminal project
+import error validate lock arguments snapshot confirm terminal project mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -47,15 +47,32 @@ project_directory="${VIRTDEV_HOME}/projects/${project}"
 
 project_require_ordinary "${project}"
 
-# Fail CLOSED: only a PROVABLY stopped machine may be destroyed. project_is_stopped
-# is false for an unreachable manager too, so a lost session bus cannot read a live
-# machine as "stopped" and let this wipe its disks.
+# Transitional or unknown state is not proof that deletion is safe.
 if ! project_is_stopped "${project}"; then
   error 4 <<MESSAGE
 Project virtual machine is running: ${project}
 Stop it with: virtdev-stop ${project}
 MESSAGE
 fi
+
+require_unmounted_project() {
+  local mount_path="" status=0
+
+  mount_find_below "$(realpath -m -- "${project_directory}")" mount_path \
+    || status=$?
+  case "${status}" in
+    0)
+      error 6 <<MESSAGE
+Mounted filesystem detected below project directory: '${mount_path}'
+Unmount it explicitly; project destruction was refused.
+MESSAGE
+      ;;
+    1) ;;
+    *) error 6 <<<'Could not inspect mount state; project destruction was refused.' ;;
+  esac
+}
+
+require_unmounted_project
 
 printf >&2 'This will permanently delete:\n\n'
 printf >&2 '\t%s\n' "${project_directory}"
@@ -79,5 +96,6 @@ if (( ! flags[yes] )); then
   fi
 fi
 
-rm -rf "${project_directory}"
+require_unmounted_project
+rm -rf --one-file-system -- "${project_directory}"
 printf >&2 '%s\n' "$(terminal_write fg=green "Project destroyed: ${project}" reset)"

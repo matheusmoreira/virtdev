@@ -572,7 +572,10 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
 
 An interrupted ISO build can leave privileged mounts below `work/`.
 `virtdev iso` refuses to clean a mounted build tree; unmount the exact stale
-path it reports, then rerun the command.
+path it reports, then rerun the command. Cleanup otherwise moves stale build
+trees into a root-owned same-filesystem quarantine before privileged removal.
+`virtdev destroy` and `virtdev nuke` likewise refuse nested mounts rather than
+crossing them during recursive deletion.
 
 ## License
 

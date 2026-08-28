@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments lock
+import error arguments lock mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -72,7 +72,41 @@ fi
 
 lock_acquire_cache
 
-build_directory="${VIRTDEV_CACHE}"
+invoking_uid="$(/usr/bin/id -u)"
+if [[ ! "${invoking_uid}" =~ ^[0-9]+$ ]]; then
+  error 11 <<<'could not resolve numeric build owner (internal bug)'
+fi
+
+build_directory="$(realpath -m -- "${VIRTDEV_CACHE}")"
+if ! mkdir -p -- "${build_directory}" \
+    || [[ ! -d "${build_directory}" || -L "${build_directory}" ]]; then
+  error 10 <<<"Cannot prepare ISO build root: '${build_directory}'"
+fi
+build_owner="$(stat -c '%u' -- "${build_directory}" 2>/dev/null || true)"
+if [[ "${build_owner}" != "${invoking_uid}" ]]; then
+  error 10 <<MESSAGE
+ISO build root is not owned by uid ${invoking_uid}: '${build_directory}'
+Choose a user-owned VIRTDEV_CACHE or repair the build-root ownership explicitly.
+MESSAGE
+fi
+chmod 0700 -- "${build_directory}" \
+  || error 10 <<<"Cannot secure ISO build root: '${build_directory}'"
+build_directory="$(realpath -- "${build_directory}")"
+if ! exec {build_directory_fd}<"${build_directory}"; then
+  error 10 <<<"Cannot pin ISO build root: '${build_directory}'"
+fi
+build_identity="$(stat -Lc '%d:%i:%u' -- \
+  "/proc/self/fd/${build_directory_fd}" 2>/dev/null || true)"
+current_identity="$(stat -Lc '%d:%i:%u' -- \
+  "${build_directory}" 2>/dev/null || true)"
+if [[ -z "${build_identity}" || "${build_identity}" != "${current_identity}" \
+    || "${build_identity##*:}" != "${invoking_uid}" ]]; then
+  error 10 <<<"ISO build root changed while it was being pinned: '${build_directory}'"
+fi
+build_anchor="$(realpath -- "/proc/self/fd/${build_directory_fd}")"
+if [[ "${build_anchor}" != "${build_directory}" ]]; then
+  error 10 <<<"ISO build root changed while it was being pinned: '${build_directory}'"
+fi
 output_directory="${build_directory}"
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile
@@ -95,37 +129,11 @@ if [[ "${work_directory}" != "${build_directory}/work" \
   error 11 <<<"build path construction mismatch (internal bug)"
 fi
 
-mount_below() {
-  local -r root="${1}"
-  local -n _mount_below_ref="${2}"
-  local line mount_id parent_id device filesystem_root encoded_path remainder
-  local decoded_path
-  local -a mountinfo=()
-
-  _mount_below_ref=""
-  mapfile -t mountinfo < /proc/self/mountinfo || return 2
-  (( ${#mountinfo[@]} > 0 )) || return 2
-  for line in "${mountinfo[@]}"; do
-    IFS=' ' read -r mount_id parent_id device filesystem_root encoded_path \
-      remainder <<< "${line}"
-    [[ "${mount_id}" =~ ^[0-9]+$ && "${parent_id}" =~ ^[0-9]+$ \
-        && "${device}" =~ ^[0-9]+:[0-9]+$ && "${filesystem_root}" == /* \
-        && "${encoded_path}" == /* && -n "${remainder}" ]] || return 2
-    printf -v decoded_path '%b' "${encoded_path}"
-    if [[ "${decoded_path}" == "${root}" \
-        || "${decoded_path}" == "${root}/"* ]] \
-        && (( ${#decoded_path} > ${#_mount_below_ref} )); then
-      _mount_below_ref="${decoded_path}"
-    fi
-  done
-  [[ -n "${_mount_below_ref}" ]]
-}
-
 require_unmounted_tree() {
   local -r path="${1}"
   local mount_path="" status=0
 
-  mount_below "$(realpath -m -- "${path}")" mount_path || status=$?
+  mount_find_below "$(realpath -m -- "${path}")" mount_path || status=$?
   case "${status}" in
     0)
       error 12 <<MESSAGE
@@ -138,26 +146,111 @@ MESSAGE
   esac
 }
 
-cleanup_build_tree() {
-  local -r path="${1}" owner="${2}"
+quarantine_directory=""
 
-  [[ -e "${path}" || -L "${path}" ]] || return 0
-  require_unmounted_tree "${path}"
-  sudo /usr/bin/find -P -- "${path}" -xdev \
-    -exec /usr/bin/chown -h -- "${owner}" {} +
-  require_unmounted_tree "${path}"
-  rm -rf --one-file-system -- "${path}"
+cleanup_quarantine_directory() {
+  local -r status="${?}"
+  if [[ -n "${quarantine_directory}" ]]; then
+    sudo /usr/bin/rmdir -- "${quarantine_directory}" 2>/dev/null || true
+  fi
+  return "${status}"
+}
+trap cleanup_quarantine_directory EXIT
+
+prepare_quarantine_directory() {
+  local quarantine_candidate quarantine_owner quarantine_mode quarantine_real
+  local quarantine_root
+  local root_owner root_mode root_mode_value status=0 expected_prefix
+
+  [[ -z "${quarantine_directory}" ]] || return 0
+  mount_find_containing "${build_anchor}" quarantine_root || status=$?
+  if (( status != 0 )); then
+    error 12 <<<'Could not identify the ISO build filesystem for safe cleanup.'
+  fi
+  root_owner="$(stat -c '%u' -- "${quarantine_root}" 2>/dev/null || true)"
+  root_mode="$(stat -c '%a' -- "${quarantine_root}" 2>/dev/null || true)"
+  if [[ "${root_owner}" != 0 || ! "${root_mode}" =~ ^[0-7]{3,4}$ ]]; then
+    error 12 <<<"Unsafe ISO cleanup quarantine root: '${quarantine_root}'"
+  fi
+  root_mode_value=$(( 8#${root_mode} ))
+  if (( (root_mode_value & 0022) != 0 && (root_mode_value & 01000) == 0 )); then
+    error 12 <<<"ISO cleanup quarantine root is writable without sticky protection: '${quarantine_root}'"
+  fi
+
+  quarantine_candidate="$(
+    sudo /usr/bin/mktemp -d --tmpdir="${quarantine_root}" .virtdev-iso.XXXXXXXXXX
+  )" || error 12 <<<'Could not create a privileged ISO cleanup quarantine.'
+  quarantine_real="$(realpath -- "${quarantine_candidate}" 2>/dev/null || true)"
+  quarantine_owner="$(stat -c '%u' -- "${quarantine_candidate}" 2>/dev/null || true)"
+  quarantine_mode="$(stat -c '%a' -- "${quarantine_candidate}" 2>/dev/null || true)"
+  expected_prefix="${quarantine_root%/}/.virtdev-iso."
+  if [[ "${quarantine_real}" != "${expected_prefix}"* \
+      || -L "${quarantine_candidate}" || ! -d "${quarantine_candidate}" \
+      || "${quarantine_owner}" != 0 || "${quarantine_mode}" != 700 ]]; then
+    error 12 <<<'Privileged ISO cleanup returned an unsafe quarantine directory.'
+  fi
+  quarantine_directory="${quarantine_real}"
 }
 
-invoking_uid="$(/usr/bin/id -u)"
-invoking_gid="$(/usr/bin/id -g)"
-if [[ ! "${invoking_uid}" =~ ^[0-9]+$ || ! "${invoking_gid}" =~ ^[0-9]+$ ]]; then
-  error 11 <<<'could not resolve numeric build owner (internal bug)'
-fi
-invoking_owner="${invoking_uid}:${invoking_gid}"
+cleanup_build_tree() {
+  local -r path="${1}" leaf="${2}"
+  local anchored_path quarantined mount_path="" original_mount status=0
+
+  anchored_path="/proc/self/fd/${build_directory_fd}/${leaf}"
+  [[ -e "${anchored_path}" || -L "${anchored_path}" ]] || return 0
+  require_unmounted_tree "${anchored_path}"
+  prepare_quarantine_directory
+  quarantined="${quarantine_directory}/${leaf}"
+
+  if ! (cd -- "/proc/self/fd/${build_directory_fd}" \
+      && sudo /usr/bin/mv --no-target-directory -- "${leaf}" "${quarantined}"); then
+    error 12 <<<"Could not quarantine ISO build tree: '${path}'"
+  fi
+
+  mount_find_below "${quarantined}" mount_path || status=$?
+  case "${status}" in
+    0)
+      original_mount="${path}${mount_path#"${quarantined}"}"
+      if (cd -- "/proc/self/fd/${build_directory_fd}" \
+          && sudo /usr/bin/mv --no-target-directory -- "${quarantined}" "${leaf}"); then
+        error 12 <<MESSAGE
+Mounted filesystem detected below ISO build path: '${original_mount}'
+Unmount stale mkarchiso mounts explicitly; automatic cleanup was refused.
+MESSAGE
+      fi
+      error 12 <<MESSAGE
+Mounted filesystem detected in quarantined ISO tree: '${mount_path}'
+The preserved tree could not be returned to '${path}'.
+Recover it explicitly from '${quarantined}'.
+MESSAGE
+      ;;
+    1) ;;
+    *)
+      error 12 <<MESSAGE
+Could not inspect the quarantined ISO tree; cleanup was refused.
+Recover it explicitly from '${quarantined}'.
+MESSAGE
+      ;;
+  esac
+
+  if ! sudo /usr/bin/rm -rf --one-file-system -- "${quarantined}"; then
+    error 12 <<<"Could not remove quarantined ISO build tree: '${quarantined}'"
+  fi
+}
+
 printf >&2 'Clearing build tree...\n'
-cleanup_build_tree "${work_directory}" "${invoking_owner}"
-cleanup_build_tree "${profile_directory}" "${invoking_owner}"
+cleanup_build_tree "${work_directory}" work
+cleanup_build_tree "${profile_directory}" profile
+if [[ -n "${quarantine_directory}" ]]; then
+  sudo /usr/bin/rmdir -- "${quarantine_directory}" \
+    || error 12 <<<"Could not remove ISO cleanup quarantine: '${quarantine_directory}'"
+  quarantine_directory=""
+fi
+current_identity="$(stat -Lc '%d:%i:%u' -- \
+  "${build_directory}" 2>/dev/null || true)"
+if [[ "${current_identity}" != "${build_identity}" ]]; then
+  error 10 <<<"ISO build root changed during cleanup: '${build_directory}'"
+fi
 mkdir -p "${work_directory}" "${profile_directory}"
 
 printf >&2 "Copying profile: '%s'\n" "${profile}"

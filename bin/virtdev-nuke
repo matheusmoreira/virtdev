@@ -19,7 +19,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments snapshot confirm terminal project
+import error lock arguments snapshot confirm terminal project mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -38,11 +38,7 @@ if [[ $# -ne 0 ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
 
-# Refuse to operate on any path that is not strictly under $HOME. Resolve each
-# approved root once, then use that exact physical path for every subsequent
-# scan, display, and deletion. A final-component symlink is rejected outright:
-# `rm -rf symlink` removes only the link, not the directory whose containment we
-# approved, which would otherwise leave split state while reporting success.
+# Resolve each deletion root once and reject final-component symlinks.
 home_real="$(realpath -- "${HOME}")"
 declare -a nuke_roots=()
 for variable in VIRTDEV_HOME VIRTDEV_CACHE; do
@@ -67,7 +63,6 @@ MESSAGE
   nuke_roots+=("${real}")
 done
 
-# The primary rendezvous must survive every deletion below.
 lock_directory="$(lock_control_directory)"
 for path in "${nuke_roots[@]}"; do
   if [[ "${lock_directory}" == "${path}" \
@@ -80,31 +75,43 @@ MESSAGE
   fi
 done
 
-# Taken BEFORE the "any VMs active" check below so a concurrent
-# virtdev-start cannot slip a VM in between the check and the rm -rf.
+# Keep starts and cache builders out through deletion.
 lock_acquire
-# Serialize cache builders before inspecting or deleting their output.
 lock_acquire_cache
 
-# Refuse if any project VMs are running. Skip directories whose name
-# does not match the project-name schema: only virtdev itself creates
-# projects/<name>/ entries (always validated against the schema), but
-# a user could have hand-dropped something else under that path. An
-# unvalidated name in 'systemctl is-active virtdev-${project}' would
-# split into multiple args on whitespace and produce a confusing
-# error from systemctl rather than the targeted message we want.
+require_unmounted_root() {
+  local -r path="${1}"
+  local mount_path="" status=0
+
+  mount_find_below "${path}" mount_path || status=$?
+  case "${status}" in
+    0)
+      error 6 <<MESSAGE
+Mounted filesystem detected below nuke root: '${mount_path}'
+Unmount it explicitly; nuke was refused.
+MESSAGE
+      ;;
+    1) ;;
+    *) error 6 <<<'Could not inspect mount state; nuke was refused.' ;;
+  esac
+}
+
+require_unmounted_roots() {
+  local path
+
+  for path in "${nuke_roots[@]}"; do
+    require_unmounted_root "${path}"
+  done
+}
+
+require_unmounted_roots
+
+# Skip owner-added directories whose names are not valid project names.
 projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
-  # LC_ALL=C so the schema regex is byte-wise ASCII (mirroring validate_project_name);
-  # a UTF-8 locale would let [a-zA-Z] also match accented dir names that would then
-  # split / confuse the systemctl running-check. nuke's remaining work is
-  # locale-insensitive, so leaving it set for the rest is harmless.
   LC_ALL=C
   while IFS= read -r project; do
     [[ "${project}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
-    # Fail CLOSED: any not-PROVABLY-stopped machine blocks the nuke. An unreachable
-    # manager reads as not-stopped, so nuke refuses rather than delete everything
-    # under a possibly-live machine.
     if ! project_is_stopped "${project}"; then
       error 4 <<MESSAGE
 Project virtual machine is running: ${project}
@@ -152,23 +159,20 @@ if ! confirm_word "nuke"; then
   error 5 <<<"Aborted."
 fi
 
-# Revalidate the exact approved roots after the confirmation boundary. This
-# catches a directory replaced with a symlink while the command was inspecting
-# sizes/backups, before any destructive call runs.
+# Revalidate each root and its mount boundary immediately before deletion.
 for path in "${nuke_roots[@]}"; do
   current="$(realpath -m -- "${path}")"
   if [[ -L "${path}" || "${current}" != "${path}" \
-        || "${current}" != "${home_real}"/?* ]]; then
+      || "${current}" != "${home_real}"/?* ]]; then
     error 3 <<MESSAGE
 Nuke root changed after validation: '${path}'
 Current resolution: '${current}'
-Nothing was deleted.
+This root was not deleted.
 MESSAGE
   fi
-done
-
-for path in "${nuke_roots[@]}"; do
-  [[ -e "${path}" || -L "${path}" ]] && rm -rf -- "${path}"
+  require_unmounted_root "${path}"
+  [[ -e "${path}" || -L "${path}" ]] \
+    && rm -rf --one-file-system -- "${path}"
 done
 
 printf >&2 '%s\n' "$(terminal_write fg=green 'All virtdev data deleted.' reset)"
