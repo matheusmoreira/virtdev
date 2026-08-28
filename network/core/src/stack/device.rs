@@ -63,7 +63,7 @@ impl FrameSlot {
 }
 
 /// The single-frame device driven by smoltcp and owned by NetStack.
-pub struct QemuDevice {
+pub(super) struct QemuDevice {
     inbound: FrameSlot,
     outbound: FrameSlot,
 }
@@ -105,9 +105,9 @@ impl Default for QemuDevice {
     }
 }
 
-pub struct QemuRxToken<'a>(&'a mut FrameSlot);
+pub(super) struct QemuRxToken<'a>(&'a mut FrameSlot);
 
-pub struct QemuTxToken<'a>(&'a mut FrameSlot);
+pub(super) struct QemuTxToken<'a>(&'a mut FrameSlot);
 
 impl RxToken for QemuRxToken<'_> {
     fn consume<R, F>(self, f: F) -> R

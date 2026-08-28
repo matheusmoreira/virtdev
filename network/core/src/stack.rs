@@ -6,8 +6,11 @@
 
 pub mod frame;
 
-pub mod device;
+mod device;
 
 pub mod netstack;
 
-pub mod inspect;
+mod inspect;
+
+pub use device::LoadError;
+pub use inspect::TcpFlowKey;

@@ -6,18 +6,24 @@ use smoltcp::iface::{Config, Interface, PollResult, SocketSet};
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4Cidr};
 
-use super::device::QemuDevice;
+use super::device::{LoadError, QemuDevice};
+use super::inspect::{peek_tcp_syn, TcpFlowKey};
 
-/// The gateway IP we present to the guest (its default route and, later, DNS).
-/// The guest link is `10.0.0.0/24`; the guest will lease `10.0.0.2` via DHCP.
+/// Gateway address on the guest's `10.0.0.0/24` link.
 const GATEWAY_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 1);
 
-/// Prefix length of the guest link subnet.
-const SUBNET_PREFIX_LEN: u8 = 24;
+const LINK_CIDR: Ipv4Cidr = Ipv4Cidr::new(GATEWAY_IP, 24);
 
 /// The gateway MAC we present to the guest. Locally-administered (bit `0x02` of
 /// the first octet) and unicast; otherwise arbitrary.
 const GATEWAY_MAC: EthernetAddress = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+
+/// Result of inspecting and admitting one decoded inbound frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IngestOutcome {
+    Queued,
+    Denied(TcpFlowKey),
+}
 
 /// smoltcp interface and its single-frame device.
 pub struct NetStack {
@@ -35,7 +41,7 @@ impl NetStack {
 
         iface.update_ip_addrs(|addrs| {
             addrs
-                .push(IpCidr::Ipv4(Ipv4Cidr::new(GATEWAY_IP, SUBNET_PREFIX_LEN)))
+                .push(IpCidr::Ipv4(LINK_CIDR))
                 .expect("one IP fits the interface address table");
         });
 
@@ -44,9 +50,33 @@ impl NetStack {
         Self { iface, device }
     }
 
-    /// Access the framed transport device.
-    pub fn device_mut(&mut self) -> &mut QemuDevice {
-        &mut self.device
+    /// Inspect a decoded frame, request admission for a new SYN, and queue it.
+    /// Rejected SYNs are dropped without consuming the inbound slot.
+    pub fn ingest<F>(&mut self, frame: &[u8], admit_new_flow: F) -> Result<IngestOutcome, LoadError>
+    where
+        F: FnOnce(&TcpFlowKey) -> bool,
+    {
+        let flow = peek_tcp_syn(frame, GATEWAY_MAC, LINK_CIDR);
+        self.device.load_inbound(frame)?;
+
+        if let Some(flow) = flow {
+            if !admit_new_flow(&flow) {
+                self.device.clear_inbound();
+                return Ok(IngestOutcome::Denied(flow));
+            }
+        }
+
+        Ok(IngestOutcome::Queued)
+    }
+
+    /// Frame waiting for the QEMU transport, if any.
+    pub fn outbound(&self) -> Option<&[u8]> {
+        self.device.outbound()
+    }
+
+    /// Release an outbound frame after the transport sent it completely.
+    pub fn clear_outbound(&mut self) {
+        self.device.clear_outbound();
     }
 
     /// Consume a queued inbound frame and produce any response.
@@ -177,7 +207,21 @@ mod tests {
         );
 
         let syn = craft_syn(guest_mac, guest_ip, server_ip, 49152, 80);
-        stack.device_mut().load_inbound(&syn).unwrap();
+        assert_eq!(
+            stack.ingest(&syn, |flow| {
+                assert_eq!(
+                    *flow,
+                    TcpFlowKey {
+                        src_addr: guest_ip,
+                        src_port: 49152,
+                        dst_addr: server_ip,
+                        dst_port: 80,
+                    }
+                );
+                true
+            }),
+            Ok(IngestOutcome::Queued)
+        );
         stack.poll(Instant::ZERO, &mut sockets);
 
         assert_eq!(
@@ -185,25 +229,22 @@ mod tests {
             tcp::State::SynReceived,
         );
         {
-            let out = stack
-                .device_mut()
-                .outbound()
-                .expect("an ARP request is queued");
+            let out = stack.outbound().expect("an ARP request is queued");
             let eth = EthernetFrame::new_checked(out).unwrap();
             assert_eq!(eth.ethertype(), EthernetProtocol::Arp);
             let arp = ArpPacket::new_checked(eth.payload()).unwrap();
             assert_eq!(arp.operation(), ArpOperation::Request);
         }
 
-        stack.device_mut().clear_outbound();
+        stack.clear_outbound();
         let arp_reply = craft_arp_reply(guest_mac, guest_ip);
-        stack.device_mut().load_inbound(&arp_reply).unwrap();
+        assert_eq!(
+            stack.ingest(&arp_reply, |_| panic!("ARP is not a new TCP flow")),
+            Ok(IngestOutcome::Queued)
+        );
         stack.poll(Instant::from_millis(250), &mut sockets);
 
-        let out = stack
-            .device_mut()
-            .outbound()
-            .expect("the SYN/ACK is now queued");
+        let out = stack.outbound().expect("the SYN/ACK is now queued");
         let eth = EthernetFrame::new_checked(out).unwrap();
         assert_eq!(eth.ethertype(), EthernetProtocol::Ipv4);
         let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
@@ -211,5 +252,96 @@ mod tests {
         let seg = TcpPacket::new_checked(ipv4.payload()).unwrap();
         assert!(seg.syn() && seg.ack(), "reply is a SYN/ACK");
         assert_eq!(seg.src_port(), 80);
+    }
+
+    #[test]
+    fn denied_syn_is_dropped_and_releases_inbound_capacity() {
+        let guest_mac = EthernetAddress([0x02, 0, 0, 0, 0, 2]);
+        let guest_ip = Ipv4Address::new(10, 0, 0, 2);
+        let server_ip = Ipv4Address::new(93, 184, 216, 34);
+        let key = TcpFlowKey {
+            src_addr: guest_ip,
+            src_port: 49152,
+            dst_addr: server_ip,
+            dst_port: 443,
+        };
+        let syn = craft_syn(guest_mac, guest_ip, server_ip, key.src_port, key.dst_port);
+        let mut stack = NetStack::new(Instant::ZERO);
+
+        assert_eq!(
+            stack.ingest(&syn, |flow| {
+                assert_eq!(*flow, key);
+                false
+            }),
+            Ok(IngestOutcome::Denied(key))
+        );
+        assert_eq!(stack.outbound(), None);
+
+        let arp = craft_arp_reply(guest_mac, guest_ip);
+        assert_eq!(
+            stack.ingest(&arp, |_| panic!("ARP is not a new TCP flow")),
+            Ok(IngestOutcome::Queued)
+        );
+    }
+
+    #[test]
+    fn occupied_ingest_does_not_repeat_admission_side_effects() {
+        let guest_mac = EthernetAddress([0x02, 0, 0, 0, 0, 2]);
+        let guest_ip = Ipv4Address::new(10, 0, 0, 2);
+        let server_ip = Ipv4Address::new(93, 184, 216, 34);
+        let first = craft_syn(guest_mac, guest_ip, server_ip, 49152, 80);
+        let second = craft_syn(guest_mac, guest_ip, server_ip, 49153, 80);
+        let mut stack = NetStack::new(Instant::ZERO);
+
+        assert_eq!(stack.ingest(&first, |_| true), Ok(IngestOutcome::Queued));
+        let mut called = false;
+        assert_eq!(
+            stack.ingest(&second, |_| {
+                called = true;
+                true
+            }),
+            Err(LoadError::Occupied)
+        );
+        assert!(!called);
+    }
+
+    #[test]
+    fn directed_broadcast_source_is_neither_admitted_nor_polled() {
+        let guest_mac = EthernetAddress([0x02, 0, 0, 0, 0, 2]);
+        let broadcast = Ipv4Address::new(10, 0, 0, 255);
+        let server_ip = Ipv4Address::new(93, 184, 216, 34);
+        let mut stack = NetStack::new(Instant::ZERO);
+
+        let mut storage = [SocketStorage::EMPTY; 1];
+        let mut sockets = SocketSet::new(&mut storage[..]);
+        let mut rx = [0u8; 1500];
+        let mut tx = [0u8; 1500];
+        let socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(&mut rx[..]),
+            tcp::SocketBuffer::new(&mut tx[..]),
+        );
+        let handle = sockets.add(socket);
+        sockets
+            .get_mut::<tcp::Socket>(handle)
+            .listen((server_ip, 80))
+            .unwrap();
+
+        let syn = craft_syn(guest_mac, broadcast, server_ip, 49152, 80);
+        let mut admission_called = false;
+        assert_eq!(
+            stack.ingest(&syn, |_| {
+                admission_called = true;
+                true
+            }),
+            Ok(IngestOutcome::Queued)
+        );
+        assert!(!admission_called);
+
+        stack.poll(Instant::ZERO, &mut sockets);
+        assert_eq!(
+            sockets.get::<tcp::Socket>(handle).state(),
+            tcp::State::Listen
+        );
+        assert_eq!(stack.outbound(), None);
     }
 }
