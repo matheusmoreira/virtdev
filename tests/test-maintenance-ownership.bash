@@ -6,8 +6,17 @@ repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
 interrupt_pid=""
 cleanup() {
-  if [[ -n "${interrupt_pid}" ]] && kill -0 "${interrupt_pid}" 2>/dev/null; then
-    kill -TERM "${interrupt_pid}" 2>/dev/null || true
+  if [[ -n "${interrupt_pid}" ]]; then
+    if kill -0 "${interrupt_pid}" 2>/dev/null; then
+      kill -TERM "${interrupt_pid}" 2>/dev/null || true
+    fi
+    for (( attempt = 0; attempt < 20; attempt++ )); do
+      kill -0 "${interrupt_pid}" 2>/dev/null || break
+      sleep 0.05
+    done
+    if kill -0 "${interrupt_pid}" 2>/dev/null; then
+      kill -KILL "${interrupt_pid}" 2>/dev/null || true
+    fi
     wait "${interrupt_pid}" 2>/dev/null || true
   fi
   rm -rf -- "${test_tmp}"
@@ -98,14 +107,14 @@ prepare_launch_home() {
 
 run_launch() {
   local -r launch_home="${1}" ssh_mode="${2}" cache="${3}" \
-    malformed_control="${4:-0}"
+    malformed_control="${4:-0}" wait_timeout="${5:-1}"
   PATH="${launch_bin}:${PATH}" \
     HOME="${test_tmp}" \
     XDG_CONFIG_HOME="${test_tmp}/config" \
     VIRTDEV_HOME="${launch_home}" \
     VIRTDEV_CACHE="${cache}" \
     VIRTDEV_SSH_KEY="${launch_home}/ssh/id" \
-    VIRTDEV_WAIT_TIMEOUT=1 \
+    VIRTDEV_WAIT_TIMEOUT="${wait_timeout}" \
     VIRTDEV_STOP_TIMEOUT=1 \
     OVMF_CODE="${launch_home}/OVMF_CODE.fd" \
     SYSTEMCTL_STATE_FILE="${launch_home}/unit.state" \
@@ -203,7 +212,7 @@ unknown_home="${test_tmp}/unknown-home"
 prepare_launch_home "${unknown_home}"
 status=0
 run_launch "${unknown_home}" manager-loss \
-  "${unknown_home}/cache" || status=$?
+  "${unknown_home}/cache" 0 5 || status=$?
 if (( status != 29 )); then
   printf 'expected post-submission manager-loss exit 29, got %d\n' \
     "${status}" >&2
@@ -231,7 +240,7 @@ direct_exit_home="${test_tmp}/direct-exit-home"
 prepare_launch_home "${direct_exit_home}"
 status=0
 run_launch "${direct_exit_home}" ready-exit \
-  "${direct_exit_home}/cache" || status=$?
+  "${direct_exit_home}/cache" 0 5 || status=$?
 if (( status != 31 )); then
   printf 'expected unattested zero-exit refusal 31, got %d\n' "${status}" >&2
   cat "${output}" >&2
@@ -259,7 +268,7 @@ env --default-signal=INT \
   VIRTDEV_HOME="${interrupt_home}" \
   VIRTDEV_CACHE="${interrupt_home}/cache" \
   VIRTDEV_SSH_KEY="${interrupt_home}/ssh/id" \
-  VIRTDEV_WAIT_TIMEOUT=1 \
+  VIRTDEV_WAIT_TIMEOUT=5 \
   VIRTDEV_STOP_TIMEOUT=1 \
   OVMF_CODE="${interrupt_home}/OVMF_CODE.fd" \
   SYSTEMCTL_STATE_FILE="${interrupt_home}/unit.state" \
@@ -288,7 +297,31 @@ if (( ! interrupt_waiting )); then
   exit 1
 fi
 
-kill -INT "${interrupt_pid}"
+interrupt_acknowledged=0
+for (( delivery = 0; delivery < 3; delivery++ )); do
+  if ! kill -INT "${interrupt_pid}" 2>/dev/null; then
+    if ! kill -0 "${interrupt_pid}" 2>/dev/null; then
+      interrupt_acknowledged=1
+      break
+    fi
+    printf 'could not deliver Ctrl-C to maintenance fixture\n' >&2
+    exit 1
+  fi
+  for (( poll = 0; poll < 40; poll++ )); do
+    if [[ -e "${interrupt_home}/stop.called" ]] \
+        || ! kill -0 "${interrupt_pid}" 2>/dev/null; then
+      interrupt_acknowledged=1
+      break 2
+    fi
+    sleep 0.05
+  done
+done
+if (( ! interrupt_acknowledged )); then
+  printf 'maintenance did not acknowledge Ctrl-C within the test bound\n' >&2
+  cat "${interrupt_output}" >&2
+  exit 1
+fi
+
 status=0
 wait "${interrupt_pid}" || status=$?
 interrupt_pid=""
