@@ -27,6 +27,8 @@ import error lock arguments snapshot confirm terminal project
 # shellcheck disable=SC2034  # spec read via nameref
 declare -A spec=()
 # shellcheck disable=SC2034
+declare -a spec_positionals=()
+# shellcheck disable=SC2034
 declare -A flags=()
 declare -a positional=()
 arguments_parse spec flags positional "$@"

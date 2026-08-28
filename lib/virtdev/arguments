@@ -101,12 +101,19 @@ arguments_parse() {
   local _arguments_spec_name="${1}"
 
   local _arguments_short_name="${1}_short"
+  local _arguments_positionals_name="${1}_positionals"
   local _arguments_has_short=0
   if declare -p "${_arguments_short_name}" &>/dev/null; then
     # shellcheck disable=SC2178  # nameref, not scalar reassignment
     local -n _arguments_short="${_arguments_short_name}"
     _arguments_has_short=1
   fi
+  if ! declare -p "${_arguments_positionals_name}" &>/dev/null; then
+    error "${arguments_usage_exit_code}" \
+      <<<"missing positional schema: ${_arguments_positionals_name}"
+  fi
+  # shellcheck disable=SC2178  # nameref, not scalar reassignment
+  local -n _arguments_positionals_spec="${_arguments_positionals_name}"
 
   shift 3
 
@@ -135,6 +142,52 @@ arguments_parse() {
       fi
     done
   fi
+
+  local _arguments_entry _arguments_name _arguments_modifier
+  local _arguments_min_positionals=0 _arguments_max_positionals=0
+  local _arguments_unbounded_positionals=0 _arguments_optional_seen=0
+  local _arguments_index
+  local -A _arguments_positional_names=()
+  for _arguments_index in "${!_arguments_positionals_spec[@]}"; do
+    _arguments_entry="${_arguments_positionals_spec[$_arguments_index]}"
+    _arguments_modifier="${_arguments_entry: -1}"
+    case "${_arguments_modifier}" in
+      '?'|'+'|'*') _arguments_name="${_arguments_entry%?}" ;;
+      *) _arguments_modifier='' ; _arguments_name="${_arguments_entry}" ;;
+    esac
+    if [[ -z "${_arguments_name}" || "${_arguments_name}" == *[?+*]* ]]; then
+      error "${arguments_usage_exit_code}" \
+        <<<"invalid positional schema entry: '${_arguments_entry}'"
+    fi
+    if [[ -v _arguments_positional_names[$_arguments_name] ]]; then
+      error "${arguments_usage_exit_code}" \
+        <<<"duplicate positional schema name: '${_arguments_name}'"
+    fi
+    _arguments_positional_names["${_arguments_name}"]=1
+    case "${_arguments_modifier}" in
+      '')
+        if (( _arguments_optional_seen )); then
+          error "${arguments_usage_exit_code}" \
+            <<<"required positional follows an optional one: '${_arguments_entry}'"
+        fi
+        (( _arguments_min_positionals += 1 ))
+        (( _arguments_max_positionals += 1 ))
+        ;;
+      '?')
+        _arguments_optional_seen=1
+        (( _arguments_max_positionals += 1 ))
+        ;;
+      '+'|'*')
+        if (( _arguments_index != ${#_arguments_positionals_spec[@]} - 1 )); then
+          error "${arguments_usage_exit_code}" \
+            <<<"variadic positional must be final: '${_arguments_entry}'"
+        fi
+        [[ "${_arguments_modifier}" == '+' ]] \
+          && (( _arguments_min_positionals += 1 ))
+        _arguments_unbounded_positionals=1
+        ;;
+    esac
+  done
 
   for key in "${!_arguments_spec[@]}"; do
     [[ -v _arguments_flags[$key] ]] && continue
@@ -311,6 +364,13 @@ arguments_parse() {
   if (( ${#missing[@]} > 0 )); then
     error "${arguments_usage_exit_code}" \
       <<<"missing required flag(s): ${missing[*]}"
+  fi
+
+  if (( ${#_arguments_positional[@]} < _arguments_min_positionals )) \
+      || (( ! _arguments_unbounded_positionals \
+            && ${#_arguments_positional[@]} > _arguments_max_positionals )); then
+    error "${arguments_usage_exit_code}" \
+      <<<"$(arguments_usage "${_arguments_spec_name}")"
   fi
 }
 
