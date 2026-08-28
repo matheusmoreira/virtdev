@@ -27,7 +27,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project terminal port passt qemu firewall runtime qmp integer
+import error validate lock arguments project terminal port qemu firewall runtime lifecycle integer
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -64,6 +64,10 @@ fi
 project="${1}"
 
 validate_project_name "${project}"
+reserved_reason=''
+if reserved_reason="$(validate_project_name_reserved "${project}")"; then
+  error 2 <<<"${reserved_reason}"
+fi
 
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 if ! runtime_socket_paths_fit "${project_directory}"; then
@@ -229,7 +233,7 @@ if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
 fi
 
 # Resolve SSH port
-port_file="${project_directory}"/port
+port_file="$(runtime_port_file "${project_directory}")"
 
 if [[ $# -eq 2 ]]; then
   # Explicit port from command line.
@@ -254,65 +258,33 @@ else
   done
 fi
 
-# The disk/nvram paths are derived inside qemu_command from
-# project_directory; the socket set (cleanup trap, stale-socket sweep) is
-# owned by lib/virtdev/runtime. The shim derives its endpoints from this one
-# validated runtime directory; start needs only the QMP probe path here.
-qmp_sock="$(runtime_qmp_sock "${project_directory}")"
-launch_phase_file="$(runtime_launch_phase_file "${project_directory}")"
-
-# Cleanup-on-failure: every error path between here and the wait-loop
-# success marker either proves the submitted unit terminal before removing its
-# controls, or preserves those controls for recovery when state is unknown.
-# The presence of port_file is virtdev's signal that a VM is running
-# (consulted by virtdev-ssh, virtdev-list, virtdev-backup, etc.); a
-# leftover port_file after an aborted start would lure later commands
-# into trusting a unit that does not exist. The trap fires on any
-# exit (set -e error, signal, or explicit error N) before vm_started=1 is
-# set. Once submission is attempted, cleanup requests a stop and waits for a
-# provable inactive/failed state before unlinking anything. The active-unit
-# teardown paths are the
-# QMP liveness gate (error 13) and the firewall assert (error 21) — both
-# leave the unit active. A crash before active (error 12, unit
-# failed/inactive) and a slow boot still activating past the 5s classify
-# deadline (error 16) are handled by the same terminal-proof primitive. On
-# these early failures port_file has not been written yet (it is published
-# only after the liveness + firewall checks), so a confirmed runtime cleanup's
-# rm -f is a no-op for it.
+# Failed starts stop their submitted unit before removing controls. If manager
+# state is unknown, recovery paths stay intact.
 vm_started=0
 unit_submission_attempted=0
 cleanup_failed_start() {
   (( vm_started )) && return 0
   if (( unit_submission_attempted )); then
-    if ! qemu_stop_unit_then_clean_runtime \
+    if ! lifecycle_stop_and_clean \
         "${unit}" "${project_directory}" "${VIRTDEV_STOP_TIMEOUT}"; then
       printf >&2 '%s\n' "$(terminal_write fg=yellow \
         'warning: failed start could not prove the submitted VM terminal; runtime controls were preserved.' reset)"
       printf >&2 'Unit: %s (last state: %s)\n' \
-        "${unit}" "${VIRTDEV_QEMU_STOP_STATE}"
+        "${unit}" "${VIRTDEV_LIFECYCLE_STOP_STATE}"
       printf >&2 'Inspect/stop the unit before removing files under: %s\n' \
         "${project_directory}"
     fi
   else
     # Submission never began, so no process can own these pre-launch paths.
-    runtime_clean "${project_directory}"
+    lifecycle_clean_unowned "${project_directory}" || true
   fi
 }
 trap cleanup_failed_start EXIT
 
-# Remove stale sockets AND a stale port from a previous unclean shutdown
-# (runtime_clean — the full sweep). The is-active check above already proved
-# the unit is not running, so any port file here is genuinely stale (a prior
-# start SIGKILLed before its own cleanup, or a deferred-cleanup poweroff).
-# Clearing it now is what keeps "port file ⟺ machine confirmed running"
-# honest: the port is (re)written LAST, only after the liveness + firewall
-# checks, so leaving a stale port in place would let a lock-free reader
-# (virtdev-ssh/-port/-backup) read the WRONG port during this launch window.
-# With it cleared, that window shows an honest "no port yet" (exit 87 =
-# not-running-yet) until the confirmed write. (A sockets-only sweep was
-# correct only while the port was written BEFORE this point; it no longer
-# is.) cleanup_failed_start below repeats the full sweep on any failure.
-runtime_clean "${project_directory}"
+# The inactive-unit check above proves these controls unowned.
+if ! lifecycle_clean_unowned "${project_directory}"; then
+  error 17 <<<"Could not clear stale runtime controls: '${project_directory}'"
+fi
 
 # Clear any residual failed state from a previous start attempt. Without
 # --collect (see below), a unit that exited with error persists as
@@ -369,49 +341,25 @@ systemd-run \
         -- \
         "${qemu_argv[@]}"
 
-# Wait for systemd to confirm the transient unit is active before the
-# lock is released (via script exit). systemd-run returns when the
-# unit is queued; ActiveState transitions activating → active once
-# systemd has started tracking it. Without this wait, another virtdev
-# script could take the lock between systemd-run returning and
-# systemd seeing the unit, and its 'is-active' check would falsely
-# conclude the VM is not running.
-#
-# qemu_activation_classify (lib/virtdev/qemu) runs the poll and returns
-# a discriminant; the case below maps it to start's own exit codes and
-# messages. The outcomes we distinguish, so the user gets a targeted
-# message instead of a generic timeout:
-#
-#   - qemu_active:           normal — continue.
-#   - 83/84/86:              passt-shim failures, accepted only with the
-#                            host-owned `shim` launch-phase marker. The same
-#                            numeric QEMU exits carry `qemu` and classify as a
-#                            generic crash.
-#   - qemu_crashed:          failed/inactive with a non-passt status
-#                            (bad firmware path, bad qcow2 header, KVM
-#                            init failure, …) — fail fast with the captured
-#                            exit status so the user is not told "unit did
-#                            not become active" when it entered and left in
-#                            the same second.
-#   - qemu_still_activating: deadline passed before systemd state and the
-#                            authenticated QEMU phase were both ready.
-qemu_activation_classify \
-  "${unit}" 5 "${launch_phase_file}" && classify=0 || classify=$?
-state="${VIRTDEV_QEMU_ACTIVE_STATE}"
-exit_status="${VIRTDEV_QEMU_EXIT_STATUS}"
-launch_phase="${VIRTDEV_QEMU_LAUNCH_PHASE}"
+# Activation and QMP readiness share one lifecycle boundary. The CLI maps its
+# structured result to stable public exit codes.
+lifecycle_wait_ready "${unit}" "${project_directory}" 5 5 \
+  && classify=0 || classify=$?
+state="${VIRTDEV_LIFECYCLE_ACTIVE_STATE}"
+exit_status="${VIRTDEV_LIFECYCLE_EXIT_STATUS}"
+launch_phase="${VIRTDEV_LIFECYCLE_LAUNCH_PHASE}"
 case "${classify}" in
-  "${qemu_active}")
+  "${lifecycle_ready}")
     : # Unit is active; fall through.
     ;;
-  "${passt_missing_exit_code}")
+  "${lifecycle_backend_missing}")
     error 18 <<MESSAGE
 passt is not installed: ${unit} exit status ${exit_status}.
 Install passt and retry: pacman -S passt
     virtdev-start ${project}
 MESSAGE
     ;;
-  "${passt_init_failure_exit_code}")
+  "${lifecycle_backend_failed}")
     error 19 <<MESSAGE
 passt failed to initialise: ${unit} exit status ${exit_status}.
 The socket did not come up before QEMU was launched. Investigate:
@@ -419,7 +367,7 @@ The socket did not come up before QEMU was launched. Investigate:
     journalctl --user -u ${unit}
 MESSAGE
     ;;
-  "${passt_qemu_missing_exit_code}")
+  "${lifecycle_qemu_missing}")
     error 20 <<MESSAGE
 QEMU command not found: ${unit} exit status ${exit_status}.
 The netexec shim pre-flighted the QEMU binary and could not find it,
@@ -428,7 +376,7 @@ so passt was never started. Install QEMU and retry:
     virtdev-start ${project}
 MESSAGE
     ;;
-  "${qemu_crashed}")
+  "${lifecycle_qemu_crashed}")
     error 12 <<MESSAGE
 Unit exited before becoming active: ${unit}
 ActiveState: ${state}
@@ -439,7 +387,7 @@ The netexec shim or QEMU failed during launch. Investigate:
     journalctl --user -u ${unit}
 MESSAGE
     ;;
-  "${qemu_still_activating}")
+  "${lifecycle_activation_timeout}")
     error 16 <<MESSAGE
 Unit/QEMU launch did not become ready within 5s: ${unit}
 ActiveState: ${state:-unknown}
@@ -448,43 +396,22 @@ systemd-run reported success, but QEMU ownership was not confirmed.
 Investigate: systemctl --user status ${unit}
 MESSAGE
     ;;
+  "${lifecycle_qmp_unready}")
+    error 13 <<MESSAGE
+QEMU did not reach a running state: ${unit} (passt or QEMU failed at launch).
+The unit became active, but QEMU did not answer QMP query-status. Investigate:
+    systemctl --user status ${unit}
+    journalctl --user -u ${unit}
+MESSAGE
+    ;;
   *)
-    # Defensive: qemu_activation_classify returns a fixed discriminant set, so this is
-    # unreachable today — but without a catch-all an unrecognised value would fall
-    # through the case and reach vm_started=1, marking a non-active unit as started.
     error 14 <<MESSAGE
 Unexpected activation result '${classify}' for ${unit} (ActiveState: ${state:-unknown}).
-This is a bug: qemu_activation_classify returned an unrecognised discriminant.
+This is a bug: the lifecycle service returned an unrecognised result.
 Investigate: systemctl --user status ${unit}
 MESSAGE
     ;;
 esac
-
-# The unit is 'active', but that only means systemd saw the netexec shim
-# fork — the transient unit is Type=simple (systemd-run omits Type=), so it
-# flips to active the instant the shim is exec'd, BEFORE passt binds or QEMU
-# runs. A passt failure or a QEMU boot-crash that lands after that fork would
-# otherwise slip through here as a false green: success printed, exit 0, and a
-# stale port file left behind. (The filtered path's ControlGroup assert below
-# incidentally catches most of it, but --unfiltered skips that — where the
-# false green was deterministic.) Positively confirm QEMU is actually running
-# by probing its QMP control socket with query-status before publishing
-# anything. This is NOT an SSH/boot wait — query-status answers sub-second on a
-# live QEMU; start stays ASYNC. On failure vm_started is still 0, so
-# cleanup_failed_start stops the unit and runtime_cleans (sockets + the
-# not-yet-written port).
-#
-if ! qmp_query_running "${qmp_sock}" 5 "${unit}"; then
-  error 13 <<MESSAGE
-QEMU did not reach a running state: ${unit} (passt or QEMU failed at launch).
-The transient unit went active when the netexec shim forked, but QEMU never
-answered QMP query-status — passt failed to bring up the socket, or QEMU
-crashed at boot (bad firmware/qcow2, KVM failure) right after the fork.
-Investigate:
-    systemctl --user status ${unit}
-    journalctl --user -u ${unit}
-MESSAGE
-fi
 
 # Close the firewall TOCTOU: the guard ran before the lock + systemd-run, so a
 # user-manager teardown in that window could have churned virtdev.slice's inode,
@@ -493,11 +420,7 @@ fi
 # vm_started is still 0 so cleanup_failed_start stops the unit (fail CLOSED).
 # --unfiltered opted out of the lockdown entirely, so it skips this.
 if (( filtered )); then
-  # Single ControlGroup read (no poll, unlike virtdev-maintain's retry): safe because
-  # qemu_activation_classify above already polled the unit to `active`, which populates
-  # ControlGroup. The poll-first ordering is the precondition — a future refactor that
-  # moved this assert before the activation poll could see an empty ControlGroup and
-  # fail CLOSED (a spurious exit 21).
+  # Read after lifecycle readiness, when systemd has populated ControlGroup.
   control_group="$(systemctl --user show "${unit}" -p ControlGroup --value 2>/dev/null || true)"
   if ! firewall_assert_unit_filtered "${control_group}"; then
     error 21 <<MESSAGE
@@ -511,14 +434,10 @@ MESSAGE
   fi
 fi
 
-# Publish the running signal LAST — only now that liveness is confirmed
-# (QMP query-status) and, for a filtered launch, the machine is proven to
-# sit under the frozen virtdev.slice. The port file is what virtdev-ssh,
-# virtdev-list and virtdev-backup trust as "this machine is running"; writing
-# it before these checks is exactly the false-green that let a failed launch
-# strand a stale port. cleanup_failed_start's rm -f "${port_file}" stays
-# correct — on an early failure the file simply does not exist yet.
-printf '%s\n' "${port}" > "${port_file}"
+# Publish the running signal last and atomically.
+if ! lifecycle_publish_ready "${project_directory}" "${port}"; then
+  error 17 <<<"Could not publish runtime readiness: '${port_file}'"
+fi
 
 vm_started=1
 

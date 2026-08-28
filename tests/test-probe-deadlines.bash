@@ -139,7 +139,7 @@ sleep() {
 
 started=${BASH_MONOSECONDS}
 status=0
-qmp_query_running "${qmp_sock}" 1 virtdev-test || status=$?
+qmp_query_running "${qmp_sock}" 1 || status=$?
 elapsed=$(( BASH_MONOSECONDS - started ))
 if (( status != 1 || elapsed > 2 )) || [[ ! -s "${qmp_timeout}" ]]; then
   printf 'one-second QMP poll did not complete inside its outer budget\n' >&2

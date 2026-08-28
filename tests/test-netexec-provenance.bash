@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2154  # qemu/runtime constants provided by imports
+# shellcheck disable=SC2154  # lifecycle/runtime constants provided by imports
 
 set -euo pipefail
 
@@ -45,7 +45,7 @@ fi
 export PATH="${repository}/tests/fixtures:${fixture_bin}:${PATH}"
 # shellcheck disable=SC1090
 source "${repository}/lib/virtdev/import"
-import qemu port
+import lifecycle port
 occupied_port=30000
 while port_in_use "${occupied_port}"; do
   (( occupied_port++ ))
@@ -103,9 +103,9 @@ export SYSTEMCTL_EXEC_MAIN_STATUS=83
 
 runtime_launch_phase_publish "${phase_file}" "${runtime_launch_phase_shim}"
 classification=0
-qemu_activation_classify virtdev-probe 0 "${phase_file}" \
+lifecycle_wait_active virtdev-probe "${runtime_directory}" 0 \
   || classification=$?
-if (( classification != passt_missing_exit_code )); then
+if (( classification != lifecycle_backend_missing )); then
   printf 'authenticated shim exit 83 classified as %d\n' "${classification}" >&2
   exit 1
 fi
@@ -115,9 +115,9 @@ printf 'active\nfailed\n' > "${active_sequence}"
 export SYSTEMCTL_ACTIVE_SEQUENCE_FILE="${active_sequence}"
 runtime_launch_phase_publish "${phase_file}" "${runtime_launch_phase_shim}"
 classification=0
-qemu_activation_classify virtdev-probe 5 "${phase_file}" \
+lifecycle_wait_active virtdev-probe "${runtime_directory}" 5 \
   || classification=$?
-if (( classification != passt_missing_exit_code )); then
+if (( classification != lifecycle_backend_missing )); then
   printf 'active-to-failed shim exit 83 classified as %d\n' \
     "${classification}" >&2
   exit 1
@@ -129,9 +129,9 @@ for qemu_status in 83 84 85 86; do
   export SYSTEMCTL_EXEC_MAIN_STATUS
   runtime_launch_phase_publish "${phase_file}" "${runtime_launch_phase_qemu}"
   classification=0
-  qemu_activation_classify virtdev-probe 0 "${phase_file}" \
+  lifecycle_wait_active virtdev-probe "${runtime_directory}" 0 \
     || classification=$?
-  if (( classification != qemu_crashed )); then
+  if (( classification != lifecycle_qemu_crashed )); then
     printf 'QEMU exit %d was misclassified as shim failure %d\n' \
       "${qemu_status}" "${classification}" >&2
     exit 1
@@ -143,9 +143,9 @@ export SYSTEMCTL_EXEC_MAIN_STATUS
 
 printf 'bad\n' > "${phase_file}"
 classification=0
-qemu_activation_classify virtdev-probe 0 "${phase_file}" \
+lifecycle_wait_active virtdev-probe "${runtime_directory}" 0 \
   || classification=$?
-if (( classification != qemu_crashed )); then
+if (( classification != lifecycle_qemu_crashed )); then
   printf 'malformed provenance authorized shim diagnosis %d\n' \
     "${classification}" >&2
   exit 1
@@ -153,15 +153,37 @@ fi
 
 rm "${phase_file}"
 classification=0
-qemu_activation_classify virtdev-probe 0 "${phase_file}" \
+lifecycle_wait_active virtdev-probe "${runtime_directory}" 0 \
   || classification=$?
-if (( classification != qemu_crashed )); then
+if (( classification != lifecycle_qemu_crashed )); then
   printf 'missing provenance authorized shim diagnosis %d\n' \
     "${classification}" >&2
   exit 1
 fi
 
 runtime_launch_phase_publish "${phase_file}" "${runtime_launch_phase_qemu}"
+
+# Once activation succeeds, readiness must keep observing unit ownership rather
+# than waiting out the whole QMP deadline after a crash.
+qmp_probe_count=0
+qmp_query_running_once() {
+  (( ++qmp_probe_count ))
+  return 1
+}
+printf 'active\nactive\nfailed\n' > "${active_sequence}"
+export SYSTEMCTL_ACTIVE_SEQUENCE_FILE="${active_sequence}"
+SYSTEMCTL_EXEC_MAIN_STATUS=42
+export SYSTEMCTL_EXEC_MAIN_STATUS
+classification=0
+lifecycle_wait_ready virtdev-probe "${runtime_directory}" 5 5 \
+  || classification=$?
+if (( classification != lifecycle_qemu_crashed || qmp_probe_count != 1 )); then
+  printf 'readiness did not fail promptly when unit ownership died: status %d probes %d\n' \
+    "${classification}" "${qmp_probe_count}" >&2
+  exit 1
+fi
+unset SYSTEMCTL_ACTIVE_SEQUENCE_FILE
+
 runtime_clean "${runtime_directory}"
 if [[ -e "${phase_file}" || -e "${phase_file}.tmp" ]]; then
   printf 'runtime teardown retained launch provenance controls\n' >&2
@@ -169,3 +191,4 @@ if [[ -e "${phase_file}" || -e "${phase_file}.tmp" ]]; then
 fi
 
 printf 'ok - netexec exit diagnosis requires authenticated launch provenance\n'
+printf 'ok - lifecycle readiness keeps unit ownership authoritative\n'

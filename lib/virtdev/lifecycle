@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # status constants and diagnostic globals are public
+# shellcheck disable=SC2154  # imported runtime/passt constants
+# Lifecycle service for a systemd-owned QEMU machine.
+#
+# Public operations return structured statuses; they never exit the caller.
+# Diagnostic globals describe the last observed activation or stop state.
+
+set -euo pipefail
+
+import integer passt port qmp runtime
+
+readonly lifecycle_ready=0
+readonly lifecycle_backend_missing=10
+readonly lifecycle_backend_failed=11
+readonly lifecycle_qemu_missing=12
+readonly lifecycle_qemu_crashed=13
+readonly lifecycle_activation_timeout=14
+readonly lifecycle_qmp_unready=15
+readonly lifecycle_invalid=16
+
+readonly lifecycle_stop_clean=0
+readonly lifecycle_stop_indeterminate=20
+readonly lifecycle_stop_timeout=21
+readonly lifecycle_stop_cleanup_failed=22
+readonly lifecycle_stop_invalid=23
+
+readonly lifecycle_publish_ok=0
+readonly lifecycle_publish_invalid=30
+readonly lifecycle_publish_failed=31
+
+VIRTDEV_LIFECYCLE_ACTIVE_STATE=unknown
+VIRTDEV_LIFECYCLE_EXIT_STATUS=unknown
+VIRTDEV_LIFECYCLE_LAUNCH_PHASE=unknown
+VIRTDEV_LIFECYCLE_STOP_STATE=unknown
+
+_lifecycle_classify_terminal() {
+  local -r unit="${1}" phase_file="${2}"
+  VIRTDEV_LIFECYCLE_EXIT_STATUS="$(systemctl --user show "${unit}" \
+    --property=ExecMainStatus --value 2>/dev/null || true)"
+  VIRTDEV_LIFECYCLE_EXIT_STATUS="${VIRTDEV_LIFECYCLE_EXIT_STATUS:-unknown}"
+  VIRTDEV_LIFECYCLE_LAUNCH_PHASE="$(
+    runtime_launch_phase_read "${phase_file}" 2>/dev/null || true
+  )"
+  VIRTDEV_LIFECYCLE_LAUNCH_PHASE="${VIRTDEV_LIFECYCLE_LAUNCH_PHASE:-unknown}"
+  if [[ "${VIRTDEV_LIFECYCLE_LAUNCH_PHASE}" == "${runtime_launch_phase_shim}" ]]; then
+    case "${VIRTDEV_LIFECYCLE_EXIT_STATUS}" in
+      "${passt_missing_exit_code}") return "${lifecycle_backend_missing}" ;;
+      "${passt_init_failure_exit_code}") return "${lifecycle_backend_failed}" ;;
+      "${passt_qemu_missing_exit_code}") return "${lifecycle_qemu_missing}" ;;
+    esac
+  fi
+  return "${lifecycle_qemu_crashed}"
+}
+
+lifecycle_wait_active() {
+  local -r unit="${1:-}" runtime_directory="${2:-}" deadline_seconds="${3:-}"
+  if [[ -z "${unit}" || -z "${runtime_directory}" ]] \
+      || { [[ "${deadline_seconds}" != 0 ]] \
+        && ! integer_is_bounded_positive "${deadline_seconds}" 86400; }; then
+    return "${lifecycle_invalid}"
+  fi
+  local -r deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
+  local -r phase_file="$(runtime_launch_phase_file "${runtime_directory}")"
+  local state
+
+  VIRTDEV_LIFECYCLE_ACTIVE_STATE=unknown
+  VIRTDEV_LIFECYCLE_EXIT_STATUS=unknown
+  VIRTDEV_LIFECYCLE_LAUNCH_PHASE=unknown
+
+  while true; do
+    state="$(systemctl --user show "${unit}" \
+      --property=ActiveState --value 2>/dev/null || true)"
+    VIRTDEV_LIFECYCLE_ACTIVE_STATE="${state:-unknown}"
+    case "${state}" in
+      active)
+        VIRTDEV_LIFECYCLE_LAUNCH_PHASE="$(
+          runtime_launch_phase_read "${phase_file}" 2>/dev/null || true
+        )"
+        VIRTDEV_LIFECYCLE_LAUNCH_PHASE="${VIRTDEV_LIFECYCLE_LAUNCH_PHASE:-unknown}"
+        if [[ "${VIRTDEV_LIFECYCLE_LAUNCH_PHASE}" == "${runtime_launch_phase_qemu}" ]]; then
+          return "${lifecycle_ready}"
+        fi
+        ;;
+      failed|inactive)
+        local terminal_status=0
+        _lifecycle_classify_terminal "${unit}" "${phase_file}" \
+          || terminal_status=$?
+        return "${terminal_status}"
+        ;;
+    esac
+    (( BASH_MONOSECONDS >= deadline )) \
+      && return "${lifecycle_activation_timeout}"
+    sleep 0.1
+  done
+}
+
+lifecycle_wait_ready() {
+  local -r unit="${1:-}" runtime_directory="${2:-}" \
+    activation_timeout="${3:-}" qmp_timeout="${4:-}"
+  lifecycle_wait_active "${unit}" "${runtime_directory}" "${activation_timeout}" \
+    || return $?
+  integer_is_bounded_positive "${qmp_timeout}" 86400 \
+    || return "${lifecycle_invalid}"
+  local -r deadline=$(( BASH_MONOSECONDS + qmp_timeout )) \
+    qmp_sock="$(runtime_qmp_sock "${runtime_directory}")" \
+    phase_file="$(runtime_launch_phase_file "${runtime_directory}")"
+  local state remaining probe_timeout
+  while (( BASH_MONOSECONDS < deadline )); do
+    state="$(systemctl --user show "${unit}" \
+      --property=ActiveState --value 2>/dev/null || true)"
+    VIRTDEV_LIFECYCLE_ACTIVE_STATE="${state:-unknown}"
+    case "${state}" in
+      active)
+        remaining=$(( deadline - BASH_MONOSECONDS ))
+        (( remaining > 0 )) || break
+        probe_timeout=1
+        (( remaining < probe_timeout )) && probe_timeout=${remaining}
+        qmp_query_running_once "${qmp_sock}" "${probe_timeout}" \
+          && return "${lifecycle_ready}"
+        ;;
+      failed|inactive)
+        local terminal_status=0
+        _lifecycle_classify_terminal "${unit}" "${phase_file}" \
+          || terminal_status=$?
+        return "${terminal_status}"
+        ;;
+      *) return "${lifecycle_qmp_unready}" ;;
+    esac
+    (( BASH_MONOSECONDS < deadline )) || break
+    sleep 0.1
+  done
+  return "${lifecycle_qmp_unready}"
+}
+
+lifecycle_publish_ready() {
+  local -r runtime_directory="${1:-}" published_port="${2:-}"
+  [[ -n "${runtime_directory}" ]] && port_is_valid "${published_port}" \
+    || return "${lifecycle_publish_invalid}"
+  local -r port_file="$(runtime_port_file "${runtime_directory}")" \
+    port_tmp="$(runtime_port_tmp_file "${runtime_directory}")"
+  runtime_remove_artifact "${port_tmp}" \
+    || return "${lifecycle_publish_failed}"
+  if ! printf '%s\n' "${published_port}" > "${port_tmp}" \
+      || ! mv -T -- "${port_tmp}" "${port_file}"; then
+    runtime_remove_artifact "${port_tmp}" || true
+    return "${lifecycle_publish_failed}"
+  fi
+}
+
+lifecycle_confirm_terminal() {
+  local -r unit="${1:-}"
+  [[ -n "${unit}" ]] || return "${lifecycle_stop_invalid}"
+  local state
+  state="$(systemctl --user show "${unit}" \
+    --property=ActiveState --value 2>/dev/null || true)"
+  VIRTDEV_LIFECYCLE_STOP_STATE="${state:-unknown}"
+  case "${state}" in
+    inactive|failed) return "${lifecycle_stop_clean}" ;;
+    '') return "${lifecycle_stop_indeterminate}" ;;
+    *) return "${lifecycle_stop_timeout}" ;;
+  esac
+}
+
+lifecycle_stop_and_confirm() {
+  local -r unit="${1:-}" deadline_seconds="${2:-}"
+  if [[ -z "${unit}" ]] \
+      || { [[ "${deadline_seconds}" != 0 ]] \
+        && ! integer_is_bounded_positive "${deadline_seconds}" 86400; }; then
+    return "${lifecycle_stop_invalid}"
+  fi
+  local -r deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
+  local state
+
+  VIRTDEV_LIFECYCLE_STOP_STATE=unknown
+  systemctl --user stop --no-block "${unit}" >/dev/null 2>&1 || true
+  while true; do
+    state="$(systemctl --user show "${unit}" \
+      --property=ActiveState --value 2>/dev/null || true)"
+    VIRTDEV_LIFECYCLE_STOP_STATE="${state:-unknown}"
+    case "${state}" in
+      inactive|failed)
+        return "${lifecycle_stop_clean}"
+        ;;
+      '') return "${lifecycle_stop_indeterminate}" ;;
+    esac
+    (( BASH_MONOSECONDS >= deadline )) \
+      && return "${lifecycle_stop_timeout}"
+    sleep 0.1
+  done
+}
+
+lifecycle_stop_and_clean() {
+  local -r unit="${1:-}" runtime_directory="${2:-}" deadline_seconds="${3:-}"
+  [[ -n "${runtime_directory}" ]] || return "${lifecycle_stop_invalid}"
+  lifecycle_stop_and_confirm "${unit}" "${deadline_seconds}" || return $?
+  runtime_clean "${runtime_directory}" \
+    || return "${lifecycle_stop_cleanup_failed}"
+}
+
+lifecycle_clean_unowned() {
+  local -r runtime_directory="${1:-}"
+  [[ -n "${runtime_directory}" ]] || return "${lifecycle_stop_invalid}"
+  runtime_clean "${runtime_directory}" \
+    || return "${lifecycle_stop_cleanup_failed}"
+}

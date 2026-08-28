@@ -5,7 +5,8 @@
 # qmp.sock lives in the 0700 runtime directory and is not exposed to the guest.
 #
 # Public:
-#   qmp_query_running <sock> <deadline> [unit]
+#   qmp_query_running <sock> <deadline>
+#   qmp_query_running_once <sock> <probe-timeout>
 #   qmp_wait_shutdown <sock> <deadline> <unit>
 #     Requires -no-shutdown and accepts only status=shutdown,running=false.
 #     A zero deadline is unbounded; VIRTDEV_QMP_WAIT_STATE explains failure.
@@ -118,41 +119,36 @@ _qmp_exchange() {
   return "${rc}"
 }
 
-# qmp_query_running <qmp_sock> <deadline_seconds> [unit]
-# Return 0 iff QEMU reports the VM running before the deadline; else 1.
+# qmp_query_running_once <qmp_sock> <timeout_seconds>
+qmp_query_running_once() {
+  local -r qmp_sock="${1}" timeout_seconds="${2}" \
+    query_id="virtdev-query-running"
+  integer_is_bounded_positive "${timeout_seconds}" 86400 || return 1
+  [[ -S "${qmp_sock}" ]] || return 1
+  local reply response
+  reply="$(_qmp_exchange "${qmp_sock}" "${timeout_seconds}" \
+    "${query_id}" \
+    "{\"execute\":\"query-status\",\"id\":\"${query_id}\"}")" \
+    || return 1
+  response="$(_qmp_response_for_id "${reply}" "${query_id}")" || return 1
+  jq -e '
+    has("return") and ((.return | type) == "object") and
+    (.return.running == true)
+  ' <<< "${response}" >/dev/null 2>&1
+}
+
+# qmp_query_running <qmp_sock> <deadline_seconds>
 qmp_query_running() {
-  local -r qmp_sock="${1}" deadline_seconds="${2}" unit="${3:-}"
+  local -r qmp_sock="${1}" deadline_seconds="${2}"
   integer_is_bounded_positive "${deadline_seconds}" 86400 || return 1
-  local -r query_id="virtdev-query-running"
-  local deadline reply response unit_state remaining exchange_timeout
+  local deadline remaining exchange_timeout
   deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
   while (( BASH_MONOSECONDS < deadline )); do
-    # Stop polling after the owning unit leaves its launch states.
-    if [[ -n "${unit}" ]]; then
-      unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
-      case "${unit_state}" in
-        active|activating) ;;
-        *) return 1 ;;
-      esac
-    fi
     remaining=$(( deadline - BASH_MONOSECONDS ))
     (( remaining > 0 )) || break
-    if [[ -S "${qmp_sock}" ]]; then
-      # Connection failures are expected while the socket comes up.
-      exchange_timeout=3
-      (( remaining < exchange_timeout )) && exchange_timeout=${remaining}
-      if reply="$(_qmp_exchange "${qmp_sock}" "${exchange_timeout}" \
-          "${query_id}" \
-          "{\"execute\":\"query-status\",\"id\":\"${query_id}\"}")"; then
-        response="$(_qmp_response_for_id "${reply}" "${query_id}" || true)"
-        if jq -e '
-            has("return") and ((.return | type) == "object") and
-            (.return.running == true)
-          ' <<< "${response}" >/dev/null 2>&1; then
-          return 0
-        fi
-      fi
-    fi
+    exchange_timeout=3
+    (( remaining < exchange_timeout )) && exchange_timeout=${remaining}
+    qmp_query_running_once "${qmp_sock}" "${exchange_timeout}" && return 0
     (( BASH_MONOSECONDS < deadline )) || break
     sleep 0.2
   done

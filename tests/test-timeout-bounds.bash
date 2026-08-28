@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2154  # qemu discriminant provided by imported library
+# shellcheck disable=SC2154  # lifecycle discriminants provided by import
 
 set -euo pipefail
 
@@ -9,7 +9,7 @@ trap 'rm -rf -- "${test_tmp}"' EXIT
 
 # shellcheck disable=SC1090
 source "${repository}/lib/virtdev/import"
-import integer ssh qemu qmp
+import integer ssh lifecycle qmp
 
 for value in 1 86400; do
   integer_is_bounded_positive "${value}" 86400 || {
@@ -53,7 +53,7 @@ if (( status != 14 )); then
 fi
 
 if ssh_poll_until_ready key 2222 unit "${huge}" \
-    || qemu_stop_unit_then_clean_runtime unit "${test_tmp}" "${huge}" \
+    || lifecycle_stop_and_clean unit "${test_tmp}" "${huge}" \
     || qmp_query_running "${test_tmp}/missing.sock" "${huge}" \
     || qmp_wait_shutdown "${test_tmp}/missing.sock" "${huge}" unit \
     || qmp_quit "${test_tmp}/missing.sock" "${huge}"; then
@@ -61,10 +61,10 @@ if ssh_poll_until_ready key 2222 unit "${huge}" \
   exit 1
 fi
 classification=0
-qemu_activation_classify unit "${huge}" "${test_tmp}/phase" \
+lifecycle_wait_active unit "${test_tmp}" "${huge}" \
   || classification=$?
-if (( classification != qemu_still_activating )); then
-  printf 'QEMU classifier did not reject an overflowing timeout\n' >&2
+if (( classification != lifecycle_invalid )); then
+  printf 'lifecycle classifier did not reject an overflowing timeout\n' >&2
   exit 1
 fi
 

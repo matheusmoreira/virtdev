@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034  # discriminant constants exported to consumers (virtdev-start, virtdev-maintain)
-# shellcheck disable=SC2154  # passt_*_exit_code constants provided by the imported passt library
-#
-# qemu library: the shared QEMU argv and the post-launch activation
-# classifier for project and maintenance virtual machines.
+# qemu library: the shared QEMU argv for project and maintenance machines.
 #
 # This owns the shared network-isolation baseline. Start uses it directly;
 # maintenance appends explicit shutdown-policy and cache arguments.
@@ -25,62 +21,9 @@
 #       code, passt stream networking (never SLIRP), no display, and host-only
 #       HMP/QMP control sockets.
 #
-#   qemu_activation_classify <unit> <deadline_seconds> <launch-phase-file>
-#       Poll the transient systemd unit after systemd-run returns and
-#       classify the outcome. Runs the post-launch ActiveState poll until
-#       the unit becomes active, enters a terminal state, or the deadline
-#       passes, then RETURNS an integer discriminant (see below). Runs in
-#       the caller's shell and returns the discriminant via `return` — do
-#       NOT wrap in $(): a subshell would discard the VIRTDEV_QEMU_*
-#       globals and the return code both.
-#
-#   qemu_stop_unit_then_clean_runtime <unit> <runtime-dir> <deadline-seconds>
-#       Request systemd stop for a submitted QEMU unit, then poll until its
-#       ActiveState is provably inactive/failed. Only after that terminal proof
-#       removes the runtime sockets and port signal. Returns 1 and preserves all
-#       controls when the manager is unreachable or the deadline expires.
-#
-#       unit             — transient unit name (virtdev-<project>).
-#       deadline_seconds — budget, in seconds, for the unit to reach
-#                          active before the still-activating verdict.
-#
-#       On return, three namespaced globals carry the detail the caller
-#       needs for its own diagnostics:
-#         VIRTDEV_QEMU_EXIT_STATUS  — the unit's ExecMainStatus (the shim
-#                                     exit code 83/84/86 when QEMU was
-#                                     never exec'd, otherwise QEMU's own
-#                                     code), or "unknown".
-#         VIRTDEV_QEMU_ACTIVE_STATE — the last ActiveState observed.
-#         VIRTDEV_QEMU_LAUNCH_PHASE — `shim`, `qemu`, or `unknown`.
-#
-# Discriminants returned by qemu_activation_classify:
-#   0   (qemu_active)            unit reached active state.
-#   90  (qemu_crashed)           unit entered failed/inactive with a
-#                                non-passt ExecMainStatus (bad firmware
-#                                path, bad qcow2 header, KVM failure, …).
-#   91  (qemu_still_activating)  deadline passed before both the unit and
-#                                authenticated QEMU phase became ready.
-#   83  (passt_missing)          passt binary not found (shim pre-exec).
-#   84  (passt_init_failure)     passt failed to initialise (shim).
-#   86  (passt_qemu_missing)     QEMU pre-flight found no binary (shim).
-#
-# The 83/84/86 constants are owned by lib/virtdev/passt and reused here
-# verbatim. Numeric status alone is not provenance: QEMU may legitimately exit
-# with the same value. They are interpreted as shim failures only when the
-# host-owned launch phase file says `shim`; missing/malformed/`qemu` state maps
-# to the generic qemu_crashed result. 90 and 91 are reserved here.
-#
 set -euo pipefail
 
-import passt runtime integer
-
-readonly qemu_active=0
-readonly qemu_crashed=90
-readonly qemu_still_activating=91
-
-# Last state observed by qemu_stop_unit_then_clean_runtime. Diagnostic only.
-VIRTDEV_QEMU_STOP_STATE=unknown
-VIRTDEV_QEMU_LAUNCH_PHASE=unknown
+import runtime
 
 qemu_suboption_encode() {
   if (( $# != 1 )) || [[ ! "${1}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] \
@@ -165,104 +108,4 @@ qemu_command() {
   if (( $# > 0 )); then
     _command+=("$@")
   fi
-}
-
-qemu_stop_unit_then_clean_runtime() {
-  local -r unit="${1}" runtime_directory="${2}" deadline_seconds="${3}"
-  if [[ "${deadline_seconds}" != 0 ]]; then
-    integer_is_bounded_positive "${deadline_seconds}" 86400 || return 1
-  fi
-  local -r deadline=$(( SECONDS + deadline_seconds ))
-  local state
-
-  VIRTDEV_QEMU_STOP_STATE=unknown
-  # Queue the stop without letting systemctl consume an unbounded/additional
-  # wait; the poll below owns the one explicit deadline.
-  systemctl --user stop --no-block "${unit}" >/dev/null 2>&1 || true
-
-  while true; do
-    state="$(systemctl --user show "${unit}" \
-        --property=ActiveState --value 2>/dev/null || true)"
-    VIRTDEV_QEMU_STOP_STATE="${state:-unknown}"
-    case "${state}" in
-      inactive|failed)
-        runtime_clean "${runtime_directory}"
-        return 0
-        ;;
-      '')
-        # An empty observation is an unreachable manager, not proof that QEMU
-        # died. Preserve its sockets/port so recovery retains control paths.
-        return 1
-        ;;
-    esac
-    (( SECONDS >= deadline )) && return 1
-    sleep 0.1
-  done
-}
-
-qemu_activation_classify() {
-  local -r unit="${1}"
-  local -r deadline_seconds="${2}"
-  local -r launch_phase_file="${3:-}"
-  if [[ "${deadline_seconds}" != 0 ]]; then
-    integer_is_bounded_positive "${deadline_seconds}" 86400 \
-      || return "${qemu_still_activating}"
-  fi
-  local -r deadline=$(( SECONDS + deadline_seconds ))
-
-  # Reset the detail globals so a previous call's values never leak into
-  # this verdict.
-  VIRTDEV_QEMU_EXIT_STATUS=unknown
-  VIRTDEV_QEMU_ACTIVE_STATE=unknown
-  VIRTDEV_QEMU_LAUNCH_PHASE=unknown
-
-  local state exit_status
-  while true; do
-    state="$(systemctl --user show "${unit}" \
-        --property=ActiveState --value 2>/dev/null || true)"
-    VIRTDEV_QEMU_ACTIVE_STATE="${state}"
-    case "${state}" in
-      active)
-        VIRTDEV_QEMU_LAUNCH_PHASE="$(
-          runtime_launch_phase_read "${launch_phase_file}" 2>/dev/null || true
-        )"
-        VIRTDEV_QEMU_LAUNCH_PHASE="${VIRTDEV_QEMU_LAUNCH_PHASE:-unknown}"
-        if [[ "${VIRTDEV_QEMU_LAUNCH_PHASE}" == "${runtime_launch_phase_qemu}" ]]; then
-          return "${qemu_active}"
-        fi
-        # Type=simple can report active while netexec is still preflighting or
-        # starting passt. Do not return success on `shim`/unknown: the shim may
-        # fail a moment later with a reserved status. Keep polling so a terminal
-        # transition is classified with authenticated provenance.
-        if (( SECONDS >= deadline )); then
-          return "${qemu_still_activating}"
-        fi
-        sleep 0.1
-        ;;
-      failed|inactive)
-        exit_status="$(systemctl --user show "${unit}" \
-            --property=ExecMainStatus --value 2>/dev/null || true)"
-        exit_status="${exit_status:-unknown}"
-        VIRTDEV_QEMU_EXIT_STATUS="${exit_status}"
-        VIRTDEV_QEMU_LAUNCH_PHASE="$(
-          runtime_launch_phase_read "${launch_phase_file}" 2>/dev/null || true
-        )"
-        VIRTDEV_QEMU_LAUNCH_PHASE="${VIRTDEV_QEMU_LAUNCH_PHASE:-unknown}"
-        if [[ "${VIRTDEV_QEMU_LAUNCH_PHASE}" == "${runtime_launch_phase_shim}" ]]; then
-          case "${exit_status}" in
-            "${passt_missing_exit_code}")   return "${passt_missing_exit_code}" ;;
-            "${passt_init_failure_exit_code}") return "${passt_init_failure_exit_code}" ;;
-            "${passt_qemu_missing_exit_code}") return "${passt_qemu_missing_exit_code}" ;;
-          esac
-        fi
-        return "${qemu_crashed}"
-        ;;
-      *)
-        if (( SECONDS >= deadline )); then
-          return "${qemu_still_activating}"
-        fi
-        sleep 0.1
-        ;;
-    esac
-  done
 }

@@ -125,7 +125,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm terminal port passt qemu firewall runtime qmp integer
+import error lock arguments ssh project confirm terminal port qemu firewall runtime qmp lifecycle machine integer
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -149,14 +149,10 @@ if [[ ! "${VIRTDEV_VM_CPUS}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 readonly maintenance_port=2222
-# NOT readonly: shared library functions (ssh_poll_until_ready, the qemu helper,
-# firewall_slice_of_unit / firewall_zone_of_unit) declare `local unit` and shadow this
-# global. A readonly global here blocks that shadow with "readonly variable" and breaks
-# their reads — e.g. firewall_slice_of_unit's `local -r unit=...` aborts, killing the
-# slice/zone capture. (firewall_running_machine_units' enumerator once relied on this
-# too; it now namespaces its loop var _frmu_unit, so it no longer does.) virtdev-start
-# uses a plain `unit=` too.
-unit=virtdev-maintenance
+machine_target_resolve maintenance || error 64 <<<'Invalid maintenance target descriptor.'
+unit="${VIRTDEV_MACHINE_UNIT}"
+maintenance_directory="${VIRTDEV_MACHINE_DATA_DIR}"
+maintenance_project="${VIRTDEV_MACHINE_RUNTIME_DIR}"
 
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
@@ -263,7 +259,7 @@ maintenance_boot() {
   fi
   # Nothing is submitted yet, so every leftover control is stale. The port is
   # published only after SSH and the post-launch filtering proof succeed.
-  if ! runtime_clean "${maintenance_project}"; then
+  if ! lifecycle_clean_unowned "${maintenance_project}"; then
     printf >&2 "Could not clear stale maintenance runtime controls: '%s'\n" \
       "${maintenance_project}"
     return 1
@@ -302,21 +298,12 @@ maintenance_boot() {
           "${qemu_argv[@]}"
 }
 
-maintenance_publish_ready() {
-  local -r port_file="${maintenance_project}/port"
-  rm -f -- "${port_file}.tmp" || return 1
-  printf '%d\n' "${maintenance_port}" > "${port_file}.tmp" || return 1
-  mv -T -- "${port_file}.tmp" "${port_file}"
-}
-
-# Stop a submitted unit and retain its controls unless terminal state is proven.
-# qemu_stop_unit_then_clean_runtime owns the one bounded stop/poll protocol.
 maintenance_stop_and_confirm() {
   (( maintenance_unit_owned )) || return 0
-  if ! qemu_stop_unit_then_clean_runtime \
-      "${unit}" "${maintenance_project}" "${VIRTDEV_STOP_TIMEOUT}"; then
-    return 1
-  fi
+  local stop_status=0
+  lifecycle_stop_and_confirm "${unit}" "${VIRTDEV_STOP_TIMEOUT}" \
+    || stop_status=$?
+  (( stop_status == lifecycle_stop_clean )) || return "${stop_status}"
   maintenance_terminal_proven=1
 }
 
@@ -324,17 +311,12 @@ maintenance_stop_and_confirm() {
 # stop a live/unknown unit; callers and the EXIT guard use the helper above.
 maintenance_cleanup() {
   if (( maintenance_unit_owned && ! maintenance_terminal_proven )); then
-    local observed_state
-    observed_state="$(systemctl --user show "${unit}" \
-      --property=ActiveState --value 2>/dev/null || true)"
-    case "${observed_state}" in
-      inactive|failed) maintenance_terminal_proven=1 ;;
-      *) return 1 ;;
-    esac
+    lifecycle_confirm_terminal "${unit}" || return 1
+    maintenance_terminal_proven=1
   fi
 
   local cleanup_status=0
-  runtime_clean "${maintenance_project}" || cleanup_status=$?
+  lifecycle_clean_unowned "${maintenance_project}" || cleanup_status=$?
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
   rmdir "${maintenance_project}" 2>/dev/null || true
   # Once terminal state is proven, a malformed runtime artifact does not keep
@@ -475,8 +457,6 @@ maintenance_ssh() {
 lock_acquire_for_maintain
 
 system_directory="${VIRTDEV_HOME}/system"
-maintenance_directory="${VIRTDEV_HOME}/maintenance"
-maintenance_project="${VIRTDEV_HOME}/projects/maintenance"
 
 # shellcheck disable=SC2154  # provided by lib/virtdev/import
 if [[ ! -x "${virtdev_libexec_directory}/virtdev-exchange" ]]; then
@@ -654,7 +634,6 @@ trap 'exit 143' TERM
 # Runtime endpoints live in projects/maintenance/ and are owned by the runtime
 # library. The shim derives its network and provenance paths from that root.
 qmp_sock="$(runtime_qmp_sock "${maintenance_project}")"
-maintenance_launch_phase_file="$(runtime_launch_phase_file "${maintenance_project}")"
 
 # ── Boot 1: interactive maintenance session ─────────────────────────
 
@@ -682,26 +661,19 @@ Maintenance images preserved: '${maintenance_directory}'
 MESSAGE
 fi
 
-# Early activation check: briefly poll the unit state so that a passt
-# failure (missing or init error) fails fast with a targeted
-# message instead of falling through to the full 120s SSH wait and a
-# misleading "SSH did not become available" report.
-#
-# Mirrors virtdev-start's post-launch poll via the shared
-# qemu_activation_classify (lib/virtdev/qemu). The launch-phase marker keeps a
-# real QEMU exit of 83, 84, or 86 distinct from the shim diagnostics.
-qemu_activation_classify \
-  "${unit}" 5 "${maintenance_launch_phase_file}" \
+# Early activation gives shim failures targeted diagnostics. A slow unit still
+# gets the existing SSH boot window.
+lifecycle_wait_active "${unit}" "${maintenance_project}" 5 \
   && activate_classify=0 || activate_classify=$?
-activate_exit="${VIRTDEV_QEMU_EXIT_STATUS}"
+activate_exit="${VIRTDEV_LIFECYCLE_EXIT_STATUS}"
 case "${activate_classify}" in
-  "${qemu_active}")
+  "${lifecycle_ready}")
     : # Unit is active. The firewall TOCTOU re-check fires after the SSH wait
       # (below), NOT here: a boot that activates past this 5s classify deadline
       # falls through to the SSH wait, so anchoring the check there covers every
       # boot speed (mirrors Boot 2).
     ;;
-  "${passt_missing_exit_code}")
+  "${lifecycle_backend_missing}")
     maintenance_cleanup_or_error 'Missing-passt cleanup'
     error 21 <<MESSAGE
 passt is not installed: ${unit} exit status ${activate_exit}.
@@ -709,7 +681,7 @@ Install passt and retry: pacman -S passt
     virtdev-maintain
 MESSAGE
     ;;
-  "${passt_init_failure_exit_code}")
+  "${lifecycle_backend_failed}")
     maintenance_cleanup_or_error 'Passt-initialization cleanup'
     error 22 <<MESSAGE
 passt failed to initialise: ${unit} exit status ${activate_exit}.
@@ -719,7 +691,7 @@ Investigate:
     journalctl --user -u ${unit}
 MESSAGE
     ;;
-  "${passt_qemu_missing_exit_code}")
+  "${lifecycle_qemu_missing}")
     maintenance_cleanup_or_error 'Missing-QEMU cleanup'
     error 23 <<MESSAGE
 QEMU command not found: ${unit} exit status ${activate_exit}.
@@ -729,11 +701,7 @@ so passt was never started. Install QEMU and retry:
     virtdev-maintain
 MESSAGE
     ;;
-  "${qemu_crashed}"|"${qemu_still_activating}")
-    # qemu_crashed: some other early exit (bad qcow2, KVM failure, etc.).
-    # qemu_still_activating: deadline expired, unit still transient.
-    # Both fall through to the SSH wait, which detects the unit is not
-    # active and produces its own diagnostic.
+  "${lifecycle_qemu_crashed}"|"${lifecycle_activation_timeout}")
     :
     ;;
 esac
@@ -763,12 +731,12 @@ fi
 printf >&2 ' up.\n'
 
 # Close the firewall TOCTOU now that the unit is active (SSH up). Anchored here,
-# not in the qemu_active classify arm, so a boot that activates after the 5s
+# not in the immediate activation-success arm, so a boot that activates after the 5s
 # classify deadline still gets the inode re-check before the session runs
 # (mirrors Boot 2). Fails CLOSED on a mismatch (stop + error 25).
 maintenance_assert_filtered
 
-if ! maintenance_publish_ready; then
+if ! lifecycle_publish_ready "${maintenance_project}" "${maintenance_port}"; then
   if ! maintenance_stop_and_confirm; then
     error 29 <<MESSAGE
 Maintenance became ready, but its port signal could not be published and the
@@ -913,11 +881,24 @@ if [[ -n "${inventory_before}" ]]; then
   boot2_shutdown_status=1
 
   if maintenance_boot; then
+    boot2_activation=0
+    lifecycle_wait_active "${unit}" "${maintenance_project}" 5 \
+      || boot2_activation=$?
+    case "${boot2_activation}" in
+      "${lifecycle_backend_missing}"|"${lifecycle_backend_failed}"|\
+      "${lifecycle_qemu_missing}"|"${lifecycle_qemu_crashed}")
+        if ! maintenance_stop_and_confirm; then
+          error 29 <<<'Inventory boot activation failed and terminal state could not be proven.'
+        fi
+        maintenance_cleanup_or_error 'Boot 2 activation-failure cleanup'
+        error 24 <<<'Inventory boot failed during activation; resealing refused.'
+        ;;
+    esac
     printf >&2 'Waiting for SSH...'
     if maintenance_wait_ssh; then
       printf >&2 ' up.\n'
       maintenance_assert_filtered
-      if ! maintenance_publish_ready; then
+      if ! lifecycle_publish_ready "${maintenance_project}" "${maintenance_port}"; then
         if ! maintenance_stop_and_confirm; then
           error 29 <<<'Boot 2 became ready, but readiness publication and terminal recovery both failed.'
         fi

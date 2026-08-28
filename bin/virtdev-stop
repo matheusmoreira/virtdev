@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # machine descriptor constants provided by import
 #
 # virtdev-stop <project>
 #
@@ -20,7 +21,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal project runtime integer
+import error validate lock arguments terminal machine runtime lifecycle integer
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
@@ -47,14 +48,20 @@ project="${1}"
 
 validate_project_name "${project}"
 
-# Maintenance skips the lock so ACPI shutdown can reach the unit while maintain
-# owns it. Concurrent runtime cleanup is idempotent; maintain owns unit reset.
-if [[ "${project}" != "maintenance" ]]; then
+target_status=0
+machine_target_require "${project}" || target_status=$?
+case "${target_status}" in
+  "${machine_target_invalid}") error 2 <<<"Not a machine target: ${project}" ;;
+  "${machine_target_missing}") error 3 <<<"Machine target not found: ${project}" ;;
+esac
+
+# Maintenance skips the lock so it can be stopped while maintain owns it.
+if [[ "${VIRTDEV_MACHINE_KIND}" != "${machine_kind_maintenance}" ]]; then
   lock_acquire
 fi
 
-unit=virtdev-"${project}"
-project_directory="${VIRTDEV_HOME}"/projects/"${project}"
+unit="${VIRTDEV_MACHINE_UNIT}"
+project_directory="${VIRTDEV_MACHINE_RUNTIME_DIR}"
 monitor_sock="$(runtime_monitor_sock "${project_directory}")"
 
 stop_finalize() {
@@ -64,30 +71,28 @@ stop_finalize() {
   # Skipped for maintenance: virtdev-maintain owns the unit lifecycle
   # and calls reset-failed itself. Doing it here would race with
   # maintain's ExecMainStatus capture.
-  if [[ "${project}" != "maintenance" ]]; then
+  if [[ "${VIRTDEV_MACHINE_KIND}" != "${machine_kind_maintenance}" ]]; then
     systemctl --user reset-failed "${unit}" 2>/dev/null || true
   fi
   # Full teardown: sockets + the port running-signal (lib/virtdev/runtime).
-  runtime_clean "${project_directory}"
-  printf >&2 '%s\n' "$(terminal_write fg=green "Project virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
+  lifecycle_clean_unowned "${project_directory}"
+  printf >&2 '%s\n' "$(terminal_write fg=green "Virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
 }
-
-project_require "${project}"
 
 # Only a PROVABLY stopped machine (inactive/failed) short-circuits here as "already
 # not running". A machine that is activating (mid-boot) or deactivating (mid-shutdown
 # via the lockless ExecStop/poweroff routes) FALLS THROUGH to the dispatch + wait loop
 # below, which drives it to a terminal state — the old `! project_is_running` rejected
 # those transitional machines with a spurious "not running".
-if project_is_stopped "${project}"; then
-  error 4 <<<"Project virtual machine is not running: ${project}"
+if machine_is_stopped "${project}"; then
+  error 4 <<<"Virtual machine is not running: ${project}"
 fi
 
 # An UNREACHABLE user manager (empty ActiveState) is a different indeterminate than a
 # transitional one: falling through would poll the empty state until 2x
 # VIRTDEV_STOP_TIMEOUT, then mis-report error 5 ("unexpected state"). Fast-fail with a
 # precise diagnosis instead — the machine's real state is unknown, not "not running".
-if project_is_unreachable "${project}"; then
+if machine_is_unreachable "${project}"; then
   error 6 <<MESSAGE
 Cannot reach the user systemd manager to stop: ${project}
 Its state is indeterminate (no session bus — an unset/stale XDG_RUNTIME_DIR, or a
