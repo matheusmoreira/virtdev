@@ -91,6 +91,8 @@ Same error → same code, everywhere:
 | 100 | apply: refused — removing the last host hole would strand a running machine's open host-loopback map | `bin/virtdev-firewall` |
 | 101 | apply: timed out acquiring the user lock (another virtdev op in progress) | `bin/virtdev-firewall` |
 | 102 | apply: could not enumerate running machines (manager unreachable) — fail closed | `bin/virtdev-firewall` |
+| 103 | guest SSH host identity missing, corrupt, or unpublished | `ssh_host_identity_*` |
+| 104 | guest SSH transport marker missing or incompatible | `ssh_guest_contract_require` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").
@@ -360,6 +362,7 @@ Install layout:
 
 - `bin/virtdev-*` → `/usr/bin/virtdev-*` (mode 755)
 - `lib/virtdev/*` → `/usr/lib/virtdev/*` (mode 644)
+- `libexec/virtdev/*` → `/usr/libexec/virtdev/*` (mode 755)
 - `systemd/virtdev-firewall.service` → `/usr/lib/systemd/system/` (holder)
 - `systemd/virtdev-firewall-pin@.service` → `/usr/lib/systemd/user/` (pin; `--user`, NOT system)
 - `iso/*` → `/usr/share/virtdev/profile/*`
@@ -369,9 +372,8 @@ Install layout:
 dependency added to `depends` in `build/aur/PKGBUILD`. `.gitignore`
 excludes the `build/` tree from `makepkg`.
 
-**Note:** `libexec/virtdev/virtdev-netexec` is a bash shim (not compiled C), so no
-`GNUmakefile` change is needed — the `find bin/ ! -name '*.c'` install
-glob in `PKGBUILD` picks it up automatically.
+Public commands and private helpers are installed by separate `bin/` and
+`libexec/virtdev/` packaging loops.
 
 ## Common gotchas
 
