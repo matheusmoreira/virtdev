@@ -115,7 +115,7 @@ if (( src_is_remote + dest_is_remote == 2 )); then
   error 10 <<MESSAGE
 Both source and destination are remote paths.
 Only one path can be on the virtual machine side.
-For virtual machine-local copies: virtdev-ssh ${project} cp src dest
+For virtual machine-local copies: virtdev-ssh ${project} -- cp src dest
 MESSAGE
 fi
 
@@ -133,7 +133,8 @@ fi
 
 ssh_command=""
 rsync_wrapper=""
-ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
+ssh_rsync_command ssh_command rsync_wrapper "${project}" \
+  "${VIRTDEV_SSH_KEY}" "${port}"
 trap 'rm -f "${rsync_wrapper}"' EXIT
 
 # --safe-links on a DOWNLOAD (guest -> host): a compromised guest could otherwise

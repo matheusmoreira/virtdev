@@ -340,7 +340,8 @@ printf '%s\n' "${base_generation}" > "${partial}/generation"
 mkdir -m 0700 "${partial}/tree"
 
 ssh_command=""
-ssh_rsync_command ssh_command ssh_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
+ssh_rsync_command ssh_command ssh_wrapper "${project}" \
+  "${VIRTDEV_SSH_KEY}" "${port}"
 
 files_from="${partial}/files-from"
 manifest_write_rsync_files_from "${partial}/manifest" "${files_from}"
@@ -476,7 +477,7 @@ No files captured during backup of ${project}.
 Every manifest entry was skipped — most commonly because the
 referenced paths do not exist on the guest. The partial snapshot
 has been removed.
-Verify the manifest against the guest: virtdev-ssh ${project} ls -la
+Verify the manifest against the guest: virtdev-ssh ${project} -- ls -la
 MESSAGE
 fi
 

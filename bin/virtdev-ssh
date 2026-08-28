@@ -1,19 +1,16 @@
 #!/usr/bin/env bash
 #
-# virtdev-ssh <project> [ssh-args...]
+# virtdev-ssh <project> [--client-option=<option>]... [-- [command...]]
 #
 # Connects into a running project virtual machine
 # via SSH and as the dev user.
 #
-# Additional arguments are passed through to ssh verbatim,
-# allowing remote command execution:
+# Client options precede the destination; remote command arguments follow it.
+# Options that take a value must carry it in the same token.
 #
-#     virtdev-ssh myproject
+#     virtdev-ssh myproject --client-option=-L3000:localhost:3000 \
+#       --client-option=-N
 #     virtdev-ssh myproject -- ls -la
-#     virtdev-ssh myproject -- -L 3000:localhost:3000
-#
-# Use -- before SSH arguments that start with a dash
-# so the argument parser does not interpret them as flags.
 #
 # The SSH key is read from VIRTDEV_SSH_KEY,
 # defaulting to ${VIRTDEV_HOME}/ssh/id.
@@ -44,28 +41,60 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh trigger port project
+import error validate ssh trigger port project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
-# shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=()
-# shellcheck disable=SC2034
-declare -a spec_positionals=(project "ssh-args*")
-# shellcheck disable=SC2034
-declare -A flags=()
-declare -a positional=()
-arguments_parse spec flags positional "$@"
-set -- "${positional[@]}"
+usage='usage: virtdev-ssh <project> [--client-option=<option>]... [-- [command...]]'
+for argument in "$@"; do
+  case "${argument}" in
+    --help|-h) printf '%s\n' "${usage}"; exit 0 ;;
+    --) break ;;
+  esac
+done
 
 if [[ $# -lt 1 ]]; then
-  error 64 <<<"$(arguments_usage spec)"
+  error 64 <<<"${usage}"
 fi
 
 project="${1}"
 shift
+
+readonly max_client_options=64
+declare -a client_options=() remote_command=()
+while (( $# > 0 )); do
+  case "${1}" in
+    --)
+      shift
+      remote_command=("$@")
+      break
+      ;;
+    --client-option)
+      (( $# >= 2 )) || error 64 <<<'--client-option requires one SSH option token'
+      client_option="${2}"
+      shift 2
+      ;;
+    --client-option=*)
+      client_option="${1#*=}"
+      shift
+      ;;
+    *)
+      error 64 <<MESSAGE
+Remote commands must follow '--'; client options use --client-option=<option>.
+Usage: virtdev-ssh <project> [--client-option=<option>]... [-- [command...]]
+MESSAGE
+      ;;
+  esac
+  ssh_client_option_valid "${client_option}" || error 64 <<MESSAGE
+Invalid client option token: '${client_option}'
+Attach option arguments to their flag, for example: --client-option=-L3000:localhost:3000
+MESSAGE
+  (( ${#client_options[@]} < max_client_options )) \
+    || error 64 <<<"At most ${max_client_options} client options are allowed"
+  client_options+=("${client_option}")
+done
 
 validate_project_name "${project}"
 
@@ -82,6 +111,7 @@ port=""
 port_require port "${project}"
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
+ssh_host_identity_require "${project}"
 
 # --- Trigger and SSH config assembly ---
 
@@ -145,16 +175,11 @@ config_file="$(mktemp)"
   [[ -f "${system_ssh_config}" ]]      && cat "${system_ssh_config}"
 } > "${config_file}"
 
-ssh                                    \
-  -F "${config_file}"                  \
-  -i "${VIRTDEV_SSH_KEY}"              \
-  -p "${port}"                         \
-  -o IdentitiesOnly=yes                \
-  -o StrictHostKeyChecking=no          \
-  -o UserKnownHostsFile=/dev/null      \
-  -o LogLevel=ERROR                    \
-  dev@127.0.0.1                        \
-  "$@"                                 \
-  || ssh_exit=$?
+declare -a ssh_argv=()
+ssh_transport_argv ssh_argv interactive "${project}" \
+  "${VIRTDEV_SSH_KEY}" "${port}" "${config_file}"
+ssh_argv+=("${client_options[@]}" dev@127.0.0.1)
+ssh_argv+=("${remote_command[@]}")
+"${ssh_argv[@]}" || ssh_exit=$?
 
 exit "${ssh_exit}"

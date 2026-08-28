@@ -828,6 +828,12 @@ mkdir -p "${VIRTDEV_HOME}/projects/probe"
 printf '2222\n' > "${VIRTDEV_HOME}/projects/probe/port"
 printf 'test key\n' > "${VIRTDEV_SSH_KEY}"
 chmod 600 "${VIRTDEV_SSH_KEY}"
+(
+  # shellcheck disable=SC1090
+  source "${repository}/lib/virtdev/import"
+  import ssh
+  ssh_host_identity_ensure probe
+)
 
 started_at=${BASH_MONOSECONDS}
 status=0

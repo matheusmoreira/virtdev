@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+printf '%s\0' "$@" > "${SSH_ARGV_FILE:?}"
+exit "${SSH_ARGV_STATUS:-0}"

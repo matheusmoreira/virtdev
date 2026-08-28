@@ -52,7 +52,7 @@ if (( status != 14 )); then
   exit 1
 fi
 
-if ssh_poll_until_ready key 2222 unit "${huge}" \
+if ssh_poll_until_ready project key 2222 unit "${huge}" \
     || lifecycle_stop_and_clean unit "${test_tmp}" "${huge}" \
     || qmp_query_running "${test_tmp}/missing.sock" "${huge}" \
     || qmp_wait_shutdown "${test_tmp}/missing.sock" "${huge}" unit \

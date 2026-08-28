@@ -25,13 +25,20 @@ mkdir -p "${host_store}/projects/project-a" \
   ssh_host_identity_ensure project-b
   ssh_host_identity_require project-a
   project_a_first="$(< "$(ssh_host_identity_key project-a).pub")"
+  project_a_alias="$(ssh_host_identity_alias project-a)"
   ssh_host_identity_ensure project-a
   [[ "$(< "$(ssh_host_identity_key project-a).pub")" == "${project_a_first}" ]]
   [[ "${project_a_first}" != "$(< "$(ssh_host_identity_key project-b).pub")" ]]
-  [[ "$(( $(stat -c '%s' "$(ssh_host_identity_key project-a).pub") + 2 ))" \
+  [[ "$(( $(stat -c '%s' "$(ssh_host_identity_key project-a).pub") \
+        + ${#project_a_alias} + 1 ))" \
         == "$(stat -c '%s' "$(ssh_host_identity_known_hosts project-a)")" ]]
-  grep -Fqx -- "* ${project_a_first}" \
+  grep -Fqx -- "${project_a_alias} ${project_a_first}" \
     "$(ssh_host_identity_known_hosts project-a)"
+  if ssh-keygen -F virtdev-project-b \
+      -f "$(ssh_host_identity_known_hosts project-a)" >/dev/null; then
+    printf 'project-a host state accepted project-b alias\n' >&2
+    exit 1
+  fi
 
   printf 'corrupt\n' > "$(ssh_host_identity_known_hosts project-a)"
   status=0

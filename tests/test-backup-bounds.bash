@@ -29,6 +29,13 @@ prepare_home() {
   printf 'data\n' > "${home}/projects/probe/manifest"
   printf '2222\n' > "${home}/projects/probe/port"
   printf '1\n' > "${home}/system/generation"
+  (
+    export VIRTDEV_HOME="${home}"
+    # shellcheck disable=SC1090
+    source "${repository}/lib/virtdev/import"
+    import ssh
+    ssh_host_identity_ensure probe
+  )
 }
 
 run_backup() {

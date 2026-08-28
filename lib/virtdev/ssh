@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # virtdev_library_directory is provided by import
 #
 # ssh library: host identity and client transport helpers.
 #
@@ -14,30 +15,28 @@
 #   ssh_host_identity_alias <project>
 #       Print an identity path or lookup alias.
 #
-#   ssh_rsync_command <cmd-varname> <wrapper-varname> <key-path> <port>
-#       Creates a temporary wrapper script and assigns its path to
-#       <cmd-varname> for use as rsync's -e argument. Also assigns
-#       the temp file path to <wrapper-varname> so callers can clean
-#       it up on exit. The wrapper exec-s ssh with the key, port, and
-#       isolation options; the key path is passed via env (not
-#       interpolated into the command string) so spaces in the path
-#       survive rsync's word-split of the -e argument.
-#       Callers must: rm -f "${<wrapper-varname>}" in their EXIT trap.
+#   ssh_transport_argv <array> <mode> <project> <client-key> <port> \
+#                      <config> [connect-timeout]
+#       Build the common SSH argv. mode is interactive, batch, or poll;
+#       poll alone requires connect-timeout.
 #
-#   ssh_poll_until_ready <key-path> <port> <unit> <timeout>
+#   ssh_client_option_valid <option>
+#       Accept one self-contained SSH option token. Options that take an
+#       argument must carry it in the same token (for example -L8080:x:80).
+#
+#   ssh_rsync_command <cmd-varname> <wrapper-varname> <project> \
+#                     <client-key> <port>
+#       Create the shared-policy SSH wrapper used as rsync's -e command.
+#       Callers remove the returned wrapper path in their EXIT trap.
+#
+#   ssh_poll_until_ready <project> <key-path> <port> <unit> <timeout>
 #       Polls SSH on 127.0.0.1:<port> up to every 2s until a connection
 #       succeeds or <timeout> seconds elapse. Checks systemd unit
 #       state each iteration; returns immediately if the unit dies.
 #       Returns: 0 = SSH up, 1 = timeout, 2 = unit exited.
 #
 #   ssh_key_validate <key-path>
-#       Verify the file at <key-path> exists and has acceptable
-#       permissions (mode 600 or 400). Errors with code 77 if
-#       missing, 78 if the mode is too open. The two checks are
-#       paired because a key file with a wide mode is almost always
-#       a setup mistake (umask leftover, copy from another host with
-#       relaxed perms) and ssh would refuse it anyway with a less
-#       targeted message.
+#       Require a regular key with mode 600 or 400.
 #
 # Exit codes:
 #   77  SSH key not found
@@ -45,7 +44,7 @@
 #   103 guest host identity is missing, corrupt, or could not be created
 #
 set -euo pipefail
-import error integer
+import error integer port
 
 readonly ssh_key_not_found_exit_code=77
 readonly ssh_key_permissions_exit_code=78
@@ -125,14 +124,15 @@ _ssh_host_identity_validate() {
   [[ "${private_size}" =~ ^[0-9]+$ ]] \
     && (( private_size > 0 && private_size <= 16384 )) || return 1
 
-  local derived type blob extra
+  local derived type blob extra alias
   derived="$(ssh-keygen -y -P '' -f "${private_key}" 2>/dev/null)" || return 1
   [[ -n "${derived}" && "${derived}" != *$'\n'* ]] || return 1
   read -r type blob extra <<< "${derived}"
   [[ "${type}" == ssh-ed25519 && -n "${blob}" && -z "${extra}" ]] || return 1
   derived="${type} ${blob}"
+  alias="$(ssh_host_identity_alias "${project}")" || return 1
 
-  local expected_public="${derived}" expected_known="* ${derived}"
+  local expected_public="${derived}" expected_known="${alias} ${derived}"
   [[ "$(stat -c '%s' -- "${public_key}" 2>/dev/null)" \
         == "$(( ${#expected_public} + 1 ))" ]] || return 1
   [[ "$(stat -c '%s' -- "${known_hosts}" 2>/dev/null)" \
@@ -144,7 +144,7 @@ _ssh_host_identity_validate() {
 _ssh_host_identity_create() {
   local -r project="${1}"
   local project_directory="${VIRTDEV_HOME}/projects/${project}"
-  local root staging private_key public_key known_hosts derived
+  local root staging private_key public_key known_hosts derived alias
   root="$(ssh_host_identity_root "${project}")" || return 1
   staging="${project_directory}/.${ssh_host_identity_directory_name}.tmp"
 
@@ -164,8 +164,12 @@ _ssh_host_identity_create() {
     _ssh_host_identity_remove_directory "${staging}" || true
     return 1
   }
+  alias="$(ssh_host_identity_alias "${project}")" || {
+    _ssh_host_identity_remove_directory "${staging}" || true
+    return 1
+  }
   printf '%s\n' "${derived}" > "${public_key}" \
-    && printf '* %s\n' "${derived}" > "${known_hosts}" \
+    && printf '%s %s\n' "${alias}" "${derived}" > "${known_hosts}" \
     && chmod 0600 "${private_key}" "${known_hosts}" \
     && chmod 0644 "${public_key}" \
     && sync -f "${private_key}" "${public_key}" "${known_hosts}" \
@@ -211,49 +215,125 @@ ssh_host_identity_remove() {
   _ssh_host_identity_remove_directory "${root}"
 }
 
+ssh_transport_argv() {
+  (( $# == 6 || $# == 7 )) || return 2
+  local -r __ssh_transport_output_name="${1}"
+  local -r __ssh_transport_mode="${2}"
+  local -r __ssh_transport_project="${3}"
+  local -r __ssh_transport_key="${4}"
+  local -r __ssh_transport_port="${5}"
+  local -r __ssh_transport_config="${6}"
+  local __ssh_transport_timeout="${7:-}"
+  [[ "${__ssh_transport_output_name}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ \
+      && ${#__ssh_transport_output_name} -le 64 ]] || return 2
+  port_is_valid "${__ssh_transport_port}" || return 2
+
+  case "${__ssh_transport_mode}" in
+    interactive|batch) (( $# == 6 )) || return 2 ;;
+    poll)
+      (( $# == 7 )) || return 2
+      integer_is_bounded_positive "${__ssh_transport_timeout}" 86400 || return 2
+      ;;
+    *) return 2 ;;
+  esac
+
+  ssh_key_validate "${__ssh_transport_key}"
+  ssh_host_identity_require "${__ssh_transport_project}"
+
+  local __ssh_transport_known_hosts __ssh_transport_alias
+  __ssh_transport_known_hosts="$(ssh_host_identity_known_hosts \
+    "${__ssh_transport_project}")" || return 2
+  __ssh_transport_alias="$(ssh_host_identity_alias \
+    "${__ssh_transport_project}")" || return 2
+
+  local -n __ssh_transport_output="${__ssh_transport_output_name}"
+  __ssh_transport_output=(
+    ssh
+    -F "${__ssh_transport_config}"
+    -i "${__ssh_transport_key}"
+    -p "${__ssh_transport_port}"
+    -o IdentitiesOnly=yes
+    -o StrictHostKeyChecking=yes
+    -o UserKnownHostsFile="${__ssh_transport_known_hosts}"
+    -o GlobalKnownHostsFile=/dev/null
+    -o HostKeyAlias="${__ssh_transport_alias}"
+    -o CheckHostIP=no
+    -o NoHostAuthenticationForLocalhost=no
+    -o HostKeyAlgorithms=ssh-ed25519
+    -o UpdateHostKeys=no
+    -o KnownHostsCommand=none
+    -o VerifyHostKeyDNS=no
+    -o ControlMaster=no
+    -o ControlPath=none
+    -o ControlPersist=no
+    -o LogLevel=ERROR
+  )
+  case "${__ssh_transport_mode}" in
+    batch) __ssh_transport_output+=(-o BatchMode=yes) ;;
+    poll)
+      __ssh_transport_output+=(
+        -o BatchMode=yes
+        -o ConnectTimeout="${__ssh_transport_timeout}"
+      )
+      ;;
+  esac
+}
+
+ssh_client_option_valid() {
+  (( $# == 1 && ${#1} > 1 && ${#1} <= 4096 )) || return 1
+  [[ "${1}" =~ ^-[46AaCfgKkNnqTtVvXxYy]+$ \
+      || "${1}" =~ ^-[DELR].+ ]]
+}
+
 ssh_rsync_command() {
-  local -r cmd_varname="${1}" wrapper_varname="${2}" key="${3}" port="${4}"
-  # rsync word-splits the -e string (it does not shell-evaluate it), so
-  # %q backslash-escaping does not survive: a space in the key path
-  # becomes two separate tokens and ssh receives a broken -i argument.
-  # The fix: write a minimal wrapper script that receives the key path
-  # via an environment variable (_VIRTDEV_RSYNC_SSH_KEY) and exec-s ssh.
-  # rsync's -e receives only the unambiguous wrapper path; no spaces
-  # appear in the command string itself.
-  #
-  # -F /dev/null: ignore the user's ~/.ssh/config. These rsync transports
-  # connect to an UNTRUSTED guest; a host-side 'Host *' stanza
-  # (ForwardAgent, ProxyCommand, ControlMaster, LocalForward) must not
-  # leak in. IdentitiesOnly=yes offers only the given key, not the
-  # operator's ssh-agent identities (which would otherwise be disclosed to
-  # the untrusted guest); BatchMode=yes never blocks on a prompt mid-rsync.
-  # virtdev-ssh and ssh_poll_until_ready apply the same isolation: no
-  # ~/.ssh/config (-F an assembled config / /dev/null) + IdentitiesOnly=yes.
-  local wrapper
-  wrapper="$(mktemp)"
-  chmod 700 "${wrapper}"
-  # Write the wrapper using a quoted heredoc so ${...} is written
-  # literally for /bin/sh to expand at runtime (not by bash now).
-  cat > "${wrapper}" <<'WRAPPER_EOF'
-#!/bin/sh
-exec ssh -F /dev/null \
-    -i "${_VIRTDEV_RSYNC_SSH_KEY}" \
-    -p "${_VIRTDEV_RSYNC_SSH_PORT}" \
-    -o IdentitiesOnly=yes \
-    -o BatchMode=yes \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -o LogLevel=ERROR \
-    "$@"
+  (( $# == 5 )) || return 2
+  local -r __ssh_rsync_cmd_name="${1}" __ssh_rsync_wrapper_name="${2}"
+  local -r __ssh_rsync_project="${3}" __ssh_rsync_key="${4}"
+  local -r __ssh_rsync_port="${5}"
+  [[ "${__ssh_rsync_cmd_name}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ \
+      && ${#__ssh_rsync_cmd_name} -le 64 \
+      && "${__ssh_rsync_wrapper_name}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ \
+      && ${#__ssh_rsync_wrapper_name} -le 64 ]] || return 2
+
+  local -a __ssh_rsync_check=()
+  ssh_transport_argv __ssh_rsync_check batch "${__ssh_rsync_project}" \
+    "${__ssh_rsync_key}" "${__ssh_rsync_port}" /dev/null
+
+  local __ssh_rsync_wrapper
+  __ssh_rsync_wrapper="$(mktemp /tmp/virtdev-rsync-ssh.XXXXXXXX)"
+  if ! chmod 700 "${__ssh_rsync_wrapper}"; then
+    rm -f -- "${__ssh_rsync_wrapper}"
+    return 1
+  fi
+  if ! cat > "${__ssh_rsync_wrapper}" <<'WRAPPER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+export VIRTDEV_HOME="${_VIRTDEV_RSYNC_HOME:?}"
+source "${_VIRTDEV_RSYNC_IMPORT:?}"
+import ssh
+declare -a _virtdev_rsync_ssh_argv=()
+ssh_transport_argv _virtdev_rsync_ssh_argv batch \
+  "${_VIRTDEV_RSYNC_PROJECT:?}" "${_VIRTDEV_RSYNC_KEY:?}" \
+  "${_VIRTDEV_RSYNC_PORT:?}" /dev/null
+unset _VIRTDEV_RSYNC_IMPORT _VIRTDEV_RSYNC_HOME _VIRTDEV_RSYNC_PROJECT \
+  _VIRTDEV_RSYNC_KEY _VIRTDEV_RSYNC_PORT
+exec "${_virtdev_rsync_ssh_argv[@]}" "$@"
 WRAPPER_EOF
-  printf -v "${cmd_varname}" '%s' "${wrapper}"
-  printf -v "${wrapper_varname}" '%s' "${wrapper}"
-  export _VIRTDEV_RSYNC_SSH_KEY="${key}"
-  export _VIRTDEV_RSYNC_SSH_PORT="${port}"
+  then
+    rm -f -- "${__ssh_rsync_wrapper}"
+    return 1
+  fi
+  printf -v "${__ssh_rsync_cmd_name}" '%s' "${__ssh_rsync_wrapper}"
+  printf -v "${__ssh_rsync_wrapper_name}" '%s' "${__ssh_rsync_wrapper}"
+  export _VIRTDEV_RSYNC_IMPORT="${virtdev_library_directory}/import"
+  export _VIRTDEV_RSYNC_HOME="${VIRTDEV_HOME}"
+  export _VIRTDEV_RSYNC_PROJECT="${__ssh_rsync_project}"
+  export _VIRTDEV_RSYNC_KEY="${__ssh_rsync_key}"
+  export _VIRTDEV_RSYNC_PORT="${__ssh_rsync_port}"
 }
 
 ssh_poll_until_ready() {
-  local -r key="${1}" port="${2}" unit="${3}" timeout="${4}"
+  local -r project="${1}" key="${2}" port="${3}" unit="${4}" timeout="${5}"
   integer_is_bounded_positive "${timeout}" 86400 || return 1
   local -r attempt_timeout=10
   local deadline unit_state remaining probe_timeout connect_timeout sleep_timeout
@@ -273,17 +353,10 @@ ssh_poll_until_ready() {
     (( remaining < connect_timeout )) && connect_timeout=${remaining}
     # ConnectTimeout covers connection setup; coreutils timeout also bounds a
     # peer that stalls during the pre-authentication banner exchange.
-    if timeout "${probe_timeout}" ssh \
-        -F /dev/null \
-        -i "${key}" \
-        -p "${port}" \
-        -o IdentitiesOnly=yes \
-        -o BatchMode=yes \
-        -o ConnectTimeout="${connect_timeout}" \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        -o LogLevel=ERROR \
-        dev@127.0.0.1 \
+    local -a ssh_argv=()
+    ssh_transport_argv ssh_argv poll "${project}" "${key}" "${port}" \
+      /dev/null "${connect_timeout}"
+    if timeout "${probe_timeout}" "${ssh_argv[@]}" dev@127.0.0.1 \
         true 2>/dev/null
     then
       return 0

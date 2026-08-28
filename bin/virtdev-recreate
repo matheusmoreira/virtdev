@@ -28,7 +28,7 @@
 #     3. ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<name>/provision
 #     4. otherwise: no provision step
 #
-# Provision execution: virtdev-ssh <project> bash -s < <path>. The
+# Provision execution: virtdev-ssh <project> -- bash -s < <path>. The
 # script is interpreted as bash (the shebang is ignored). Working
 # directory is the dev user's /home/dev/. Wrap other interpreters
 # from a one-line bash launcher.
@@ -520,7 +520,7 @@ if (( do_provision )); then
     provision_failed=1
     printf >&2 '%s\n' "$(terminal_write bold fg=yellow "Provision failed (script exited non-zero): ${provision_path}" reset)"
     printf >&2 'The virtual machine is up but unprovisioned. Re-run manually:\n'
-    printf >&2 '    virtdev-ssh %s bash -s < %s\n' "${project}" "${provision_path}"
+    printf >&2 '    virtdev-ssh %s -- bash -s < %s\n' "${project}" "${provision_path}"
   fi
 fi
 

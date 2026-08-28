@@ -6,7 +6,7 @@
 # on the project's forwarded port, then exits 0.
 # Useful after virtdev-start for scripted start -> provision flows:
 #
-#     virtdev-start myproject && virtdev-wait myproject && virtdev-ssh myproject ./provision.sh
+#     virtdev-start myproject && virtdev-wait myproject && virtdev-ssh myproject -- ./provision.sh
 #
 # Polls every 2 seconds. Fails if SSH is not up within the timeout.
 #
@@ -76,7 +76,8 @@ printf >&2 'Waiting for %s to bind SSH on port %d with timeout %ds...\n' \
 unit=virtdev-"${project}"
 
 rc=0
-ssh_poll_until_ready "${VIRTDEV_SSH_KEY}" "${port}" "${unit}" "${VIRTDEV_WAIT_TIMEOUT}" || rc=$?
+ssh_poll_until_ready "${project}" "${VIRTDEV_SSH_KEY}" "${port}" \
+  "${unit}" "${VIRTDEV_WAIT_TIMEOUT}" || rc=$?
 
 case "${rc}" in
   0)

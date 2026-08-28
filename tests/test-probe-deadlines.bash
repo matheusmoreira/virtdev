@@ -5,6 +5,7 @@ set -euo pipefail
 
 repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
+export VIRTDEV_HOME="${test_tmp}/home"
 qmp_listener_pid=""
 cleanup() {
   if [[ -n "${qmp_listener_pid}" ]]; then
@@ -19,6 +20,12 @@ trap cleanup EXIT
 source "${repository}/lib/virtdev/import"
 import ssh
 import qmp
+
+client_key="${test_tmp}/client-key"
+printf 'test key\n' > "${client_key}"
+chmod 600 "${client_key}"
+mkdir -p "${VIRTDEV_HOME}/projects/probe"
+ssh_host_identity_ensure probe
 
 systemctl() {
   printf 'active\n'
@@ -38,7 +45,7 @@ export SSH_PROBE_ARGS="${ssh_args}"
 started=${BASH_MONOSECONDS}
 status=0
 PATH="${fixture_bin}:${PATH}" \
-  ssh_poll_until_ready /unused 22 virtdev-test 1 || status=$?
+  ssh_poll_until_ready probe "${client_key}" 2222 virtdev-test 1 || status=$?
 elapsed=$(( BASH_MONOSECONDS - started ))
 
 if (( status != 1 || elapsed > 2 )); then
@@ -70,7 +77,7 @@ sleep() {
   printf 'inactive\n' > "${unit_state_file}"
 }
 status=0
-ssh_poll_until_ready /unused 22 virtdev-test 5 || status=$?
+ssh_poll_until_ready probe "${client_key}" 2222 virtdev-test 5 || status=$?
 if (( status != 2 || timeout_calls != 1 )) || [[ ! -s "${ssh_sleep}" ]]; then
   printf 'ample-budget SSH retry did not sleep once before unit exit\n' >&2
   exit 1
@@ -89,7 +96,7 @@ timeout() {
   return 124
 }
 status=0
-ssh_poll_until_ready /unused 22 virtdev-test 2 || status=$?
+ssh_poll_until_ready probe "${client_key}" 2222 virtdev-test 2 || status=$?
 if (( status != 1 && status != 2 )); then
   printf 'failed SSH probe returned undocumented status %d\n' "${status}" >&2
   exit 1

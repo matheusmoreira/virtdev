@@ -229,7 +229,8 @@ printf >&2 '  current generation:  %s\n' "${project_generation}"
 
 ssh_command=""
 rsync_wrapper=""
-ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
+ssh_rsync_command ssh_command rsync_wrapper "${project}" \
+  "${VIRTDEV_SSH_KEY}" "${port}"
 
 # No --safe-links here, unlike virtdev-backup, and that is deliberate:
 # --safe-links is enforced on the RECEIVER. backup pulls (host is the
@@ -292,7 +293,7 @@ If it dropped mid-transfer, some files may already have been written —
 verify the guest's state before retrying.
 Verify the virtual machine is reachable, then retry:
 
-    virtdev-ssh ${project} true
+    virtdev-ssh ${project} -- true
     virtdev-restore ${project}
 MESSAGE
       ;;
