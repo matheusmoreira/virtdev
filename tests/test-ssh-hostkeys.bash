@@ -49,6 +49,51 @@ mkdir -p "${host_store}/projects/project-a" \
   ssh_host_identity_remove project-b
   ssh_host_identity_ensure project-b
   [[ "${project_a_first}" != "$(< "$(ssh_host_identity_key project-b).pub")" ]]
+
+  mv "${host_store}/projects/project-b" \
+    "${host_store}/projects/project-renamed"
+  renamed_private="$(sha256sum \
+    "${host_store}/projects/project-renamed/ssh-host/host_key")"
+  old_known="$(< \
+    "${host_store}/projects/project-renamed/ssh-host/known_hosts")"
+  rebind_bin="${test_tmp}/rebind-bin"
+  mkdir "${rebind_bin}"
+  ln -s "${repository}/tests/fixtures/sync-counted" "${rebind_bin}/sync"
+  ln -s "${repository}/tests/fixtures/mv-target-fail" "${rebind_bin}/mv"
+  rebind_sync_count="${test_tmp}/rebind-sync-count"
+  rebind_known="${host_store}/projects/project-renamed/ssh-host/known_hosts"
+  rebind_private="${host_store}/projects/project-renamed/ssh-host/host_key"
+
+  for fail_call in 1 2; do
+    rm -f -- "${rebind_sync_count}"
+    status=0
+    (
+      export SYNC_COUNT_FILE="${rebind_sync_count}"
+      export SYNC_FAIL_CALL="${fail_call}"
+      PATH="${rebind_bin}:${PATH}" \
+        ssh_host_identity_rebind project-renamed project-b
+    ) 2>/dev/null || status=$?
+    (( status == 103 ))
+    [[ "$(< "${rebind_known}")" == "${old_known}" ]]
+    [[ "$(sha256sum "${rebind_private}")" == "${renamed_private}" ]]
+  done
+
+  rm -f -- "${rebind_sync_count}"
+  status=0
+  (
+    export MV_FAIL_TARGET="${rebind_known}"
+    PATH="${rebind_bin}:${PATH}" \
+      ssh_host_identity_rebind project-renamed project-b
+  ) 2>/dev/null || status=$?
+  (( status == 103 ))
+  [[ "$(< "${rebind_known}")" == "${old_known}" ]]
+  [[ "$(sha256sum "${rebind_private}")" == "${renamed_private}" ]]
+
+  ssh_host_identity_rebind project-renamed project-b
+  ssh_host_identity_require project-renamed
+  grep -Fqx 'virtdev-project-renamed '"$(< \
+    "${host_store}/projects/project-renamed/ssh-host/host_key.pub")" \
+    "${rebind_known}"
 )
 
 mkdir -p "${ssh_directory}"

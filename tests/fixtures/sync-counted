@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+count=0
+[[ ! -f "${SYNC_COUNT_FILE:?}" ]] || count="$(< "${SYNC_COUNT_FILE}")"
+(( count += 1 ))
+printf '%d\n' "${count}" > "${SYNC_COUNT_FILE}"
+(( count != ${SYNC_FAIL_CALL:-0} )) || exit 1
+exec /usr/bin/sync "$@"

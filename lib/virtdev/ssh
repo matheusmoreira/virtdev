@@ -10,6 +10,8 @@
 #       Require valid existing identity state.
 #   ssh_host_identity_remove <project>
 #       Remove only the known identity files and their directory.
+#   ssh_host_identity_rebind <project> <previous-project>
+#       Rebind a moved project's known-host alias without changing its key.
 #   ssh_host_identity_key <project>
 #   ssh_host_identity_known_hosts <project>
 #   ssh_host_identity_alias <project>
@@ -53,6 +55,7 @@ readonly ssh_host_identity_directory_name=ssh-host
 readonly ssh_host_private_key_name=host_key
 readonly ssh_host_public_key_name=host_key.pub
 readonly ssh_known_hosts_name=known_hosts
+readonly ssh_known_hosts_temporary_name=known_hosts.tmp
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -92,7 +95,8 @@ _ssh_host_identity_remove_directory() {
   for path in \
       "${directory}/${ssh_host_private_key_name}" \
       "${directory}/${ssh_host_public_key_name}" \
-      "${directory}/${ssh_known_hosts_name}"; do
+      "${directory}/${ssh_known_hosts_name}" \
+      "${directory}/${ssh_known_hosts_temporary_name}"; do
     [[ -e "${path}" || -L "${path}" ]] || continue
     [[ -f "${path}" && ! -L "${path}" ]] || return 1
     rm -f -- "${path}" || return 1
@@ -100,8 +104,8 @@ _ssh_host_identity_remove_directory() {
   rmdir -- "${directory}"
 }
 
-_ssh_host_identity_validate() {
-  local -r project="${1}"
+_ssh_host_identity_validate_for_alias() {
+  local -r project="${1}" alias_project="${2}"
   local root private_key public_key known_hosts
   root="$(ssh_host_identity_root "${project}")" || return 1
   private_key="${root}/${ssh_host_private_key_name}"
@@ -130,7 +134,7 @@ _ssh_host_identity_validate() {
   read -r type blob extra <<< "${derived}"
   [[ "${type}" == ssh-ed25519 && -n "${blob}" && -z "${extra}" ]] || return 1
   derived="${type} ${blob}"
-  alias="$(ssh_host_identity_alias "${project}")" || return 1
+  alias="$(ssh_host_identity_alias "${alias_project}")" || return 1
 
   local expected_public="${derived}" expected_known="${alias} ${derived}"
   [[ "$(stat -c '%s' -- "${public_key}" 2>/dev/null)" \
@@ -139,6 +143,10 @@ _ssh_host_identity_validate() {
         == "$(( ${#expected_known} + 1 ))" ]] || return 1
   grep -Fqx -- "${expected_public}" "${public_key}" || return 1
   grep -Fqx -- "${expected_known}" "${known_hosts}" || return 1
+}
+
+_ssh_host_identity_validate() {
+  _ssh_host_identity_validate_for_alias "${1}" "${1}"
 }
 
 _ssh_host_identity_create() {
@@ -213,6 +221,61 @@ ssh_host_identity_remove() {
   local root
   root="$(ssh_host_identity_root "${1}")" || return 1
   _ssh_host_identity_remove_directory "${root}"
+}
+
+ssh_host_identity_rebind() {
+  (( $# == 2 )) || return 2
+  local -r project="${1}" previous_project="${2}"
+  local root known_hosts temporary old_line public_line alias
+  root="$(ssh_host_identity_root "${project}")" || return 2
+  ssh_host_identity_alias "${previous_project}" >/dev/null || return 2
+  [[ -e "${root}" || -L "${root}" ]] || return 0
+  if _ssh_host_identity_validate "${project}"; then
+    sync -f "${root}" || error "${ssh_host_identity_exit_code}" <<MESSAGE
+Could not durably confirm SSH host-alias rebind for project: ${project}
+MESSAGE
+    return 0
+  fi
+  _ssh_host_identity_validate_for_alias "${project}" "${previous_project}" \
+    || error "${ssh_host_identity_exit_code}" <<MESSAGE
+Guest SSH host identity cannot be rebound after project rename: '${root}'
+MESSAGE
+
+  known_hosts="${root}/${ssh_known_hosts_name}"
+  temporary="${root}/${ssh_known_hosts_temporary_name}"
+  old_line="$(< "${known_hosts}")"
+  public_line="$(< "${root}/${ssh_host_public_key_name}")"
+  alias="$(ssh_host_identity_alias "${project}")"
+  if [[ -e "${temporary}" || -L "${temporary}" ]]; then
+    [[ -f "${temporary}" && ! -L "${temporary}" ]] \
+      || error "${ssh_host_identity_exit_code}" \
+        <<<"Unsafe SSH alias-rebind temporary: '${temporary}'"
+    rm -f -- "${temporary}"
+  fi
+
+  if ! printf '%s %s\n' "${alias}" "${public_line}" > "${temporary}" \
+      || ! chmod 0600 "${temporary}" \
+      || ! sync -f "${temporary}"; then
+    rm -f -- "${temporary}" || true
+    error "${ssh_host_identity_exit_code}" \
+      <<<"Could not prepare SSH host-alias rebind for project: ${project}"
+  fi
+  if ! mv -T -- "${temporary}" "${known_hosts}"; then
+    rm -f -- "${temporary}" || true
+    error "${ssh_host_identity_exit_code}" \
+      <<<"Could not commit SSH host-alias rebind for project: ${project}"
+  fi
+  if sync -f "${root}" && _ssh_host_identity_validate "${project}"; then
+    return 0
+  fi
+
+  printf '%s\n' "${old_line}" > "${temporary}" \
+    && chmod 0600 "${temporary}" \
+    && sync -f "${temporary}" \
+    && mv -T -- "${temporary}" "${known_hosts}" \
+    && sync -f "${root}" || true
+  error "${ssh_host_identity_exit_code}" \
+    <<<"Could not durably rebind SSH host alias for project: ${project}"
 }
 
 ssh_transport_argv() {

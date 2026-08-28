@@ -24,6 +24,7 @@
 #   7   source and target are the same
 #   8   backup snapshots already exist for the target name
 #   9   move transaction journal is invalid or conflicts with the request
+#   103 SSH host identity could not be rebound to the target project name
 #
 
 set -euo pipefail
@@ -31,7 +32,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal project runtime
+import error validate lock arguments terminal project runtime ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -186,6 +187,8 @@ trap '' INT TERM HUP QUIT
 if [[ -d "${source_directory}" ]]; then
   mv -- "${source_directory}" "${target_directory}"
 fi
+
+ssh_host_identity_rebind "${target_name}" "${source_name}"
 
 if [[ -d "${source_backups}" ]]; then
   mv -- "${source_backups}" "${target_backups}"

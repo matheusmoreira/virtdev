@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+target="${!#}"
+[[ "${target}" != "${MV_FAIL_TARGET:?}" ]] || exit 1
+exec /usr/bin/mv "$@"
