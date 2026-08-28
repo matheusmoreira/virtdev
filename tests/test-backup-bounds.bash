@@ -7,10 +7,13 @@ test_tmp="$(mktemp -d)"
 trap 'rm -rf -- "${test_tmp}"' EXIT
 
 fixture_bin="${test_tmp}/bin"
+sync_bin="${test_tmp}/sync-bin"
 mkdir -p "${fixture_bin}" "${test_tmp}/guest/data/sub"
+mkdir "${sync_bin}"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
 chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl"
+ln -s "${repository}/tests/fixtures/sync-counted" "${sync_bin}/sync"
 
 printf 'payload\n' > "${test_tmp}/guest/data/sub/file"
 printf 'second\n' > "${test_tmp}/guest/data/other"
@@ -131,4 +134,41 @@ if [[ ! -s "${test_tmp}/backup.pid" ]] \
   exit 1
 fi
 
+pre_sync_home="${test_tmp}/pre-sync-home"
+pre_sync_count="${test_tmp}/pre-sync-count"
+prepare_home "${pre_sync_home}"
+status=0
+run_backup "${pre_sync_home}" 1048576 100 10 \
+  env PATH="${sync_bin}:${fixture_bin}:${PATH}" \
+    SYNC_COUNT_FILE="${pre_sync_count}" SYNC_FAIL_CALL=1 \
+  >"${test_tmp}/output" 2>&1 || status=$?
+pre_sync_partial="$(find "${pre_sync_home}/backups/probe" \
+  -mindepth 2 -maxdepth 2 -type d -name '*.partial' -print -quit)"
+if (( status != 18 )) || [[ "$(< "${pre_sync_count}")" != 1 \
+      || ! -f "${pre_sync_partial}/tree/data/sub/file" ]]; then
+  printf 'pre-publication sync failure was not preserved (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
+post_sync_home="${test_tmp}/post-sync-home"
+post_sync_count="${test_tmp}/post-sync-count"
+prepare_home "${post_sync_home}"
+status=0
+run_backup "${post_sync_home}" 1048576 100 10 \
+  env PATH="${sync_bin}:${fixture_bin}:${PATH}" \
+    SYNC_COUNT_FILE="${post_sync_count}" SYNC_FAIL_CALL=2 \
+  >"${test_tmp}/output" 2>&1 || status=$?
+post_sync_final="$(find "${post_sync_home}/backups/probe" \
+  -mindepth 2 -maxdepth 2 -type d ! -name '*.partial' -print -quit)"
+if (( status != 18 )) || [[ "$(< "${post_sync_count}")" != 2 \
+      || ! -f "${post_sync_final}/tree/data/sub/file" ]] \
+    || find "${post_sync_home}/backups" -name '*.partial' -print -quit \
+      | grep -q .; then
+  printf 'post-publication sync failure was not preserved (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
 printf 'ok - backup capture enforces byte, entry, and wall-clock budgets\n'
+printf 'ok - backup publication is durable or preserves inspectable recovery state\n'

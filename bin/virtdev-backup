@@ -80,7 +80,7 @@
 #   15  manifest contains absolute paths
 #   16  manifest has malformed path entries
 #   17  SSH transport failure
-#   18  archive creation, validation, or extraction failure
+#   18  archive processing or snapshot publication failure
 #   19  byte, entry, inode, or free-space budget exceeded
 #   20  backup wall-clock deadline exceeded
 #   64  usage error
@@ -314,9 +314,10 @@ MESSAGE
 fi
 
 backup_succeeded=0
+backup_preserve_partial=0
 ssh_wrapper=
 cleanup_partial() {
-  (( backup_succeeded )) || rm -rf "${partial}"
+  (( backup_succeeded || backup_preserve_partial )) || rm -rf "${partial}"
   [[ -n "${manifest_copy}" ]] && rm -f "${manifest_copy}"
   [[ -n "${ssh_wrapper}" ]] && rm -f "${ssh_wrapper}"
   # Preserve the status that entered the EXIT trap.
@@ -492,7 +493,20 @@ Another backup of ${project} completed within the same second. Wait a moment and
 MESSAGE
 fi
 
-mv "${partial}" "${final}"
+if ! sync -f "${partial}"; then
+  backup_preserve_partial=1
+  error 18 <<MESSAGE
+Could not durably flush the completed backup. The partial snapshot was preserved:
+${partial}
+MESSAGE
+fi
+mv -T -- "${partial}" "${final}"
+if ! sync -f "${day_dir}"; then
+  error 18 <<MESSAGE
+Could not durably publish the completed backup. The final snapshot was preserved:
+${final}
+MESSAGE
+fi
 backup_succeeded=1
 
 printf >&2 '%s\n' "$(terminal_write fg=green "Backed up ${entries_captured} entries." reset)"
