@@ -170,7 +170,9 @@ qemu_command() {
 
 qemu_stop_unit_then_clean_runtime() {
   local -r unit="${1}" runtime_directory="${2}" deadline_seconds="${3}"
-  integer_is_bounded_positive "${deadline_seconds}" 86400 || return 1
+  if [[ "${deadline_seconds}" != 0 ]]; then
+    integer_is_bounded_positive "${deadline_seconds}" 86400 || return 1
+  fi
   local -r deadline=$(( SECONDS + deadline_seconds ))
   local state
 
@@ -203,8 +205,10 @@ qemu_activation_classify() {
   local -r unit="${1}"
   local -r deadline_seconds="${2}"
   local -r launch_phase_file="${3:-}"
-  integer_is_bounded_positive "${deadline_seconds}" 86400 \
-    || return "${qemu_still_activating}"
+  if [[ "${deadline_seconds}" != 0 ]]; then
+    integer_is_bounded_positive "${deadline_seconds}" 86400 \
+      || return "${qemu_still_activating}"
+  fi
   local -r deadline=$(( SECONDS + deadline_seconds ))
 
   # Reset the detail globals so a previous call's values never leak into
