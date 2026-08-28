@@ -5,6 +5,10 @@ set -euo pipefail
 : "${SYSTEMCTL_STATE_FILE:?}"
 : "${MAINTENANCE_RUNTIME_DIRECTORY:?}"
 
+if [[ -n "${SYSTEMD_RUN_ARGV_FILE:-}" ]]; then
+  printf '%s\0' "$@" > "${SYSTEMD_RUN_ARGV_FILE}"
+fi
+
 if [[ -n "${MAINTENANCE_BOOT_COUNT_FILE:-}" ]]; then
   maintenance_boot_count=0
   if [[ -f "${MAINTENANCE_BOOT_COUNT_FILE}" ]]; then

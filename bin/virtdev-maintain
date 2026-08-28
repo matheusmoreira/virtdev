@@ -243,8 +243,10 @@ maintenance_boot() {
 
   # Expose poweroff as durable QMP shutdown; prevent panic from proving it.
   local -a qemu_extra_args=(-no-shutdown -action panic=pause)
+  local qemu_pacman_cache="${pacman_cache}"
+  qemu_suboption_encode qemu_pacman_cache
   # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
-  qemu_extra_args+=(-virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=mapped-xattr)
+  qemu_extra_args+=(-virtfs local,path="${qemu_pacman_cache}",mount_tag=pacman_cache,security_model=mapped-xattr)
   # shellcheck disable=SC2054
   [[ -d /var/cache/pacman/pkg ]] && qemu_extra_args+=(
     -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=mapped-xattr,readonly=on)

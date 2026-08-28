@@ -9,50 +9,21 @@
 # maintenance appends explicit shutdown-policy and cache arguments.
 #
 # Public:
+#   qemu_suboption_encode <variable>
+#       Double each comma in the variable's value for interpolation into a
+#       comma-delimited QEMU option. Other bytes are preserved.
+#
 #   qemu_command <array_name> <disk_dir> <sock_dir> <fw_cfg_project> \
 #                <memory> <cpus> <ovmf_code> [extra_args...]
-#       Fills the named array with the qemu-system-x86_64 argv that goes
-#       AFTER the `virtdev-netexec ... --` boundary (pure; no process
-#       spawned). The caller passes this array to virtdev-netexec as the
-#       QEMU command. Returning an array (rather than a string the caller
-#       must re-split) keeps the socket and disk paths intact even if a
-#       path contains whitespace — mirrors passt_command.
+#       Build the argv after the `virtdev-netexec ... --` boundary without
+#       spawning it. disk_dir holds the images; sock_dir holds the HMP, QMP,
+#       serial, and passt sockets. They differ during maintenance. Fixed-field
+#       values are comma-encoded here; callers embedding values in trusted
+#       extra_args must encode those values before calling.
 #
-#       array_name      — caller-declared array to populate.
-#       disk_dir        — directory holding system.qcow2, home.qcow2 and
-#                         nvram. virtdev-start: the per-project directory.
-#                         virtdev-maintain: the maintenance/ staging dir.
-#       sock_dir        — directory holding the monitor/console/passt/qmp
-#                         sockets. virtdev-start: the SAME per-project
-#                         directory. virtdev-maintain: projects/maintenance
-#                         (distinct from the staging disk dir — the two
-#                         roots diverge only in maintenance, so they are
-#                         separate parameters rather than one).
-#       fw_cfg_project  — value for -fw_cfg opt/virtdev/project,string=;
-#                         the guest reads it at boot to set its hostname.
-#       memory          — -m value (MiB).
-#       cpus            — -smp value.
-#       ovmf_code       — path to the OVMF_CODE pflash read-only firmware
-#                         image. Callers default it via OVMF_CODE before
-#                         calling. Explicit parameter rather than an ambient
-#                         env read so the contract is visible at call sites.
-#       extra_args      — trusted trailing arguments. Maintenance passes its
-#                         shutdown policy and cache mounts here.
-#
-#       The shared isolation baseline is fixed here:
-#       the OVMF pflash read-only firmware, the writable nvram pflash,
-#       the system/home virtio qcow2 drives, the passt -netdev stream
-#       (NO SLIRP -netdev user), virtio-rng, and -display none. There is
-#       no read-only/snapshot drive flag — the qcow2 deltas are writable.
-#
-#       Two host-side control sockets are wired here, both in the 0700
-#       per-project directory and unreachable by the guest: the HMP
-#       monitor (-monitor chardev:monitor — virtdev-stop's ACPI
-#       system_powerdown and interactive virtdev-monitor) and, additive,
-#       a QMP control socket (-mon chardev=qmp,mode=control) that
-#       virtdev-start probes with query-status to confirm QEMU actually
-#       launched. Same exposure class as the monitor socket; no new
-#       guest-reachable surface.
+#       The fixed isolation baseline is writable qcow2 deltas, read-only OVMF
+#       code, passt stream networking (never SLIRP), no display, and host-only
+#       HMP/QMP control sockets.
 #
 #   qemu_activation_classify <unit> <deadline_seconds> <launch-phase-file>
 #       Poll the transient systemd unit after systemd-run returns and
@@ -111,32 +82,46 @@ readonly qemu_still_activating=91
 VIRTDEV_QEMU_STOP_STATE=unknown
 VIRTDEV_QEMU_LAUNCH_PHASE=unknown
 
+qemu_suboption_encode() {
+  if (( $# != 1 )) || [[ ! "${1}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] \
+      || [[ ! -v "${1}" ]]; then
+    return 2
+  fi
+  printf -v "${1}" '%s' "${!1//,/,,}"
+}
+
 qemu_command() {
   local -n _command="${1}"
   local -r disk_dir="${2}"
   local -r sock_dir="${3}"
-  local -r fw_cfg_project="${4}"
+  local fw_cfg_project="${4}"
   local -r memory="${5}"
   local -r cpus="${6}"
-  local -r ovmf_code="${7}"
+  local ovmf_code="${7}"
   shift 7
   # Remaining positionals (if any) are the caller's trailing extra args.
 
-  local -r system_disk="${disk_dir}/system.qcow2"
-  local -r home_disk="${disk_dir}/home.qcow2"
-  local -r nvram="${disk_dir}/nvram"
-  # Socket paths via the runtime library so the argv and every cleanup
-  # site share one source and cannot drift (lib/virtdev/runtime).
-  local -r monitor_sock="$(runtime_monitor_sock "${sock_dir}")"
-  local -r console_sock="$(runtime_console_sock "${sock_dir}")"
-  local -r passt_sock="$(runtime_passt_sock "${sock_dir}")"
-  local -r qmp_sock="$(runtime_qmp_sock "${sock_dir}")"
+  local system_disk="${disk_dir}/system.qcow2"
+  local home_disk="${disk_dir}/home.qcow2"
+  local nvram="${disk_dir}/nvram"
+  # Keep argv socket names aligned with runtime cleanup.
+  local monitor_sock console_sock passt_sock qmp_sock
+  monitor_sock="$(runtime_monitor_sock "${sock_dir}")"
+  console_sock="$(runtime_console_sock "${sock_dir}")"
+  passt_sock="$(runtime_passt_sock "${sock_dir}")"
+  qmp_sock="$(runtime_qmp_sock "${sock_dir}")"
 
-  # The flag set below is the network-isolation security boundary. It is
-  # copied verbatim from the historical start/maintain argv and must not
-  # drift. -netdev stream (passt) only — never -netdev user (SLIRP). The
-  # firmware pflash is readonly=on; the disks are writable qcow2 deltas
-  # (no snapshot/readonly drive flag, by design).
+  qemu_suboption_encode ovmf_code
+  qemu_suboption_encode nvram
+  qemu_suboption_encode system_disk
+  qemu_suboption_encode home_disk
+  qemu_suboption_encode passt_sock
+  qemu_suboption_encode monitor_sock
+  qemu_suboption_encode qmp_sock
+  qemu_suboption_encode console_sock
+  qemu_suboption_encode fw_cfg_project
+
+  # Network-isolation boundary: passt stream only, never SLIRP.
   # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
   _command=(
     qemu-system-x86_64

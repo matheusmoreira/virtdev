@@ -107,7 +107,7 @@ prepare_launch_home() {
 
 run_launch() {
   local -r launch_home="${1}" ssh_mode="${2}" cache="${3}" \
-    malformed_control="${4:-0}" wait_timeout="${5:-1}"
+    malformed_control="${4:-0}" wait_timeout="${5:-1}" argv_file="${6:-}"
   PATH="${launch_bin}:${PATH}" \
     HOME="${test_tmp}" \
     XDG_CONFIG_HOME="${test_tmp}/config" \
@@ -121,6 +121,7 @@ run_launch() {
     SYSTEMCTL_STOP_FILE="${launch_home}/stop.called" \
     SYSTEMCTL_UNREACHABLE_FILE="${launch_home}/manager.lost" \
     SYSTEMD_RUN_MARKER="${launch_home}/systemd-run.called" \
+    SYSTEMD_RUN_ARGV_FILE="${argv_file}" \
     MAINTENANCE_NO_SHUTDOWN_MARKER="${launch_home}/no-shutdown.called" \
     MAINTENANCE_PANIC_PAUSE_MARKER="${launch_home}/panic-pause.called" \
     MAINTENANCE_RUNTIME_DIRECTORY="${launch_home}/projects/maintenance" \
@@ -154,9 +155,11 @@ fi
 
 terminal_home="${test_tmp}/terminal-home"
 prepare_launch_home "${terminal_home}"
+terminal_cache="${terminal_home}/cache,a,,b=c d\\e"
+terminal_argv_file="${terminal_home}/systemd-run.argv"
 status=0
 run_launch "${terminal_home}" failure \
-  "${terminal_home}/cache" || status=$?
+  "${terminal_cache}" 0 1 "${terminal_argv_file}" || status=$?
 if (( status != 10 )); then
   printf 'expected SSH-timeout exit 10 after terminal recovery, got %d\n' \
     "${status}" >&2
@@ -174,6 +177,23 @@ if [[ ! -e "${terminal_home}/no-shutdown.called" ]]; then
 fi
 if [[ ! -e "${terminal_home}/panic-pause.called" ]]; then
   printf 'maintenance QEMU did not prevent guest panic from proving shutdown\n' >&2
+  exit 1
+fi
+mapfile -d '' -t terminal_argv < "${terminal_argv_file}"
+expected_virtfs="local,path=${terminal_home}/cache,,a,,,,b=c d\\e/pacman,mount_tag=pacman_cache,security_model=mapped-xattr"
+virtfs_found=0
+for argument in "${terminal_argv[@]}"; do
+  if [[ "${argument}" == "${expected_virtfs}" ]]; then
+    virtfs_found=1
+    break
+  fi
+done
+if (( ! virtfs_found )); then
+  printf 'maintenance cache path was not comma-encoded in the exact QEMU argv\n' >&2
+  printf 'expected: %q\n' "${expected_virtfs}" >&2
+  printf 'argv: ' >&2
+  printf '%q ' "${terminal_argv[@]}" >&2
+  printf '\n' >&2
   exit 1
 fi
 for control in monitor.sock console.sock passt.sock qmp.sock port; do
@@ -346,6 +366,7 @@ fi
 printf 'ok - maintenance preflight preserves staging owned by live or unknown units\n'
 printf 'ok - maintenance prerequisites cannot fall through to submission\n'
 printf 'ok - submitted maintenance units clean only after terminal proof\n'
+printf 'ok - maintenance comma-encodes its configurable QEMU cache path\n'
 printf 'ok - terminal cleanup reports malformed runtime controls\n'
 printf 'ok - maintenance refuses QEMU exit zero without guest-shutdown proof\n'
 printf 'ok - foreground Ctrl-C stops the unit and preserves staging\n'

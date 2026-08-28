@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+if [[ -n "${QEMU_ARGV_FILE:-}" ]]; then
+  printf '%s\0' "$@" > "${QEMU_ARGV_FILE}"
+fi
 printf '%d\n' "$$" > "${QEMU_PID_FILE:?}"
 
 case "${QEMU_TEST_MODE:-stuck}" in

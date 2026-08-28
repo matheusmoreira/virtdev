@@ -63,7 +63,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments terminal ssh ip integer
+import error lock arguments terminal ssh ip integer qemu
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -330,16 +330,39 @@ nvram="${installation_directory}"/nvram
 printf >&2 'Copying default NVRAM...\n'
 cp "${OVMF_VARS}" "${nvram}"
 
+qemu_ovmf_code="${OVMF_CODE}"
+qemu_nvram="${nvram}"
+qemu_system_disk="${system_disk}"
+qemu_home_disk="${home_disk}"
+qemu_console_sock="${console_sock}"
+qemu_install_sock="${install_sock}"
+qemu_pacman_cache="${pacman_cache}"
+qemu_ssh_key="${VIRTDEV_SSH_KEY}.pub"
+qemu_timezone="${VIRTDEV_TIMEZONE}"
+qemu_locale="${VIRTDEV_LOCALE}"
+qemu_keymap="${VIRTDEV_KEYMAP}"
+qemu_dns="${VIRTDEV_INSTALL_DNS}"
+qemu_packages="${VIRTDEV_PACKAGES:-}"
+qemu_script="${VIRTDEV_SCRIPT:-}"
+qemu_inventory="${VIRTDEV_INVENTORY:-}"
+for qemu_value in qemu_ovmf_code qemu_nvram qemu_system_disk qemu_home_disk \
+                  qemu_console_sock qemu_install_sock qemu_pacman_cache \
+                  qemu_ssh_key qemu_timezone qemu_locale qemu_keymap qemu_dns \
+                  qemu_packages qemu_script qemu_inventory; do
+  qemu_suboption_encode "${qemu_value}"
+done
+unset qemu_value
+
 qemu_extra_args=()
 # shellcheck disable=SC2054  # commas are QEMU option syntax, not array separators
 [[ -d /var/cache/pacman/pkg ]] && qemu_extra_args+=(
   -virtfs local,path=/var/cache/pacman/pkg,mount_tag=host_cache,security_model=mapped-xattr,readonly=on)
 [[ -n "${VIRTDEV_PACKAGES:-}" ]] && qemu_extra_args+=(
-  -fw_cfg "name=opt/virtdev/packages,file=${VIRTDEV_PACKAGES}")
+  -fw_cfg "name=opt/virtdev/packages,file=${qemu_packages}")
 [[ -n "${VIRTDEV_SCRIPT:-}" ]] && qemu_extra_args+=(
-  -fw_cfg "name=opt/virtdev/script,file=${VIRTDEV_SCRIPT}")
+  -fw_cfg "name=opt/virtdev/script,file=${qemu_script}")
 [[ -n "${VIRTDEV_INVENTORY:-}" ]] && qemu_extra_args+=(
-  -fw_cfg "name=opt/virtdev/inventory,file=${VIRTDEV_INVENTORY}")
+  -fw_cfg "name=opt/virtdev/inventory,file=${qemu_inventory}")
 
 install_display_progress() {
   local -r token="${1}"
@@ -382,27 +405,27 @@ qemu-system-x86_64 \
     -machine q35 \
     -m "${VIRTDEV_VM_MEMORY}" \
     -smp "${VIRTDEV_VM_CPUS}" \
-    -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
-    -drive if=pflash,format=raw,file="${nvram}" \
-    -drive file="${system_disk}",if=virtio,format=qcow2 \
-    -drive file="${home_disk}",if=virtio,format=qcow2 \
+    -drive if=pflash,format=raw,readonly=on,file="${qemu_ovmf_code}" \
+    -drive if=pflash,format=raw,file="${qemu_nvram}" \
+    -drive file="${qemu_system_disk}",if=virtio,format=qcow2 \
+    -drive file="${qemu_home_disk}",if=virtio,format=qcow2 \
     -cdrom "${VIRTDEV_ISO}" \
     -boot order=d,menu=off \
     -netdev user,id=net0 \
     -device virtio-net-pci,netdev=net0 \
     -device virtio-rng-pci \
     -display none \
-    -serial unix:"${console_sock}",server=on,wait=off \
+    -serial unix:"${qemu_console_sock}",server=on,wait=off \
     -monitor none \
     -device virtio-serial \
-    -chardev socket,path="${install_sock}",server=on,wait=off,id=install_ch \
+    -chardev socket,path="${qemu_install_sock}",server=on,wait=off,id=install_ch \
     -device virtserialport,chardev=install_ch,name=org.virtdev.install \
-    -virtfs local,path="${pacman_cache}",mount_tag=pacman_cache,security_model=mapped-xattr \
-    -fw_cfg name=opt/virtdev/ssh_key,file="${VIRTDEV_SSH_KEY}.pub" \
-    -fw_cfg name=opt/virtdev/timezone,string="${VIRTDEV_TIMEZONE}" \
-    -fw_cfg name=opt/virtdev/locale,string="${VIRTDEV_LOCALE}" \
-    -fw_cfg name=opt/virtdev/keymap,string="${VIRTDEV_KEYMAP}" \
-    -fw_cfg name=opt/virtdev/dns,string="${VIRTDEV_INSTALL_DNS}" \
+    -virtfs local,path="${qemu_pacman_cache}",mount_tag=pacman_cache,security_model=mapped-xattr \
+    -fw_cfg name=opt/virtdev/ssh_key,file="${qemu_ssh_key}" \
+    -fw_cfg name=opt/virtdev/timezone,string="${qemu_timezone}" \
+    -fw_cfg name=opt/virtdev/locale,string="${qemu_locale}" \
+    -fw_cfg name=opt/virtdev/keymap,string="${qemu_keymap}" \
+    -fw_cfg name=opt/virtdev/dns,string="${qemu_dns}" \
     "${qemu_extra_args[@]+"${qemu_extra_args[@]}"}" &
 qemu_pid=$!
 
