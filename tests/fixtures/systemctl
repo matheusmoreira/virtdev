@@ -40,6 +40,7 @@ fi
 
 if [[ " $* " == *" stop "* ]]; then
   [[ -n "${SYSTEMCTL_STOP_FILE:-}" ]] && : > "${SYSTEMCTL_STOP_FILE}"
+  [[ -z "${SYSTEMCTL_STOP_DELAY:-}" ]] || sleep "${SYSTEMCTL_STOP_DELAY}"
   if [[ "${SYSTEMCTL_UNREACHABLE:-0}" == 1 \
         || ( -n "${SYSTEMCTL_UNREACHABLE_FILE:-}" \
              && -e "${SYSTEMCTL_UNREACHABLE_FILE}" ) ]]; then
@@ -48,6 +49,7 @@ if [[ " $* " == *" stop "* ]]; then
   if [[ -n "${SYSTEMCTL_STATE_FILE:-}" ]]; then
     printf 'inactive\n' > "${SYSTEMCTL_STATE_FILE}"
   fi
+  [[ -n "${SYSTEMCTL_STOP_DONE_FILE:-}" ]] && : > "${SYSTEMCTL_STOP_DONE_FILE}"
   exit 0
 fi
 

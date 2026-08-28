@@ -632,9 +632,24 @@ trap - EXIT
 # The EXIT guard owns any submitted unit before the shell releases the global
 # lock: stop with one bound, remove controls only after terminal proof, and
 # otherwise leave both runtime endpoints and images intact for recovery.
+maintenance_cleanup_phase=0
+maintenance_cleanup_signal_status=0
+
+# shellcheck disable=SC2329  # invoked via signal traps
+maintenance_cleanup_signal() {
+  local -r status="${1}"
+  if (( maintenance_cleanup_phase )); then
+    (( maintenance_cleanup_signal_status )) \
+      || maintenance_cleanup_signal_status="${status}"
+  else
+    exit "${status}"
+  fi
+}
+
 maintenance_exit_guard() {
-  local -r exit_status=$?
-  trap - EXIT HUP INT TERM
+  local exit_status=$? maintenance_cleanup_phase=1 \
+    maintenance_cleanup_signal_status=0
+  trap - EXIT
   set +e
   if (( maintenance_unit_owned )); then
     if maintenance_stop_and_confirm; then
@@ -648,12 +663,16 @@ maintenance_exit_guard() {
       printf >&2 'Inspect before cleanup: systemctl --user status %s\n' "${unit}"
     fi
   fi
+  trap - HUP INT TERM
+  if (( maintenance_cleanup_signal_status )); then
+    exit "${maintenance_cleanup_signal_status}"
+  fi
   exit "${exit_status}"
 }
 trap maintenance_exit_guard EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'maintenance_cleanup_signal 129' HUP
+trap 'maintenance_cleanup_signal 130' INT
+trap 'maintenance_cleanup_signal 143' TERM
 
 # Runtime endpoints live in projects/maintenance/ and are owned by the runtime
 # library. The shim derives its network and provenance paths from that root.

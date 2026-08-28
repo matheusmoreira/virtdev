@@ -210,6 +210,8 @@ mkdir -p "${pacman_cache}"
 install_succeeded=0
 qemu_pid=''
 socat_pid=''
+install_cleanup_phase=0
+install_cleanup_signal_status=0
 
 # Child processes retain open image/socket/cache descriptors after their
 # paths are unlinked. Treat QEMU and the progress bridge as owned resources:
@@ -281,9 +283,19 @@ child_terminate_and_reap() {
   child_wait_bounded "${pid}" 0
 }
 
+# shellcheck disable=SC2329  # invoked via signal traps
+install_cleanup_signal() {
+  local -r status="${1}"
+  if (( install_cleanup_phase )); then
+    (( install_cleanup_signal_status )) || install_cleanup_signal_status="${status}"
+  else
+    exit "${status}"
+  fi
+}
+
 cleanup_partial_installation() {
-  local -r exit_status=$?
-  trap - EXIT HUP INT TERM
+  local exit_status=$? install_cleanup_phase=1 install_cleanup_signal_status=0
+  trap - EXIT
   set +e
 
   local children_terminal=1
@@ -310,12 +322,16 @@ cleanup_partial_installation() {
       "${installation_directory}"
   fi
 
+  trap - HUP INT TERM
+  if (( install_cleanup_signal_status )); then
+    exit "${install_cleanup_signal_status}"
+  fi
   exit "${exit_status}"
 }
 trap cleanup_partial_installation EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'install_cleanup_signal 129' HUP
+trap 'install_cleanup_signal 130' INT
+trap 'install_cleanup_signal 143' TERM
 
 system_disk="${installation_directory}"/system.qcow2
 printf >&2 "Creating %s system disk image: '%s'\n" \

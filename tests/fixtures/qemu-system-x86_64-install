@@ -14,6 +14,12 @@ case "${QEMU_TEST_MODE:-stuck}" in
       sleep 1
     done
     ;;
+  slow-term)
+    trap 'printf "terminated\n" > "${QEMU_TERM_FILE:?}"; sleep "${QEMU_TERM_DELAY:-1}"; exit 0' TERM
+    while :; do
+      sleep 1
+    done
+    ;;
   progress)
     install_socket=''
     for argument in "$@"; do

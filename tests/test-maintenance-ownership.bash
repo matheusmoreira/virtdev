@@ -295,6 +295,8 @@ env --default-signal=INT \
   OVMF_CODE="${interrupt_home}/OVMF_CODE.fd" \
   SYSTEMCTL_STATE_FILE="${interrupt_home}/unit.state" \
   SYSTEMCTL_STOP_FILE="${interrupt_home}/stop.called" \
+  SYSTEMCTL_STOP_DONE_FILE="${interrupt_home}/stop.done" \
+  SYSTEMCTL_STOP_DELAY=1 \
   SYSTEMD_RUN_MARKER="${interrupt_home}/systemd-run.called" \
   MAINTENANCE_RUNTIME_DIRECTORY="${interrupt_home}/projects/maintenance" \
   MAINTENANCE_SSH_MODE=ready \
@@ -344,6 +346,12 @@ if (( ! interrupt_acknowledged )); then
   exit 1
 fi
 
+if ! kill -INT "${interrupt_pid}" 2>/dev/null; then
+  printf 'maintenance exited before its delayed cleanup signal\n' >&2
+  cat "${interrupt_output}" >&2
+  exit 1
+fi
+
 status=0
 wait "${interrupt_pid}" || status=$?
 interrupt_pid=""
@@ -354,6 +362,10 @@ if (( status != 130 )); then
 fi
 if [[ ! -e "${interrupt_home}/stop.called" ]]; then
   printf 'Ctrl-C did not drive the owned unit through bounded stop\n' >&2
+  exit 1
+fi
+if [[ ! -e "${interrupt_home}/stop.done" ]]; then
+  printf 'late Ctrl-C interrupted maintenance unit cleanup\n' >&2
   exit 1
 fi
 if [[ "$(< "${interrupt_home}/system/generation")" != 0 ]]; then
@@ -372,3 +384,4 @@ printf 'ok - maintenance comma-encodes its configurable QEMU cache path\n'
 printf 'ok - terminal cleanup reports malformed runtime controls\n'
 printf 'ok - maintenance refuses QEMU exit zero without guest-shutdown proof\n'
 printf 'ok - foreground Ctrl-C stops the unit and preserves staging\n'
+printf 'ok - repeated Ctrl-C cannot interrupt maintenance unit cleanup\n'

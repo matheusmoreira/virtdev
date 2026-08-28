@@ -4,7 +4,15 @@ set -euo pipefail
 
 repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
-trap 'rm -rf -- "${test_tmp}"' EXIT
+installer_pid=''
+cleanup() {
+  if [[ -n "${installer_pid}" ]]; then
+    kill -TERM "${installer_pid}" 2>/dev/null || true
+    wait "${installer_pid}" 2>/dev/null || true
+  fi
+  rm -rf -- "${test_tmp}"
+}
+trap cleanup EXIT
 
 fixture_bin="${test_tmp}/bin"
 mkdir -p "${fixture_bin}"
@@ -71,6 +79,52 @@ if kill -0 "$(< "${stuck_pid}")" 2>/dev/null; then
 fi
 if [[ -e "${stuck_home}/installation" ]]; then
   printf 'installer removed paths before child death or retained dead-child staging\n' >&2
+  exit 1
+fi
+
+late_home="${test_tmp}/late-signal-home"
+late_pid="${test_tmp}/late-signal.pid"
+late_term="${test_tmp}/late-signal.term"
+late_output="${test_tmp}/late-signal.output"
+env --default-signal=TERM \
+  PATH="${fixture_bin}:${PATH}" \
+  NO_COLOR=1 \
+  VIRTDEV_HOME="${late_home}" \
+  VIRTDEV_CACHE="${test_tmp}/cache" \
+  VIRTDEV_ISO="${iso}" \
+  VIRTDEV_SSH_KEY="${ssh_key}" \
+  OVMF_CODE="${ovmf_code}" \
+  OVMF_VARS="${ovmf_vars}" \
+  VIRTDEV_INSTALL_SOCKET_TIMEOUT=1 \
+  VIRTDEV_INSTALL_PROGRESS_TIMEOUT=3 \
+  VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT=2 \
+  QEMU_TEST_MODE=slow-term \
+  QEMU_TERM_DELAY=1 \
+  QEMU_PROGRESS_FILE=/dev/null \
+  QEMU_PID_FILE="${late_pid}" \
+  QEMU_TERM_FILE="${late_term}" \
+  "${repository}/bin/virtdev-install" >"${late_output}" 2>&1 &
+installer_pid=$!
+
+for (( attempt = 0; attempt < 100; attempt++ )); do
+  [[ -e "${late_term}" ]] && break
+  kill -0 "${installer_pid}" 2>/dev/null || break
+  sleep 0.05
+done
+if [[ ! -e "${late_term}" ]]; then
+  printf 'installer did not enter delayed child cleanup\n' >&2
+  cat "${late_output}" >&2
+  exit 1
+fi
+kill -TERM "${installer_pid}"
+status=0
+wait "${installer_pid}" || status=$?
+installer_pid=''
+if (( status != 143 )) || kill -0 "$(< "${late_pid}")" 2>/dev/null \
+    || [[ -e "${late_home}/installation" ]]; then
+  printf 'late TERM interrupted installer cleanup (status %d)\n' \
+    "${status}" >&2
+  cat "${late_output}" >&2
   exit 1
 fi
 
@@ -238,5 +292,6 @@ if ! grep -Fxq 'TimeoutStartSec=infinity' \
 fi
 
 printf 'ok - installer owns children, permits progress, and requires clean termination\n'
+printf 'ok - repeated signals cannot interrupt installer child cleanup\n'
 printf 'ok - installer requires and records the guest SSH transport contract\n'
 printf 'ok - installer comma-encodes structured QEMU values and preserves standalone argv\n'
