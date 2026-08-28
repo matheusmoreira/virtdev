@@ -62,7 +62,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest confirm terminal project firewall
+import error validate arguments snapshot manifest confirm terminal project firewall recreate-result
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -398,7 +398,7 @@ if (( do_backup )); then
   printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] backup" reset)" >&2
   backup_path=""
   if ! backup_path="$(backup)"; then
-    error 20 <<MESSAGE
+    error "${recreate_result_backup_failed}" <<MESSAGE
 backup failed (virtdev-backup exited non-zero).
 Project ${project} is unchanged. Investigate the rsync output above
 and rerun:
@@ -406,7 +406,7 @@ and rerun:
 MESSAGE
   fi
   if ! backup_snapshot="$(snapshot_id_from_path "${project}" "${backup_path}")"; then
-    error 20 <<MESSAGE
+    error "${recreate_result_backup_failed}" <<MESSAGE
 virtdev-backup returned an invalid snapshot path: '${backup_path}'
 The project is unchanged and the backup output was not trusted for restore.
 MESSAGE
@@ -422,7 +422,7 @@ if (( do_stop )); then
     snap_hint=""
     [[ -n "${snap}" ]] && snap_hint="
 Snapshot from this run: ${backups_project_dir}/${snap}/"
-    error 21 <<MESSAGE
+    error "${recreate_result_stop_failed}" <<MESSAGE
 stop failed (virtdev-stop exited non-zero).
 The virtual machine may be in an indeterminate state. Inspect with:
     systemctl --user status ${unit}
@@ -441,7 +441,7 @@ fi
 # (which would leave a fresh machine that cannot launch into its zone).
 # Skipped under --unfiltered (the lockdown is not enforced for this relaunch).
 if (( ! flags[unfiltered] )) && [[ -n "${zone}" ]] && ! firewall_zone_valid "${zone}"; then
-  error 28 <<MESSAGE
+  error "${recreate_result_zone_removed}" <<MESSAGE
 zone '${zone}' is no longer active (removed since this recreate began).
 ${project} is backed up and stopped but NOT destroyed — nothing is lost.
 Re-apply the zone (or pass --zone), then rerun:
@@ -457,7 +457,7 @@ if ! destroy; then
   snap_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot is preserved at: ${backups_project_dir}/${snap}/"
-  error 22 <<MESSAGE
+  error "${recreate_result_destroy_failed}" <<MESSAGE
 destroy failed (virtdev-destroy exited non-zero).
 The project still exists. Inspect, fix, and rerun with --no-backup:
     $(recreate_resume --no-backup)${snap_hint}
@@ -471,7 +471,7 @@ if ! create; then
   snap_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot is preserved at: ${backups_project_dir}/${snap}/"
-  error 23 <<MESSAGE
+  error "${recreate_result_create_failed}" <<MESSAGE
 create failed (virtdev-create exited non-zero).
 The project directory was destroyed and the new one was not built, so a
 recreate resume would dead-end at "Project not found". Rebuild by hand:
@@ -489,7 +489,7 @@ if ! start; then
   snap_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot path: ${backups_project_dir}/${snap}/"
-  error 24 <<MESSAGE
+  error "${recreate_result_start_failed}" <<MESSAGE
 start failed (virtdev-start exited non-zero).
 A fresh project exists for ${project} but is not running.
 Resume manually:
@@ -506,7 +506,7 @@ if ! wait_ssh; then
   snap_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot path: ${backups_project_dir}/${snap}/"
-  error 25 <<MESSAGE
+  error "${recreate_result_wait_failed}" <<MESSAGE
 wait failed (virtdev-wait exited non-zero).
 The fresh virtual machine is up at the systemd level but SSH did not come up
 within the timeout. Inspect with:
@@ -537,7 +537,7 @@ if (( do_restore )); then
 Latest snapshot: ${backups_project_dir}/${snap}/
 Retry with explicit snapshot:
     virtdev-restore ${project} ${snap}"
-    error 27 <<MESSAGE
+    error "${recreate_result_restore_failed}" <<MESSAGE
 restore failed (virtdev-restore exited non-zero).
 The fresh virtual machine is up and provisioned but the snapshot was not
 applied.${snap_hint}
@@ -557,5 +557,5 @@ fi
 # Provision failure is non-fatal to the recreate (the VM is up), but
 # exit 26 so a scripted caller — notably virtdev-upgrade — can surface
 # "recreated but unprovisioned" rather than count it as a clean success.
-(( provision_failed )) && exit 26
+(( provision_failed )) && exit "${recreate_result_unprovisioned}"
 exit 0

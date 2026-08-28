@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#
+# Stable results shared by virtdev-recreate and its orchestrators.
+
+set -euo pipefail
+
+readonly recreate_result_backup_failed=20
+readonly recreate_result_stop_failed=21
+readonly recreate_result_destroy_failed=22
+readonly recreate_result_create_failed=23
+readonly recreate_result_start_failed=24
+readonly recreate_result_wait_failed=25
+readonly recreate_result_unprovisioned=26
+readonly recreate_result_restore_failed=27
+readonly recreate_result_zone_removed=28
+
+recreate_result_phase() {
+  case "${1}" in
+    "${recreate_result_backup_failed}") printf '%s' backup ;;
+    "${recreate_result_stop_failed}") printf '%s' stop ;;
+    "${recreate_result_destroy_failed}") printf '%s' destroy ;;
+    "${recreate_result_create_failed}") printf '%s' create ;;
+    "${recreate_result_start_failed}") printf '%s' start ;;
+    "${recreate_result_wait_failed}") printf '%s' wait ;;
+    "${recreate_result_unprovisioned}") printf '%s' unprovisioned ;;
+    "${recreate_result_restore_failed}") printf '%s' restore ;;
+    "${recreate_result_zone_removed}") printf '%s' 'zone removed' ;;
+    *) return 1 ;;
+  esac
+}

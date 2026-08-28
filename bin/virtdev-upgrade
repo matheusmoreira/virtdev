@@ -57,7 +57,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project snapshot confirm terminal firewall
+import error validate arguments manifest project snapshot confirm terminal firewall recreate-result
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -528,7 +528,7 @@ for p in "${included[@]}"; do
     succeeded+=("${p}")
   else
     exit_code=$?
-    if (( exit_code == 26 )); then
+    if (( exit_code == recreate_result_unprovisioned )); then
       # recreate succeeded but the provision script failed: the VM is up
       # on the new base, just unprovisioned. Surface it distinctly — not
       # a clean success, not a hard failure.
@@ -536,15 +536,7 @@ for p in "${included[@]}"; do
     else
       failed+=("${p}")
       fail_codes["${p}"]="${exit_code}"
-      case "${exit_code}" in
-        22) fail_reasons["${p}"]="destroy"      ;;
-        23) fail_reasons["${p}"]="create"       ;;
-        24) fail_reasons["${p}"]="start"        ;;
-        25) fail_reasons["${p}"]="wait"         ;;
-        27) fail_reasons["${p}"]="restore"      ;;
-        28) fail_reasons["${p}"]="zone removed" ;;
-        *)  fail_reasons["${p}"]="unknown"      ;;
-      esac
+      fail_reasons["${p}"]="$(recreate_result_phase "${exit_code}" 2>/dev/null || printf '%s' unknown)"
     fi
   fi
 done
