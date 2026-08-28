@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # child namespace script
 
 set -euo pipefail
 
@@ -102,6 +103,17 @@ if (( status != 19 )) \
   exit 1
 fi
 
+boundary_guest="${test_tmp}/boundary-guest"
+status=0
+run_restore "${boundary_guest}" "$(( logical_bytes - 1 ))" 100 10 \
+  >"${test_tmp}/boundary.output" 2>&1 || status=$?
+if (( status != 19 )) \
+    || find "${boundary_guest}" -mindepth 1 -print -quit | grep -q .; then
+  printf 'restore accepted a snapshot one byte over budget (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
 mkdir "${snapshot}/tree/many"
 : > "${snapshot}/tree/many/empty"
 for entry in 1 2 3 4 5; do
@@ -122,6 +134,64 @@ if (( status != 19 )) || [[ -e "${entry_ssh_started}" ]] \
   cat "${test_tmp}/entry.output" >&2
   exit 1
 fi
+
+outside="${test_tmp}/outside"
+mkdir "${outside}"
+printf 'host secret\n' > "${outside}/secret"
+ln -s "${outside}" "${snapshot}/tree/escape"
+printf 'escape/secret\n' >> "${snapshot}/manifest"
+symlink_guest="${test_tmp}/symlink-guest"
+symlink_ssh_started="${test_tmp}/symlink-ssh-started"
+status=0
+run_restore "${symlink_guest}" "${logical_bytes}" 100 10 \
+  env RESTORE_SSH_STARTED_FILE="${symlink_ssh_started}" \
+  >"${test_tmp}/symlink.output" 2>&1 || status=$?
+if (( status != 19 )) || [[ -e "${symlink_ssh_started}" ]] \
+    || ! grep -Fq 'symlinked source path' "${test_tmp}/symlink.output" \
+    || find "${symlink_guest}" -mindepth 1 -print -quit | grep -q .; then
+  printf 'restore followed an intermediate snapshot symlink (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+sed -i '\|^escape/secret$|d' "${snapshot}/manifest"
+unlink "${snapshot}/tree/escape"
+
+mount_source="${test_tmp}/mount-source"
+mount_target="${snapshot}/tree/mounted"
+mount_guest="${test_tmp}/mount-guest"
+mount_ssh_started="${test_tmp}/mount-ssh-started"
+mkdir "${mount_source}" "${mount_target}" "${mount_guest}"
+printf 'mounted payload\n' > "${mount_source}/payload"
+printf 'mounted/\n' >> "${snapshot}/manifest"
+status=0
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/config" \
+NO_COLOR=1 \
+SYSTEMCTL_ACTIVE_STATE=active \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_SSH_KEY="${ssh_key}" \
+VIRTDEV_RESTORE_MAX_BYTES="${logical_bytes}" \
+VIRTDEV_RESTORE_MAX_ENTRIES=100 \
+VIRTDEV_RESTORE_TIMEOUT=10 \
+VIRTDEV_RESTORE_KILL_AFTER=1 \
+RESTORE_GUEST_ROOT="${mount_guest}" \
+RESTORE_SSH_STARTED_FILE="${mount_ssh_started}" \
+  unshare --user --map-root-user --mount bash -c '
+    set -euo pipefail
+    mount --bind "${1}" "${2}"
+    exec "${3}" probe 2026-08-28/12-00-00
+  ' _ "${mount_source}" "${mount_target}" \
+    "${repository}/bin/virtdev-restore" \
+    >"${test_tmp}/mount.output" 2>&1 || status=$?
+if (( status != 19 )) || [[ -e "${mount_ssh_started}" ]] \
+    || ! grep -Fq 'mounted filesystem' "${test_tmp}/mount.output" \
+    || find "${mount_guest}" -mindepth 1 -print -quit | grep -q .; then
+  printf 'restore crossed a nested snapshot mount (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+sed -i '\|^mounted/$|d' "${snapshot}/manifest"
 
 timeout_guest="${test_tmp}/timeout-guest"
 timeout_pid_file="${test_tmp}/timeout.pid"

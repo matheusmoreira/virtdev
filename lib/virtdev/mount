@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Mount-boundary inspection for recursive host operations.
+
+set -euo pipefail
+
+mount_find_below() {
+  local -r root="${1}"
+  local -n _mount_find_ref="${2}"
+  local line mount_id parent_id device filesystem_root encoded_path remainder
+  local decoded_path
+  local -a mountinfo=()
+
+  _mount_find_ref=""
+  [[ "${root}" == /* ]] || return 2
+  mapfile -t mountinfo < /proc/self/mountinfo || return 2
+  (( ${#mountinfo[@]} > 0 )) || return 2
+  for line in "${mountinfo[@]}"; do
+    IFS=' ' read -r mount_id parent_id device filesystem_root encoded_path \
+      remainder <<< "${line}"
+    [[ "${mount_id}" =~ ^[0-9]+$ && "${parent_id}" =~ ^[0-9]+$ \
+        && "${device}" =~ ^[0-9]+:[0-9]+$ && "${filesystem_root}" == /* \
+        && "${encoded_path}" == /* && -n "${remainder}" ]] || return 2
+    printf -v decoded_path '%b' "${encoded_path}"
+    if [[ "${decoded_path}" == "${root}" \
+        || "${decoded_path}" == "${root}/"* ]] \
+        && (( ${#decoded_path} > ${#_mount_find_ref} )); then
+      _mount_find_ref="${decoded_path}"
+    fi
+  done
+  [[ -n "${_mount_find_ref}" ]]
+}

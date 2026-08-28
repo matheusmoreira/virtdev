@@ -379,11 +379,11 @@ Environment variables (defaults shown):
 | `VIRTDEV_TRIGGER_TIMEOUT` | `10` (seconds per trigger) |
 | `VIRTDEV_TRIGGER_KILL_AFTER` | `2` (seconds from TERM to KILL) |
 | `VIRTDEV_BACKUP_MAX_BYTES` | `8589934592` (8 GiB archive and regular logical data; range 1–1099511627776) |
-| `VIRTDEV_BACKUP_MAX_ENTRIES` | `200000` (range 1–10000000) |
+| `VIRTDEV_BACKUP_MAX_ENTRIES` | `200000` extracted paths, including implicit parents (range 1–10000000) |
 | `VIRTDEV_BACKUP_TIMEOUT` | `3600` seconds total (range 1–86400) |
 | `VIRTDEV_BACKUP_KILL_AFTER` | `5` seconds from TERM to KILL (range 1–60) |
 | `VIRTDEV_RESTORE_MAX_BYTES` | `8589934592` (8 GiB regular logical data; range 1–1099511627776) |
-| `VIRTDEV_RESTORE_MAX_ENTRIES` | `200000` (range 1–10000000) |
+| `VIRTDEV_RESTORE_MAX_ENTRIES` | `200000` snapshot-tree entries (range 1–10000000) |
 | `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total (range 1–86400) |
 | `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds from TERM to KILL (range 1–60) |
 | `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` (per trigger) |

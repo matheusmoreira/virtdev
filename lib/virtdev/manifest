@@ -5,6 +5,7 @@
 #   manifest_has_entries <path>                test for an active entry
 #   manifest_parent_entries <path>             print active entries containing ..
 #   manifest_write_rsync_files_from <src> <dst>
+#   manifest_sources_confined <root> <files-from>
 #
 # Resolution prefers the project-local file, then XDG config. The rsync writer
 # strips trailing slashes so a swapped symlink root is not dereferenced.
@@ -55,4 +56,34 @@ manifest_write_rsync_files_from() {
     /^[[:space:]]*#/ { next }
     { sub(/\/+$/, ""); print }
   ' "${manifest}" > "${output}"
+}
+
+manifest_sources_confined() {
+  local -r root="${1}" files_from="${2}"
+  local path component current index normalized_count
+  local -a components=() normalized=()
+
+  [[ -d "${root}" && ! -L "${root}" ]] || return 2
+  while IFS= read -r path || [[ -n "${path}" ]]; do
+    IFS=/ read -r -a components <<< "${path}"
+    (( ${#components[@]} > 0 )) || return 2
+    normalized=()
+    normalized_count=0
+    for component in "${components[@]}"; do
+      [[ "${component}" != .. ]] || return 2
+      if [[ -n "${component}" && "${component}" != . ]]; then
+        normalized[normalized_count++]="${component}"
+      fi
+    done
+    current="${root}"
+    for (( index = 0; index < normalized_count; ++index )); do
+      component="${normalized[${index}]}"
+      if (( index + 1 < normalized_count )); then
+        current+="/${component}"
+        [[ ! -L "${current}" ]] || return 1
+        [[ ! -e "${current}" || -d "${current}" ]] || return 1
+        [[ -e "${current}" ]] || break
+      fi
+    done
+  done < "${files_from}"
 }
