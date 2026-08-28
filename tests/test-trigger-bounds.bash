@@ -106,27 +106,37 @@ guard_scope_record() {
   guard_cgroups["${guard_pid}"]="${cgroup}"
 }
 
+cgroup_population_read() {
+  local -r cgroup_dir="${1}"
+  local -n _cgroup_population_ref="${2}"
+  local events key value
+
+  _cgroup_population_ref=""
+  if ! events="$(cat -- "${cgroup_dir}/cgroup.events" 2>/dev/null)"; then
+    [[ ! -e "${cgroup_dir}" ]] || return 1
+    _cgroup_population_ref=0
+    return 0
+  fi
+  while IFS=' ' read -r key value; do
+    if [[ "${key}" == populated && "${value}" =~ ^[01]$ ]]; then
+      _cgroup_population_ref="${value}"
+      break
+    fi
+  done <<< "${events}"
+  [[ "${_cgroup_population_ref:-}" =~ ^[01]$ ]]
+}
+
 guard_scope_population() {
   local -r guard_pid="${1}"
   local -n _scope_population_ref="${2}"
   local -r expected_invocation="${guard_invocations[${guard_pid}]:-}"
   local -r expected_cgroup="${guard_cgroups[${guard_pid}]:-}"
-  local load="" active="" invocation="" cgroup="" key value
+  local load="" active="" invocation="" cgroup=""
   local -r cgroup_dir="/sys/fs/cgroup${expected_cgroup}"
 
   _scope_population_ref=""
   [[ -n "${expected_invocation}" && -n "${expected_cgroup}" ]] || return 1
-  if [[ ! -e "${cgroup_dir}" ]]; then
-    _scope_population_ref=0
-    return 0
-  fi
-  while IFS=' ' read -r key value; do
-    if [[ "${key}" == populated && "${value}" =~ ^[01]$ ]]; then
-      _scope_population_ref="${value}"
-      break
-    fi
-  done < "${cgroup_dir}/cgroup.events" 2>/dev/null
-  [[ "${_scope_population_ref:-}" =~ ^[01]$ ]] || return 1
+  cgroup_population_read "${cgroup_dir}" _scope_population_ref || return 1
   (( _scope_population_ref == 0 )) && return 0
   guard_scope_snapshot "${guard_units[${guard_pid}]}" \
     load active invocation cgroup || return 1
@@ -411,6 +421,18 @@ mkdir -p "${system_triggers}" "${project_triggers}"
 # shellcheck disable=SC1090,SC1091
 source "${repository}/lib/virtdev/import"
 import trigger
+
+population=1
+if ! cgroup_population_read "${test_tmp}/collected-cgroup" population \
+    || (( population != 0 )); then
+  printf 'a collected cgroup was not treated as empty\n' >&2
+  exit 1
+fi
+mkdir "${test_tmp}/incomplete-cgroup"
+if cgroup_population_read "${test_tmp}/incomplete-cgroup" population; then
+  printf 'a present cgroup with unreadable events was treated as collected\n' >&2
+  exit 1
+fi
 
 pgid_handoff="${test_tmp}/pgid-handoff"
 pgid_pid_file="${test_tmp}/pgid-handoff.pid"
@@ -715,22 +737,24 @@ done
 
 prespawn_pid_file="${test_tmp}/prespawn-trigger.pid"
 prespawn_injected_file="${test_tmp}/prespawn-trigger.injected"
+prespawn_ready_file="${test_tmp}/prespawn-trigger.ready"
 export TRIGGER_PRESPAWN_PID_FILE="${prespawn_pid_file}"
 export TRIGGER_PRESPAWN_INJECTED_FILE="${prespawn_injected_file}"
+export TRIGGER_PRESPAWN_READY_FILE="${prespawn_ready_file}"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'printf "%s\n" "$$" > "${TRIGGER_PRESPAWN_PID_FILE:?}"' \
   'sleep 30' \
   > "${system_triggers}/pre-ssh"
 chmod +x "${system_triggers}/pre-ssh"
-started_at=${BASH_MONOSECONDS}
-status=0
-guarded 8 bash -c '
+prespawn_guard_pid=""
+if ! start_guarded prespawn_guard_pid 8 bash -c '
   set -euo pipefail
   set -T
   source "${TRIGGER_TEST_REPOSITORY}/lib/virtdev/import"
   import trigger
   export VIRTDEV_TRIGGER_TIMEOUT=4
+  printf "ready\n" > "${TRIGGER_PRESPAWN_READY_FILE:?}"
   injected=0
   inject_before_spawn() {
     if (( ! injected )) \
@@ -744,11 +768,36 @@ guarded 8 bash -c '
   trap inject_before_spawn DEBUG
   output=""
   trigger_fire pre-ssh output
-' 2>"${test_tmp}/prespawn.stderr" || status=$?
+' 2>"${test_tmp}/prespawn.stderr"; then
+  printf 'could not start the pre-spawn trigger guard\n' >&2
+  exit 1
+fi
+if ! wait_for_file "${prespawn_ready_file}"; then
+  wait_guarded "${prespawn_guard_pid}" || true
+  printf 'the pre-spawn trigger guard never became ready\n' >&2
+  cat "${test_tmp}/prespawn.stderr" >&2
+  exit 1
+fi
+started_at=${BASH_MONOSECONDS}
+status=0
+wait_guarded "${prespawn_guard_pid}" || status=$?
 elapsed=$(( BASH_MONOSECONDS - started_at ))
-if (( status != 130 || elapsed >= 4 )) \
-    || [[ ! -e "${prespawn_injected_file}" ]]; then
-  printf 'a pre-spawn signal waited for the trigger deadline\n' >&2
+prespawn_failed=0
+if (( status != 130 )); then
+  printf 'a pre-spawn signal returned status %d instead of 130\n' \
+    "${status}" >&2
+  prespawn_failed=1
+fi
+if (( elapsed >= 4 )); then
+  printf 'a pre-spawn signal waited %d seconds for the trigger deadline\n' \
+    "${elapsed}" >&2
+  prespawn_failed=1
+fi
+if [[ ! -e "${prespawn_injected_file}" ]]; then
+  printf 'the pre-spawn signal injection point was not reached\n' >&2
+  prespawn_failed=1
+fi
+if (( prespawn_failed )); then
   cat "${test_tmp}/prespawn.stderr" >&2
   exit 1
 fi
