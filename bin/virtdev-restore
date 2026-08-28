@@ -33,6 +33,7 @@
 #   VIRTDEV_HOME               Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #   VIRTDEV_SSH_KEY            Default: ${VIRTDEV_HOME}/ssh/id
 #   VIRTDEV_RESTORE_MAX_BYTES  Default: 8589934592 (8 GiB apparent data)
+#   VIRTDEV_RESTORE_MAX_ENTRIES Default: 200000
 #   VIRTDEV_RESTORE_TIMEOUT    Default: 3600 seconds total
 #   VIRTDEV_RESTORE_KILL_AFTER Default: 5 seconds from TERM to KILL
 #
@@ -77,11 +78,14 @@ import error validate arguments ssh snapshot manifest terminal port project inte
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_RESTORE_MAX_BYTES:=8589934592}"
+: "${VIRTDEV_RESTORE_MAX_ENTRIES:=200000}"
 : "${VIRTDEV_RESTORE_TIMEOUT:=3600}"
 : "${VIRTDEV_RESTORE_KILL_AFTER:=5}"
 
 integer_is_bounded_positive "${VIRTDEV_RESTORE_MAX_BYTES}" 1099511627776 \
   || error 64 <<<'Invalid VIRTDEV_RESTORE_MAX_BYTES: expected 1..1099511627776'
+integer_is_bounded_positive "${VIRTDEV_RESTORE_MAX_ENTRIES}" 10000000 \
+  || error 64 <<<'Invalid VIRTDEV_RESTORE_MAX_ENTRIES: expected 1..10000000'
 integer_is_bounded_positive "${VIRTDEV_RESTORE_TIMEOUT}" 86400 \
   || error 64 <<<'Invalid VIRTDEV_RESTORE_TIMEOUT: expected 1..86400'
 integer_is_bounded_positive "${VIRTDEV_RESTORE_KILL_AFTER}" 60 \
@@ -249,6 +253,12 @@ printf >&2 'Restoring %s from %s/%s\n' \
 printf >&2 '  snapshot generation: %s\n' "${snapshot_generation}"
 printf >&2 '  current generation:  %s\n' "${project_generation}"
 
+restore_entry_count_file="$(mktemp)"
+restore_files_from=''
+rsync_log=''
+rsync_wrapper=''
+trap 'rm -f -- "${restore_entry_count_file}" "${restore_files_from}" "${rsync_log}" "${rsync_wrapper}"' EXIT
+
 restore_deadline=$(( BASH_MONOSECONDS + VIRTDEV_RESTORE_TIMEOUT ))
 remaining=$(( restore_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Restore deadline expired before preflight'
@@ -277,11 +287,36 @@ No guest files were changed.
 MESSAGE
 fi
 
+remaining=$(( restore_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) || error 20 <<<'Restore deadline expired before entry preflight'
+set +e
+LC_ALL=C timeout --signal=TERM \
+    --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
+    find "${snapshot}/tree" -xdev -mindepth 1 -printf x 2>/dev/null \
+  | head -c "$(( VIRTDEV_RESTORE_MAX_ENTRIES + 1 ))" \
+  | wc -c > "${restore_entry_count_file}"
+entry_status=("${PIPESTATUS[@]}")
+set -e
+case "${entry_status[0]}" in
+  0|141) ;;
+  124|137) error 20 <<<'Restore entry preflight exceeded its wall-clock deadline' ;;
+  *) error 19 <<<'Could not count snapshot entries' ;;
+esac
+(( entry_status[1] == 0 && entry_status[2] == 0 )) \
+  || error 19 <<<'Could not count snapshot entries'
+restore_entries="$(< "${restore_entry_count_file}")"
+[[ "${restore_entries}" =~ ^[0-9]+$ ]] \
+  || error 19 <<<'Could not parse snapshot entry count'
+if (( restore_entries > VIRTDEV_RESTORE_MAX_ENTRIES )); then
+  error 19 <<MESSAGE
+Snapshot exceeds the ${VIRTDEV_RESTORE_MAX_ENTRIES}-entry restore budget.
+No guest files were changed.
+MESSAGE
+fi
+
 ssh_command=""
-rsync_wrapper=""
 restore_files_from="$(mktemp)"
 rsync_log="$(mktemp)"
-trap 'rm -f "${restore_files_from}" "${rsync_log}" "${rsync_wrapper}"' EXIT
 manifest_write_rsync_files_from "${snapshot}/manifest" "${restore_files_from}"
 [[ -s "${restore_files_from}" ]] \
   || error 10 <<<"Snapshot manifest has no restorable paths: ${snapshot}"

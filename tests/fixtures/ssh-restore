@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+[[ -z "${RESTORE_SSH_STARTED_FILE:-}" ]] \
+  || printf '%d\n' "$$" > "${RESTORE_SSH_STARTED_FILE}"
+
 while (( $# > 0 )); do
   if [[ "${1}" == dev@127.0.0.1 || "${1}" == 127.0.0.1 ]]; then
     shift

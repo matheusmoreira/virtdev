@@ -42,8 +42,9 @@ chmod 600 "${ssh_key}"
 )
 
 run_restore() {
-  local -r guest="${1}" maximum="${2}" timeout_seconds="${3}"
-  shift 3
+  local -r guest="${1}" maximum_bytes="${2}" maximum_entries="${3}"
+  local -r timeout_seconds="${4}"
+  shift 4
   mkdir -p "${guest}"
   PATH="${fixture_bin}:${PATH}" \
     HOME="${test_tmp}" \
@@ -52,7 +53,8 @@ run_restore() {
     SYSTEMCTL_ACTIVE_STATE=active \
     VIRTDEV_HOME="${virtdev_home}" \
     VIRTDEV_SSH_KEY="${ssh_key}" \
-    VIRTDEV_RESTORE_MAX_BYTES="${maximum}" \
+    VIRTDEV_RESTORE_MAX_BYTES="${maximum_bytes}" \
+    VIRTDEV_RESTORE_MAX_ENTRIES="${maximum_entries}" \
     VIRTDEV_RESTORE_TIMEOUT="${timeout_seconds}" \
     VIRTDEV_RESTORE_KILL_AFTER=1 \
     RESTORE_GUEST_ROOT="${guest}" \
@@ -62,7 +64,7 @@ run_restore() {
 
 guest="${test_tmp}/guest"
 status=0
-run_restore "${guest}" 8388608 10 \
+run_restore "${guest}" 8388608 100 10 \
   >"${test_tmp}/success.output" 2>&1 || status=$?
 if (( status != 0 )) || [[ ! -f "${guest}/real/sub/file" \
       || ! -L "${guest}/link" \
@@ -86,7 +88,7 @@ fi
 
 budget_guest="${test_tmp}/budget-guest"
 status=0
-run_restore "${budget_guest}" 1048576 10 \
+run_restore "${budget_guest}" 1048576 100 10 \
   >"${test_tmp}/budget.output" 2>&1 || status=$?
 if (( status != 19 )) \
     || find "${budget_guest}" -mindepth 1 -print -quit | grep -q .; then
@@ -95,10 +97,31 @@ if (( status != 19 )) \
   exit 1
 fi
 
+mkdir "${snapshot}/tree/many"
+: > "${snapshot}/tree/many/empty"
+for entry in 1 2 3 4 5; do
+  ln "${snapshot}/tree/many/empty" "${snapshot}/tree/many/hard-${entry}"
+done
+printf 'many/\n' >> "${snapshot}/manifest"
+
+entry_guest="${test_tmp}/entry-guest"
+entry_ssh_started="${test_tmp}/entry-ssh-started"
+status=0
+run_restore "${entry_guest}" 8388608 10 10 \
+  env RESTORE_SSH_STARTED_FILE="${entry_ssh_started}" \
+  >"${test_tmp}/entry.output" 2>&1 || status=$?
+if (( status != 19 )) || [[ -e "${entry_ssh_started}" ]] \
+    || find "${entry_guest}" -mindepth 1 -print -quit | grep -q .; then
+  printf 'restore entry budget failed before guest transfer (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/entry.output" >&2
+  exit 1
+fi
+
 timeout_guest="${test_tmp}/timeout-guest"
 timeout_pid_file="${test_tmp}/timeout.pid"
 status=0
-run_restore "${timeout_guest}" 8388608 2 \
+run_restore "${timeout_guest}" 8388608 100 2 \
   env RESTORE_SSH_DELAY=5 RESTORE_SSH_PID_FILE="${timeout_pid_file}" \
   >"${test_tmp}/timeout.output" 2>&1 || status=$?
 if (( status != 20 )) || [[ ! -s "${timeout_pid_file}" ]] \
@@ -111,4 +134,4 @@ if (( status != 20 )) || [[ ! -s "${timeout_pid_file}" ]] \
 fi
 
 printf 'ok - restore uses a compatible manifest file and preserves inode fidelity\n'
-printf 'ok - restore bounds apparent bytes and total transfer time\n'
+printf 'ok - restore bounds apparent bytes, entry count, and total transfer time\n'
