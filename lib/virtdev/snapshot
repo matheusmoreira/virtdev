@@ -1,70 +1,13 @@
 #!/usr/bin/env bash
 #
-# snapshot library: virtdev-backup snapshot directory utilities.
+# Snapshot paths are ${VIRTDEV_HOME}/backups/<project>/<date>/<time>.
+# Missing-tree list operations return an empty result.
 #
-# Snapshots produced by virtdev-backup live at:
-#
-#     ${VIRTDEV_HOME}/backups/<project>/<YYYY-MM-DD>/<HH-MM-SS>/
-#
-# This library centralizes the regexes and find invocations that
-# enumerate, count, and select those directories. Listing functions
-# print to stdout and never error on a missing project tree — they
-# just produce empty output, leaving the existence check to the
-# consumer where the resulting message can be specific to the
-# operation in flight (no snapshots vs. no snapshots on a given day,
-# etc.).
-#
-# Public:
-#
-#   snapshot_directory <project>
-#       Print the absolute snapshots root for <project>.
-#
-#   snapshot_validate_format <snapshot-string>
-#       Verify a user-supplied "YYYY-MM-DD/HH-MM-SS" string. Errors
-#       with code 79 on format mismatch.
-#
-#   snapshot_list_days <project>
-#       Print sorted day directory names. Empty if no snapshots dir.
-#
-#   snapshot_list_times <project> <day>
-#       Print sorted time directory names within <project>/<day>.
-#       Empty if the day directory does not exist.
-#
-#   snapshot_list <project>
-#       Print sorted "YYYY-MM-DD/HH-MM-SS" pairs for <project>.
-#       Empty if there are no snapshots.
-#
-#   snapshot_count <project>
-#       Print the number of snapshots for <project>.
-#
-#   snapshot_any <project>
-#       Exit 0 if <project> has at least one snapshot, 1 otherwise.
-#
-#   snapshot_latest <project>
-#       Print the most recent "YYYY-MM-DD/HH-MM-SS" pair for
-#       <project>. Empty if there are no snapshots.
-#
-#   snapshot_tree_has_entries <tree>
-#       Return 0 if a snapshot tree contains any filesystem entry, including
-#       an empty directory. Directory-only manifests are valid state.
-#
-#   snapshot_tree_count_entries <tree>
-#       Print the number of entries below a snapshot tree.
-#
-#   snapshot_id_from_path <project> <absolute-path>
-#       Convert virtdev-backup's absolute successful output path to its stable
-#       YYYY-MM-DD/HH-MM-SS identifier. Returns 1 if the path is outside that
-#       project's backup root or is not a canonical snapshot identifier.
-#
-# Public constants (readonly):
-#
-#   snapshot_date_regex      ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
-#   snapshot_time_regex      ^[0-9]{2}-[0-9]{2}-[0-9]{2}$
-#   snapshot_format_regex    ^[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}$
-#
-# Exit codes:
-#   79  invalid snapshot format (snapshot_validate_format)
-#
+# API: snapshot_directory, snapshot_validate_format, snapshot_list_days,
+# snapshot_list_times, snapshot_list, snapshot_count, snapshot_any,
+# snapshot_latest, snapshot_tree_has_entries, snapshot_tree_count_entries,
+# and snapshot_id_from_path. Dates and times use YYYY-MM-DD/HH-MM-SS;
+# malformed input exits 79. An empty directory counts as a tree entry.
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 import error
@@ -81,9 +24,7 @@ snapshot_directory() {
 
 snapshot_validate_format() {
   local -r snapshot="${1}"
-  # LC_ALL=C so the regex's [0-9] is byte-wise ASCII, matching the other
-  # validators (validate_project_name, generation readers): under a UTF-8 locale a
-  # non-ASCII digit could pass and slip a malformed snapshot past the check.
+  # Keep [0-9] byte-wise ASCII.
   local LC_ALL=C
   if [[ ! "${snapshot}" =~ ${snapshot_format_regex} ]]; then
     error "${snapshot_invalid_format_exit_code}" \
@@ -95,18 +36,12 @@ snapshot_list_days() {
   local -r project="${1}"
   local -r dir="${VIRTDEV_HOME}/backups/${project}"
   [[ -d "${dir}" ]] || return 0
-  # NUL-delimited read + regex test (not -printf %f\n | grep): a day directory
-  # whose name contains a newline would otherwise split into phantom entries
-  # under the line-based grep. Mirrors project_list's idiom; keeps the constant.
-  # LC_ALL=C: byte-wise ASCII [0-9] (bash =~ matches non-ASCII digits under a
-  # UTF-8 locale), parity with project_list / snapshot_validate_format.
+  # NUL delimiters keep newline-bearing names from becoming phantom entries.
   local LC_ALL=C name
   while IFS= read -r -d '' name; do
     [[ "${name}" =~ ${snapshot_date_regex} ]] && printf '%s\n' "${name}"
   done < <(find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' 2>/dev/null | sort -z)
-  # return 0: the while loop's status is the last regex test, which is non-zero
-  # when the lexicographically-last dir fails it (a stray non-date dir). Without
-  # this it leaks as failure and aborts set -e callers (virtdev-restore).
+  # Do not leak the last regex status to set -e callers.
   return 0
 }
 
@@ -119,7 +54,7 @@ snapshot_list_times() {
   while IFS= read -r -d '' name; do
     [[ "${name}" =~ ${snapshot_time_regex} ]] && printf '%s\n' "${name}"
   done < <(find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' 2>/dev/null | sort -z)
-  # return 0 + LC_ALL=C: see snapshot_list_days (same loop-status and locale pins).
+  # See snapshot_list_days.
   return 0
 }
 
@@ -127,15 +62,7 @@ snapshot_list() {
   local -r project="${1}"
   local -r dir="${VIRTDEV_HOME}/backups/${project}"
   [[ -d "${dir}" ]] || return 0
-  # find -regex matches the full path; -printf %P prints with the
-  # start point removed, so callers see "YYYY-MM-DD/HH-MM-SS" rather
-  # than "${dir}/YYYY-MM-DD/HH-MM-SS". The full-path -regex also makes this
-  # lister immune to newline-bearing dir names (the day/time listers NUL-delimit
-  # for the same reason); do NOT "simplify" it to -printf %f without the regex.
-  # `|| true`: a find error (e.g. the dir vanishing mid-scan during a concurrent
-  # lock-free backup) must not abort the consumer under set -e — matching the
-  # snapshot_list_days/times siblings. snapshot_count and snapshot_latest pipe
-  # through this, so the one guard covers all three.
+  # Full-path matching rejects hostile names; tolerate a concurrent removal.
   find "${dir}" -mindepth 2 -maxdepth 2 -type d \
        -regextype posix-extended \
        -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \

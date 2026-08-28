@@ -1,32 +1,12 @@
 #!/usr/bin/env bash
-# lib/virtdev/manifest
-#
 # Backup manifest resolution and validation.
 #
-# Public functions:
+#   manifest_resolve <project>                 print first existing manifest
+#   manifest_has_entries <path>                test for an active entry
+#   manifest_write_rsync_files_from <src> <dst>
 #
-#   manifest_resolve <project>
-#       Prints the path to the project's manifest and returns 0.
-#       Resolution order: project-local first, XDG config fallback.
-#       Returns 1 if no manifest is found at either location.
-#
-#   manifest_has_entries <path>
-#       Returns 0 if the file at <path> has at least one real entry:
-#       a line starting at column 0 with a non-'#' character. Leading
-#       whitespace does not count — virtdev-backup rejects indented
-#       lines as malformed, so counting them here would report "has
-#       entries" and then "manifest has malformed paths".
-#
-#   manifest_write_rsync_files_from <manifest> <output>
-#       Write the validated, active manifest entries for rsync. Removes
-#       trailing slashes so a directory entry still recurses under rsync -r,
-#       but a symlink swapped into that root is copied as a symlink rather than
-#       dereferenced as a directory. This closes rsync --files-from's special
-#       trailing-slash symlink-root behavior.
-#
-# No reserved exit codes. These functions return status codes only;
-# callers are responsible for error messages.
-#
+# Resolution prefers the project-local file, then XDG config. The rsync writer
+# strips trailing slashes so a swapped symlink root is not dereferenced.
 
 set -euo pipefail
 

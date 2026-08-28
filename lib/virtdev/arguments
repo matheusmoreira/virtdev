@@ -1,75 +1,23 @@
 #!/usr/bin/env bash
 #
-# arguments library: declarative flag parser and usage generator.
-# Public:
+# Declarative flag parser and usage generator.
+#
+# API:
 #   arguments_parse <spec_name> <flags_name> <positional_name> "$@"
 #   arguments_usage <spec_name>
-# Exit codes:
-#   64  usage error (unknown flag, missing value, missing required,
-#       bool with value, invalid spec type tag)
 #
-# --help and -h are recognized as universal flags by arguments_parse.
-# When either appears anywhere in argv before the -- terminator, the
-# parser prints the usage line via arguments_usage and exits 0 — so
-# `cmd --help`, `cmd foo --help`, and `cmd -h` all work without each
-# consumer writing a manual intercept. Declaring --help or -h in a
-# spec does NOT shadow this behavior; the universal check fires
-# first inside the parse loop. Consumers that want richer help (a
-# description, examples, env-var docs) can intercept --help/-h
-# themselves before calling arguments_parse — the library's check
-# never fires in that path. After the -- terminator everything is
-# positional, including a literal --help.
+# Specs map long names to bool, value, or required. Required means present;
+# callers validate non-empty values. Optional companions are:
+#   <spec>_short          short-to-long aliases
+#   <spec>_placeholders   usage labels for values
+#   <spec>_positionals    names suffixed by ?, +, or *
+# Positionals may be interleaved with flags; -- ends flag parsing. Short bools
+# may cluster, with only the final member allowed to consume a value.
 #
-# --color=yes|no|auto is also universal. The parsed value is stored
-# in _virtdev_color_mode (read by terminal_init). Absent means auto.
-# --color without a value is treated as --color=yes, matching the
-# convention of ls --color and similar GNU tools. The space form consumes a
-# following non-option token as its value; use `--color -- <positional>` when a
-# bare --color is immediately followed by a positional.
-#
-# Spec format (assoc array, key = flag name without leading --):
-#   bool      Flag takes no value; presence sets to 1, absence to 0.
-#   value     Flag takes one value; absence leaves "".
-#   required  Same as value, plus post-parse error if not given. The
-#             missing-value check is syntactic: --required-flag must
-#             appear in argv. An empty value (--flag= or -f '') counts
-#             as given and passes the check; consumers that need
-#             non-empty validation must do it themselves on
-#             flags["${key}"] after parsing.
-#
-# Result format:
-#   flags        assoc array, populated with parsed values
-#   positional   indexed array, every non-flag arg + everything after
-#                a -- terminator
-#
-# Flags and positionals may be interleaved (GNU-style). Use -- to
-# force all remaining arguments into positional regardless of prefix.
-#
-# The library prepends -- when matching against argv. Spec keys keep
-# hyphens verbatim. Caller may pre-set flags[<key>] before calling to
-# override the default; pre-set required keys are exempt from the
-# missing-value check.
-#
-# --flag=value form is supported for value/required types. -- is the
-# end-of-flags terminator. Unknown long flags error 64.
-#
-# Short aliases: single-dash single-character flags (-v, -y, -p val)
-# are supported when a <spec_name>_short companion array exists.
-# Keys are single characters, values are the long flag names they
-# alias. Without the companion, all -* args error 64.
-#
-# Clustered short flags: -vy expands to -v -y. All characters except
-# the last must be bool. The last may be value/required, consuming the
-# next arg. Requires the _short companion array.
-#
-# Usage generation:
-#   arguments_usage derives a usage line from the spec and optional
-#   companion arrays discovered by naming convention:
-#     <spec_name>_short          assoc  short-to-long flag aliases
-#     <spec_name>_placeholders   assoc  placeholder text for value/required
-#     <spec_name>_positionals    indexed  positional args (suffix encoding)
-#   Positional suffixes: (none)=required, ?=optional, +=variadic 1+,
-#   *=variadic 0+. Script name auto-detected via basename "$0".
+# --help/-h and --color[=yes|no|auto] are universal before --. Rich-help
+# commands may intercept help first. A bare --color means yes unless followed
+# by a non-option value. The selected mode is exposed as _virtdev_color_mode.
+# Usage errors exit 64.
 #
 set -euo pipefail
 import error
@@ -96,8 +44,7 @@ arguments_parse() {
   local -n _arguments_flags="${2}"
   local -n _arguments_positional="${3}"
 
-  # Saved for the universal --help/-h handler in the parse loop
-  # below. arguments_usage takes the spec name, not the nameref.
+  # arguments_usage needs the name, not the nameref.
   local _arguments_spec_name="${1}"
 
   local _arguments_short_name="${1}_short"
@@ -203,13 +150,6 @@ arguments_parse() {
     arg="${1}"
     case "${arg}" in
       --help|-h)
-        # Universal help; fires before -- because the user almost
-        # certainly wants help even if they typed `cmd -- --help`
-        # by accident — but actually no: -- comes first in this
-        # case (matches "--" exactly while "--help" doesn't), so
-        # `cmd -- --help` correctly treats --help as positional.
-        # This branch only catches standalone --help/-h before any
-        # explicit terminator.
         arguments_usage "${_arguments_spec_name}"
         exit 0
         ;;
@@ -229,8 +169,7 @@ arguments_parse() {
         continue
         ;;
       --)
-        # Consume the rest as positional, then break (not return) so the
-        # missing-required-flag check after the loop still runs.
+        # Break so required-flag validation still runs.
         shift
         _arguments_positional+=("$@")
         break
@@ -300,19 +239,10 @@ arguments_parse() {
           error "${arguments_usage_exit_code}" \
             <<<"unknown flag: ${arg}"
         fi
-        # Expand the cluster character by character. Intermediate
-        # characters must be bool (no value to consume); only the last
-        # character may be value/required (consuming the next argv
-        # element). The shift that retires the cluster arg from argv
-        # happens inside the last-character case, not after the loop,
-        # because value/required needs shift 2 (cluster + value arg)
-        # while bool needs shift 1 (cluster only).
+        # Only the final cluster member may consume the next argument.
         local _arguments_cluster="${arg#-}"
         if [[ -z "${_arguments_cluster}" ]]; then
-          # A bare '-' has no cluster characters, so the loop below would
-          # run zero iterations and never shift it off argv — spinning
-          # the outer `while (( $# ))` forever. Reject it the same way
-          # the no-short-flags path rejects an unrecognized flag.
+          # Reject before the zero-iteration loop can spin forever.
           error "${arguments_usage_exit_code}" <<<"unknown flag: ${arg}"
         fi
         local _arguments_ci _arguments_cc
