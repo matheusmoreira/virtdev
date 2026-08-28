@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2154  # runtime/lifecycle constants provided by imports
+# shellcheck disable=SC2034,SC2154,SC2329  # imported/eval-fed test symbols
 
 set -euo pipefail
 
@@ -11,6 +11,45 @@ export PATH="${repository}/tests/fixtures:${PATH}"
 # shellcheck disable=SC1090
 source "${repository}/lib/virtdev/import"
 import lifecycle
+
+# Exercise start's exact EXIT-trap function with structured lifecycle results.
+# shellcheck disable=SC2294  # deliberate evaluation of one function from the product script
+eval "$(sed -n '/^cleanup_failed_start() {/,/^}/p' \
+  "${repository}/bin/virtdev-start")"
+terminal_write() {
+  local argument
+  for argument in "$@"; do
+    case "${argument}" in fg=*|reset) ;; *) printf '%s' "${argument}" ;; esac
+  done
+}
+vm_started=0
+unit_submission_attempted=1
+unit=virtdev-probe
+project_directory="${test_tmp}/start-runtime"
+VIRTDEV_STOP_TIMEOUT=1
+VIRTDEV_LIFECYCLE_STOP_STATE=inactive
+lifecycle_stop_and_clean_definition="$(declare -f lifecycle_stop_and_clean)"
+lifecycle_stop_and_clean() { return "${lifecycle_stop_cleanup_failed}"; }
+start_cleanup_output="$(cleanup_failed_start 2>&1)"
+if [[ "${start_cleanup_output}" != *'VM is terminal, but runtime cleanup was incomplete.'* \
+      || "${start_cleanup_output}" == *'could not prove'* \
+      || "${start_cleanup_output}" == *'controls were preserved'* ]]; then
+  printf 'start misdiagnosed terminal cleanup failure:\n%s\n' \
+    "${start_cleanup_output}" >&2
+  exit 1
+fi
+
+VIRTDEV_LIFECYCLE_STOP_STATE=unknown
+lifecycle_stop_and_clean() { return "${lifecycle_stop_indeterminate}"; }
+start_cleanup_output="$(cleanup_failed_start 2>&1)"
+if [[ "${start_cleanup_output}" != *'could not prove the submitted VM terminal'* \
+      || "${start_cleanup_output}" != *'runtime controls were preserved.'* ]]; then
+  printf 'start lost its indeterminate-terminal warning:\n%s\n' \
+    "${start_cleanup_output}" >&2
+  exit 1
+fi
+# shellcheck disable=SC2294  # restore the imported function after the two stubs
+eval "${lifecycle_stop_and_clean_definition}"
 
 runtime_directory="${test_tmp}/runtime"
 mkdir "${runtime_directory}"
@@ -97,4 +136,5 @@ done
 printf 'ok - failed-start cleanup preserves controls until terminal proof\n'
 printf 'ok - runtime cleanup attempts every artifact after a local failure\n'
 printf 'ok - terminal proof remains distinct from cleanup failure\n'
+printf 'ok - start maps cleanup and terminal-proof failures separately\n'
 printf 'ok - lifecycle readiness publication is atomic and validated\n'

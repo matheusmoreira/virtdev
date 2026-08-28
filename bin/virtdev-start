@@ -265,15 +265,29 @@ unit_submission_attempted=0
 cleanup_failed_start() {
   (( vm_started )) && return 0
   if (( unit_submission_attempted )); then
-    if ! lifecycle_stop_and_clean \
-        "${unit}" "${project_directory}" "${VIRTDEV_STOP_TIMEOUT}"; then
-      printf >&2 '%s\n' "$(terminal_write fg=yellow \
-        'warning: failed start could not prove the submitted VM terminal; runtime controls were preserved.' reset)"
-      printf >&2 'Unit: %s (last state: %s)\n' \
-        "${unit}" "${VIRTDEV_LIFECYCLE_STOP_STATE}"
-      printf >&2 'Inspect/stop the unit before removing files under: %s\n' \
-        "${project_directory}"
-    fi
+    local cleanup_status=0
+    lifecycle_stop_and_clean \
+      "${unit}" "${project_directory}" "${VIRTDEV_STOP_TIMEOUT}" \
+      || cleanup_status=$?
+    case "${cleanup_status}" in
+      "${lifecycle_stop_clean}") ;;
+      "${lifecycle_stop_cleanup_failed}")
+        printf >&2 '%s\n' "$(terminal_write fg=yellow \
+          'warning: failed-start VM is terminal, but runtime cleanup was incomplete.' reset)"
+        printf >&2 'Unit: %s (terminal state: %s)\n' \
+          "${unit}" "${VIRTDEV_LIFECYCLE_STOP_STATE}"
+        printf >&2 'Inspect remaining artifacts under: %s\n' \
+          "${project_directory}"
+        ;;
+      *)
+        printf >&2 '%s\n' "$(terminal_write fg=yellow \
+          'warning: failed start could not prove the submitted VM terminal; runtime controls were preserved.' reset)"
+        printf >&2 'Unit: %s (last state: %s)\n' \
+          "${unit}" "${VIRTDEV_LIFECYCLE_STOP_STATE}"
+        printf >&2 'Inspect/stop the unit before removing files under: %s\n' \
+          "${project_directory}"
+        ;;
+    esac
   else
     # Submission never began, so no process can own these pre-launch paths.
     lifecycle_clean_unowned "${project_directory}" || true
