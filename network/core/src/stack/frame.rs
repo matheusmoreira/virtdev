@@ -192,7 +192,7 @@ impl Default for FrameDecoder {
 }
 
 /// Return the four-byte big-endian prefix for frame.
-pub fn encode(frame: &[u8]) -> [u8; PREFIX_LEN] {
+fn encode(frame: &[u8]) -> [u8; PREFIX_LEN] {
     debug_assert!(frame.len() <= MAX_FRAME_LEN);
     (frame.len() as u32).to_be_bytes()
 }
