@@ -9,23 +9,12 @@
 #
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
-# firewall is imported so the reserved-name set can fold in the built-in zone
-# vocabulary (firewall_zone_known) and stay single-sourced. firewall is
-# side-effect-free at source time (functions + constants only), so the import is safe
-# for every validate consumer. runtime is imported for runtime_socket_name_maxlen —
-# the sun_path overhead below is derived from the machine socket set, not hardcoded.
-# runtime imports nothing heavy, so there is no cycle back through validate.
-import error firewall runtime
+import error
 
 validate_project_name() {
   local -r name="${1}"
 
-  # Pin the C locale for this function. Under a UTF-8 locale the
-  # a-z/A-Z ranges in [[ =~ ]] match accented letters (e.g. 'café'
-  # would pass and then flow into the systemd unit name, the guest
-  # hostname, and filesystem paths), and ${#...} counts characters
-  # while sun_path is a byte limit. LC_ALL=C makes the allowlist
-  # strictly ASCII and the length checks byte-exact in one stroke.
+  # Project names are ASCII bytes shared by hostnames, units, and paths.
   local LC_ALL=C
 
   if [[ ! "${name}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
@@ -35,73 +24,18 @@ Allowed: a-z A-Z 0-9 _ - (letters, digits, underscores, hyphens)
 MESSAGE
   fi
 
-  # A project name is bounded by several limits at once; the effective
-  # cap is the tightest (minimum) of them, and the rejection message
-  # names whichever one binds:
-  #
-  #   - sun_path budget: the longest socket path,
-  #     ${VIRTDEV_HOME}/projects/<name>/console.sock, must fit the
-  #     108-byte AF_UNIX sun_path (107 usable after the NUL). This
-  #     shrinks as VIRTDEV_HOME grows, so it binds for a long VIRTDEV_HOME.
-  #   - host_name_max (64): the name becomes the guest's hostname (via
-  #     fw_cfg), and Linux truncates hostnames at HOST_NAME_MAX bytes.
-  #     The guest is always Linux, so this is the fixed Linux limit, not
-  #     the host's; it binds for a short VIRTDEV_HOME.
-  #
-  # Other limits are far larger and never bind, so they are not
-  # consulted: filesystem NAME_MAX (255) on the project directory, and
-  # the systemd unit-name length on virtdev-<name>.service.
-  #
-  # socket_overhead is the bytes the longest socket path adds around the
-  # project name: ${VIRTDEV_HOME}/projects/<name>/<basename>. That is
-  # len("/projects/") + the "/" between <name> and <basename> + the
-  # longest socket basename. Derived from the runtime socket set
-  # (runtime_socket_name_maxlen), so adding or renaming a socket keeps
-  # this cap correct instead of drifting from a magic constant. With the
-  # current set the longest basename is console.sock/monitor.sock (12),
-  # so 10 + 1 + 12 = 23, unchanged.
-  local -r projects_infix="/projects/"   # ${VIRTDEV_HOME}<infix><name>/<socket>
-  local -r socket_overhead=$(( ${#projects_infix} + 1 + $(runtime_socket_name_maxlen) ))
-  local -r sun_path_limit=107   # 108-byte sun_path minus the NUL terminator
-  local -r host_name_max=64     # Linux HOST_NAME_MAX
-  local -r sun_path_budget=$(( sun_path_limit - ${#VIRTDEV_HOME} - socket_overhead ))
-
-  if (( sun_path_budget < 1 )); then
-    error 2 <<MESSAGE
-VIRTDEV_HOME path is too long for Unix domain sockets: '${VIRTDEV_HOME}'
-The path must leave room for project socket paths within the 108-byte sun_path limit.
-MESSAGE
-  fi
-
-  local max_length limit_reason
-  if (( sun_path_budget <= host_name_max )); then
-    max_length=${sun_path_budget}
-    limit_reason="Unix domain socket paths are limited to 108 bytes (sun_path)."
-  else
-    max_length=${host_name_max}
-    limit_reason="Project names become the guest hostname, capped at ${host_name_max} bytes (HOST_NAME_MAX)."
-  fi
-
-  if (( ${#name} > max_length )); then
+  local -r host_name_max=64
+  if (( ${#name} > host_name_max )); then
     error 2 <<MESSAGE
 Project name too long: '${name}' (${#name} characters)
-Maximum ${max_length} characters with current VIRTDEV_HOME.
-${limit_reason}
+Maximum ${host_name_max} characters (Linux HOST_NAME_MAX).
 MESSAGE
   fi
 }
 
 # validate_project_name_reserved <name>
-# Echo a human-readable reason and return 0 if <name> is a RESERVED project name —
-# one that would collide with a virtdev-managed unit (maintenance, firewall), the
-# sealed base ('base'), or the built-in firewall zone vocabulary. Return 1 (no echo)
-# if the name is free. This is the SINGLE reserved-name authority for the two name
-# minters, virtdev-create and virtdev-move: a name one refuses but the other accepts
-# is a destroy-then-fail data-loss trap (`move x wan && recreate wan`). The built-in
-# zones are folded in from firewall_zone_known, so adding a built-in zone reserves it
-# here automatically. Custom zone names are NOT reserved — a project's zone comes from
-# its zone file / --zone, never its name. Pure check (no exit); each consumer raises
-# its own code with the reason (create: 3, move: 6).
+# Echo why a name collides with a storage or machine target. Network-zone names
+# occupy a separate namespace and are deliberately not reserved here.
 validate_project_name_reserved() {
   local -r name="${1:-}"
   case "${name}" in
@@ -112,12 +46,5 @@ validate_project_name_reserved() {
     firewall)
       printf "Project name 'firewall' is reserved (the host egress lockdown unit)"; return 0 ;;
   esac
-  # Built-in firewall zone: a project named for one makes `virtdev start <name>`
-  # ambiguous (project or zone?). The quoted-subscript -v form is injection-safe and
-  # reads false for any non-key.
-  if [[ -v "firewall_zone_known[${name}]" ]]; then
-    printf "Project name '%s' is reserved for the network zone of the same name" "${name}"
-    return 0
-  fi
   return 1
 }

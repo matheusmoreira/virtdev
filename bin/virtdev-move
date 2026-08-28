@@ -31,7 +31,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal project
+import error validate lock arguments terminal project runtime
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -60,19 +60,25 @@ if [[ "${source_name}" == "${target_name}" ]]; then
   error 7 <<<"Source and target are the same: ${source_name}"
 fi
 
-# Reject reserved names for BOTH endpoints via the shared validator (the same set
-# virtdev-create enforces). move previously reserved only maintenance/base, so
-# `move x wan && recreate wan` destroyed the disks then failed at create.
+# Both endpoints must avoid real storage/machine collisions. Zone names are
+# independent project identities.
 for name in "${source_name}" "${target_name}"; do
   if reserved_reason="$(validate_project_name_reserved "${name}")"; then
     error 6 <<<"${reserved_reason}"
   fi
 done
 
+target_directory="${VIRTDEV_HOME}/projects/${target_name}"
+if ! runtime_socket_paths_fit "${target_directory}"; then
+  error 2 <<MESSAGE
+Runtime path is too long for Unix sockets: '${target_directory}'
+Choose a shorter VIRTDEV_HOME or target project name.
+MESSAGE
+fi
+
 lock_acquire
 
 source_directory="${VIRTDEV_HOME}/projects/${source_name}"
-target_directory="${VIRTDEV_HOME}/projects/${target_name}"
 transaction_file="${VIRTDEV_HOME}/move.transaction"
 
 move_transaction_read() {

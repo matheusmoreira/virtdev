@@ -6,8 +6,8 @@
 # transient host-side files: the monitor/console/passt/qmp sockets, the launch
 # phase/provenance marker, and the `port` file that signals "this machine is
 # running". The socket set, the
-# argv path accessors, the cleanup helpers, and validate's sun_path
-# length feed all derive from the name constants below, so the argv QEMU
+# argv path accessors and cleanup helpers derive from the name constants below,
+# so the argv QEMU
 # is launched with and the files cleaned up on teardown cannot drift
 # apart. Adding a socket to the set is a one-line array change that every
 # cleanup site and length check picks up automatically.
@@ -29,7 +29,7 @@
 #   runtime_socket_basenames      Array of the socket basenames (built
 #                                 from the name constants). The single
 #                                 socket set — accessors, cleanup, and the
-#                                 sun_path maxlen all read it.
+#                                 path checks all read it.
 #
 #   Path accessors (echo <dir>/<name>, no trailing newline). <dir> is the
 #   per-machine socket directory (the per-project directory for a project
@@ -57,11 +57,9 @@
 #                                 Print a canonical phase, or return nonzero
 #                                 for missing/irregular/malformed state.
 #
-#   runtime_socket_name_maxlen    Print the longest socket basename length
-#                                 (bytes). Feeds validate's AF_UNIX
-#                                 sun_path overhead so the project-name cap
-#                                 tracks the socket set instead of a magic
-#                                 constant.
+#   runtime_socket_paths_fit <dir>
+#                                 Return success when every active socket path
+#                                 fits Linux sockaddr_un.sun_path.
 #
 # No exit codes reserved: the accessors are pure. Cleaners attempt every path,
 # diagnose unexpected directories/removal failures, and return nonzero if any
@@ -79,6 +77,7 @@ readonly runtime_launch_phase_name=launch.phase
 readonly runtime_launch_phase_tmp_name=launch.phase.tmp
 readonly runtime_launch_phase_shim=shim
 readonly runtime_launch_phase_qemu=qemu
+readonly runtime_socket_path_max=107
 
 # The single socket set, built FROM the name constants so a rename or
 # addition happens in exactly one place. -gra: global (libraries are
@@ -192,17 +191,12 @@ runtime_clean() {
   return "${status}"
 }
 
-# The longest socket basename length, in bytes. LC_ALL=C so ${#name}
-# counts bytes (matching sun_path's byte limit), not characters, even
-# though the current basenames are pure ASCII. Computed from the set so
-# validate's sun_path overhead cannot fall out of sync with it. Currently
-# 12 (monitor.sock / console.sock); qmp.sock is 8, so adding it did not
-# move the maximum and validate's project-name cap is unchanged.
-runtime_socket_name_maxlen() {
+runtime_socket_paths_fit() {
+  local -r dir="${1}"
   local LC_ALL=C
-  local name max=0
+  local name path
   for name in "${runtime_socket_basenames[@]}"; do
-    (( ${#name} > max )) && max=${#name}
+    path="${dir}/${name}"
+    (( ${#path} <= runtime_socket_path_max )) || return 1
   done
-  printf '%s' "${max}"
 }

@@ -65,6 +65,14 @@ project="${1}"
 
 validate_project_name "${project}"
 
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+if ! runtime_socket_paths_fit "${project_directory}"; then
+  error 2 <<MESSAGE
+Runtime path is too long for Unix sockets: '${project_directory}'
+Move the store to a shorter VIRTDEV_HOME before starting this project.
+MESSAGE
+fi
+
 # Require QMP transport and parsing before any launch mutation.
 if ! command -v socat &>/dev/null; then
   error 23 <<MESSAGE
@@ -142,8 +150,6 @@ open_host_map=0
 if (( filtered )) && firewall_zone_needs_hostmap "${zone}"; then
   open_host_map=1
 fi
-
-project_directory="${VIRTDEV_HOME}"/projects/"${project}"
 
 if [[ ! -d "${project_directory}" ]]; then
   error 3 <<MESSAGE

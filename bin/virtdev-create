@@ -24,7 +24,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal project
+import error validate lock arguments terminal project runtime
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -46,18 +46,22 @@ project="${1}"
 
 validate_project_name "${project}"
 
-# Reject reserved names (maintenance, base, firewall, and the built-in zone
-# vocabulary) via the shared validator, so create and virtdev-move enforce one
-# reserved set and cannot drift.
+# Create and move share the same storage/machine reservations.
 if reserved_reason="$(validate_project_name_reserved "${project}")"; then
   error 3 <<<"${reserved_reason}"
+fi
+
+project_directory="${VIRTDEV_HOME}/projects/${project}"
+if ! runtime_socket_paths_fit "${project_directory}"; then
+  error 2 <<MESSAGE
+Runtime path is too long for Unix sockets: '${project_directory}'
+Choose a shorter VIRTDEV_HOME or project name before creating the project.
+MESSAGE
 fi
 
 lock_acquire
 
 system_directory="${VIRTDEV_HOME}/system"
-projects_directory="${VIRTDEV_HOME}/projects"
-project_directory="${projects_directory}/${project}"
 
 if [[ ! -d "${system_directory}" ]]; then
   error 4 <<MESSAGE

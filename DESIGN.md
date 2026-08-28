@@ -467,7 +467,7 @@ QEMU flags of note:
   before QEMU, with host-translation paths disabled (`--map-host-loopback none`,
   `--map-guest-addr none`) and a loopback-only SSH forward (`-t 127.0.0.1/<port>:22`).
   `virtdev-install` keeps the original `-netdev user` (SLIRP) backend.
-- `-fw_cfg name=opt/virtdev/project,string=<name>` — injects the project name into the guest via QEMU firmware configuration; used for hostname setting. Because the name becomes the guest hostname *and* is embedded in the per-project socket paths, `validate_project_name` caps its length at the tighter of the guest's 64-byte `HOST_NAME_MAX` and the room left under `VIRTDEV_HOME` within the 108-byte `sun_path` (so a longer `VIRTDEV_HOME` allows shorter names)
+- `-fw_cfg name=opt/virtdev/project,string=<name>` — injects the project name into the guest via QEMU firmware configuration; used for hostname setting. `validate_project_name` applies the stable 64-byte guest `HOST_NAME_MAX`; VM creation and launch separately check exact Unix-socket paths for the current `VIRTDEV_HOME`.
 - `-fw_cfg name=opt/virtdev/ssh_key,file=<path>` — SSH public key (install time)
 - `-fw_cfg name=opt/virtdev/timezone,string=<tz>` — timezone (install time)
 - `-fw_cfg name=opt/virtdev/locale,string=<locale>` — locale (install time)
@@ -905,7 +905,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_require`, `project_state`, `project_is_running`, `project_is_stopped`, `project_load_state`, `project_is_outdated`, `project_is_detached`, generation readers); running/stopped predicates are a fail-safe/fail-closed pair and transitional or unknown state satisfies neither | 3, 82 |
-| `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets, `port` running-signal, and atomic `launch.phase` exit-provenance marker (`runtime_socket_basenames`, `runtime_control_basenames`, path/phase accessors, `runtime_clean`/`runtime_clean_sockets`, `runtime_socket_name_maxlen`); feeds `validate`'s sun_path cap so the project-name limit tracks the socket set | none |
+| `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets, `port` running-signal, and atomic `launch.phase` exit-provenance marker (`runtime_socket_basenames`, `runtime_control_basenames`, path/phase accessors, cleanup, and exact `sun_path` feasibility checks) | none |
 | `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags | 83, 84, 86 |
 | `qemu` | the shared QEMU argv and post-launch activation classifier (`qemu_command`, `qemu_activation_classify`); the network-isolation security boundary keeping `start` and `maintain`'s QEMU flags byte-identical. Derives socket paths from `runtime` and wires an additive host-side QMP control socket | 90, 91 |
 | `qmp` | bounded QMP control client (`qmp_query_running`, `qmp_wait_shutdown`, `qmp_quit` over a socat coproc, with responses validated by jq); host↔QEMU only. Start uses it for launch readiness; maintenance uses it for positive guest-shutdown evidence before reseal | none |
