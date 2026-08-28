@@ -83,8 +83,6 @@ Same error → same code, everywhere:
 | 87 | no port assigned (virtual machine not running) | `port_require` |
 | 88 | host egress lockdown not active / stale baseline / wrong user | `firewall_require` |
 | 89 | invalid zone-definition file (apply, via `firewall_zone_parse`) | `bin/virtdev-firewall` |
-| 90 | QEMU exited before active (non-passt status) | `qemu_activation_classify` |
-| 91 | unit did not become active before deadline | `qemu_activation_classify` |
 | 92 | apply: not invoked via sudo / target identity indeterminate | `bin/virtdev-firewall` |
 | 93 | apply: ruleset rejected by `nft -c` | `bin/virtdev-firewall` |
 | 94 | apply: unit install / daemon-reload / enable failure | `bin/virtdev-firewall` |

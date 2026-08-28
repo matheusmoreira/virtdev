@@ -303,7 +303,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 |---------|-------------|
 | `virtdev-create <project>` | Derive a project VM from the sealed base |
 | `virtdev-start <project> [--zone <zone>] [--unfiltered] [port]` | Start VM as a systemd user service. `<zone>` is `none`/`wan`/`lan`/`full` or a custom zone; default is the project's `zone` file (else `none`); `--zone` overrides; `--unfiltered` skips the egress lockdown |
-| `virtdev-stop <project>` | ACPI shutdown with SIGTERM fallback |
+| `virtdev-stop <machine>` | ACPI shutdown with SIGTERM fallback (`machine` is a project or `maintenance`) |
 | `virtdev-move <old-name> <new-name>` | Rename a project (must be stopped) |
 | `virtdev-destroy [-y] <project>` | Delete a project VM (confirmation required) |
 | `virtdev-detach [--in-place] [-y] <project>` | Convert delta images to standalone, removing base dependency |
@@ -316,7 +316,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | Command | Description |
 |---------|-------------|
 | `virtdev-ssh <project> [args...]` | SSH into a running virtual machine (fires pre/post-ssh triggers) |
-| `virtdev-console <project>` | Serial console (detach: Ctrl-]) |
+| `virtdev-console <machine>` | Serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is available |
 | `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
 | `virtdev-list` | List projects with port, runtime state, zone, and generation (colored) |
@@ -325,13 +325,13 @@ All commands are available as `virtdev <command>` (dispatcher) or
 
 | Command | Description |
 |---------|-------------|
-| `virtdev-status <project>` | Print `running`, `stopped`, `starting`, `stopping`, or `unknown` |
-| `virtdev-port <project>` | Print SSH port of a running virtual machine |
-| `virtdev-pid <project>` | Print QEMU process ID |
-| `virtdev-path <project> [resource]` | Print path to project resource |
+| `virtdev-status <machine>` | Print `running`, `stopped`, `starting`, `stopping`, or `unknown` |
+| `virtdev-port <machine>` | Print SSH port of a running virtual machine |
+| `virtdev-pid <machine>` | Print QEMU process ID |
+| `virtdev-path <machine> [resource]` | Print a machine data/runtime resource path |
 | `virtdev-disk <project>` | Show disk usage info |
-| `virtdev-log [-f] <project>` | Show journal logs (shorthand for journalctl) |
-| `virtdev-monitor <project>` | Attach to QEMU monitor |
+| `virtdev-log [-f] <machine>` | Show journal logs (shorthand for journalctl) |
+| `virtdev-monitor <machine>` | Attach to QEMU monitor |
 | `virtdev-generation [project]` | Print base or project generation |
 | `virtdev-stale` | List projects with stale base generation |
 
