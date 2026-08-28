@@ -426,9 +426,11 @@ precedence over the assembled config.
 
 `virtdev-ssh` still assembles per-project trigger output, system trigger output,
 per-project config, and system config through `ssh -F`; `~/.ssh/config` is
-excluded. Explicit client options use a bounded, one-token
-`--client-option=<option>` channel before the destination. Only selected
-forwarding/session options are accepted. Remote argv follows `--` unchanged;
+excluded. Identity-source and include directives are rejected before the
+connection so the fixed client key remains exclusive. Explicit client options
+use a bounded, one-token `--client-option=<option>` channel before the
+destination. Only selected forwarding/session options are accepted. Remote
+argv follows `--` unchanged;
 policy overrides, backgrounding, and modes that bypass the connection are
 rejected. Polling, rsync, backup, restore, transfer, and maintenance use the
 same transport builder.

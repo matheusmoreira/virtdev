@@ -225,6 +225,10 @@ disabled control sockets. These command-line values win over all assembled
 config. Poll, rsync, backup, restore, transfer, and maintenance call the same
 builder.
 
+Because identity files and certificates are additive in OpenSSH config,
+`ssh_config_require_safe` rejects identity-source and `Include` directives
+before the builder accepts an assembled config.
+
 The interactive grammar is:
 
 ```

@@ -22,6 +22,9 @@
 #   ssh_guest_contract_require <project>
 #       Require the project marker, or the sealed-base marker for maintenance.
 #
+#   ssh_config_require_safe <path>
+#       Reject directives that can add client credentials or include files.
+#
 #   ssh_transport_argv <array> <mode> <project> <client-key> <port> \
 #                      <config> [connect-timeout]
 #       Build the common SSH argv. mode is interactive, batch, or poll;
@@ -50,6 +53,7 @@
 #   78  SSH key permissions too open
 #   103 guest host identity is missing, corrupt, or could not be created
 #   104 guest SSH transport marker is missing or incompatible
+#   105 SSH config contains a forbidden client-identity directive
 #
 set -euo pipefail
 import error integer port
@@ -58,6 +62,8 @@ readonly ssh_key_not_found_exit_code=77
 readonly ssh_key_permissions_exit_code=78
 readonly ssh_host_identity_exit_code=103
 readonly ssh_guest_contract_exit_code=104
+readonly ssh_config_policy_exit_code=105
+readonly ssh_config_forbidden_identity_regex='^[[:space:]]*(identityfile|certificatefile|identityagent|pkcs11provider|securitykeyprovider|include)([[:space:]]|=)'
 readonly ssh_host_identity_directory_name=ssh-host
 readonly ssh_host_private_key_name=host_key
 readonly ssh_host_public_key_name=host_key.pub
@@ -120,6 +126,25 @@ No insecure fallback was attempted. If this image predates strict host identity,
 use the previous virtdev version to back it up, then install and seal the current
 ISO and recreate or restore it. virtdev-upgrade cannot cross that boundary.
 MESSAGE
+}
+
+ssh_config_require_safe() {
+  (( $# == 1 )) || return 2
+  local -r config="${1}"
+  local grep_status=0
+  LC_ALL=C grep -Eiq -- "${ssh_config_forbidden_identity_regex}" \
+    "${config}" 2>/dev/null || grep_status=$?
+  case "${grep_status}" in
+    0)
+      error "${ssh_config_policy_exit_code}" <<'MESSAGE'
+SSH config cannot set IdentityFile, CertificateFile, IdentityAgent,
+PKCS11Provider, SecurityKeyProvider, or Include. These directives are
+reserved by virtdev's fixed client-identity policy.
+MESSAGE
+      ;;
+    1) return 0 ;;
+    *) error "${ssh_config_policy_exit_code}" <<<"Could not validate SSH config: '${config}'" ;;
+  esac
 }
 
 _ssh_host_identity_remove_directory() {
@@ -342,6 +367,7 @@ ssh_transport_argv() {
   ssh_guest_contract_require "${__ssh_transport_project}"
   ssh_key_validate "${__ssh_transport_key}"
   ssh_host_identity_require "${__ssh_transport_project}"
+  ssh_config_require_safe "${__ssh_transport_config}"
 
   local __ssh_transport_known_hosts __ssh_transport_alias
   __ssh_transport_known_hosts="$(ssh_host_identity_known_hosts \
@@ -361,6 +387,9 @@ ssh_transport_argv() {
     -o ProxyCommand=none
     -o ProxyJump=none
     -o IdentitiesOnly=yes
+    -o IdentityAgent=none
+    -o PKCS11Provider=none
+    -o SecurityKeyProvider=internal
     -o PubkeyAuthentication=yes
     -o PreferredAuthentications=publickey
     -o PasswordAuthentication=no

@@ -454,6 +454,10 @@ Use `virtdev ssh` for SSH connections. `virtdev-port` exposes the forwarded
 number for integrations, but raw `ssh -p ...` omits project identity unless the
 caller reproduces every fixed transport option.
 
+Assembled config cannot set `IdentityFile`, `CertificateFile`, `IdentityAgent`,
+`PKCS11Provider`, `SecurityKeyProvider`, or `Include`; these could add client
+credentials outside `VIRTDEV_SSH_KEY` and are rejected before connection.
+
 Repeatable client options use `--client-option=<one-token-option>` before the
 remote delimiter. Remote command arguments follow `--` unchanged:
 

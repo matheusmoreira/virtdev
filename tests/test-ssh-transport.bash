@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034  # expected arrays are consumed through namerefs
+# shellcheck disable=SC2034,SC2154  # nameref arrays and imported constants
 
 set -euo pipefail
 
@@ -48,6 +48,9 @@ declare -a expected_base=(
   -o ProxyCommand=none
   -o ProxyJump=none
   -o IdentitiesOnly=yes
+  -o IdentityAgent=none
+  -o PKCS11Provider=none
+  -o SecurityKeyProvider=internal
   -o PubkeyAuthentication=yes
   -o PreferredAuthentications=publickey
   -o PasswordAuthentication=no
@@ -115,6 +118,16 @@ grep -Fqx 'passwordauthentication no' <<< "${effective}"
 grep -Fqx 'kbdinteractiveauthentication no' <<< "${effective}"
 grep -Fqx 'gssapiauthentication no' <<< "${effective}"
 grep -Fqx 'hostbasedauthentication no' <<< "${effective}"
+grep -Fqx 'identityagent none' <<< "${effective}"
+grep -Fqx 'securitykeyprovider internal' <<< "${effective}"
+mapfile -t effective_identities \
+  < <(sed -n 's/^identityfile //p' <<< "${effective}")
+if (( ${#effective_identities[@]} != 1 )) \
+    || [[ "${effective_identities[0]}" != "${VIRTDEV_SSH_KEY}" ]] \
+    || grep -Eq '^(certificatefile|pkcs11provider) ' <<< "${effective}"; then
+  printf 'effective SSH policy exposed an extra credential source\n' >&2
+  exit 1
+fi
 grep -Fqx 'controlmaster false' <<< "${effective}"
 grep -Fqx 'controlpersist no' <<< "${effective}"
 
@@ -162,6 +175,29 @@ if grep -Eq '^proxy(command|jump) ' <<< "${effective}"; then
   printf 'configured proxy escaped the fixed loopback transport\n' >&2
   exit 1
 fi
+
+unsafe_config="${test_tmp}/unsafe-config"
+for unsafe_directive in \
+    'IdentityFile /tmp/extra-key' \
+    'certificatefile=/tmp/extra-cert' \
+    'IDENTITYAGENT /tmp/extra-agent' \
+    'PKCS11Provider /tmp/extra-provider' \
+    'SecurityKeyProvider=/tmp/extra-provider' \
+    'Include /tmp/extra-config'; do
+  printf 'Host *\n  %s\n' "${unsafe_directive}" > "${unsafe_config}"
+  status=0
+  (
+    declare -a rejected=()
+    ssh_transport_argv rejected interactive alpha "${VIRTDEV_SSH_KEY}" \
+      2222 "${unsafe_config}"
+  ) >"${test_tmp}/unsafe.output" 2>&1 || status=$?
+  if (( status != ssh_config_policy_exit_code )); then
+    printf 'unsafe SSH directive was accepted: %s (status %d)\n' \
+      "${unsafe_directive}" "${status}" >&2
+    cat "${test_tmp}/unsafe.output" >&2
+    exit 1
+  fi
+done
 
 ssh_transport_argv actual interactive beta "${VIRTDEV_SSH_KEY}" 2222 /dev/null
 beta_known="$(ssh_host_identity_known_hosts beta)"

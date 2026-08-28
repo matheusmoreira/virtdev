@@ -34,6 +34,7 @@
 #   4   virtual machine not running
 #   80  pre-ssh trigger aborted (from lib/virtdev/trigger)
 #   87  no port assigned (virtual machine not running)
+#   105 SSH config contains a forbidden client-identity directive
 #
 
 set -euo pipefail
