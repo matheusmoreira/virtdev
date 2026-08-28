@@ -570,6 +570,10 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
     provision                         auto-run by virtdev-recreate
 ```
 
+An interrupted ISO build can leave privileged mounts below `work/`.
+`virtdev iso` refuses to clean a mounted build tree; unmount the exact stale
+path it reports, then rerun the command.
+
 ## License
 
 GNU Affero General Public License v3.0 — see [LICENSE.AGPLv3](LICENSE.AGPLv3).

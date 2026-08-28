@@ -77,9 +77,6 @@ output_directory="${build_directory}"
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile
 
-# Bound privileged cleanup to the two derived children of the canonical build
-# root. Chown first so deletion runs with the caller's ordinary permissions.
-
 build_root="$(realpath -m "${build_directory}")"
 for path in "${work_directory}" "${profile_directory}"; do
   real="$(realpath -m "${path}")"
@@ -98,10 +95,69 @@ if [[ "${work_directory}" != "${build_directory}/work" \
   error 11 <<<"build path construction mismatch (internal bug)"
 fi
 
+mount_below() {
+  local -r root="${1}"
+  local -n _mount_below_ref="${2}"
+  local line mount_id parent_id device filesystem_root encoded_path remainder
+  local decoded_path
+  local -a mountinfo=()
+
+  _mount_below_ref=""
+  mapfile -t mountinfo < /proc/self/mountinfo || return 2
+  (( ${#mountinfo[@]} > 0 )) || return 2
+  for line in "${mountinfo[@]}"; do
+    IFS=' ' read -r mount_id parent_id device filesystem_root encoded_path \
+      remainder <<< "${line}"
+    [[ "${mount_id}" =~ ^[0-9]+$ && "${parent_id}" =~ ^[0-9]+$ \
+        && "${device}" =~ ^[0-9]+:[0-9]+$ && "${filesystem_root}" == /* \
+        && "${encoded_path}" == /* && -n "${remainder}" ]] || return 2
+    printf -v decoded_path '%b' "${encoded_path}"
+    if [[ "${decoded_path}" == "${root}" \
+        || "${decoded_path}" == "${root}/"* ]] \
+        && (( ${#decoded_path} > ${#_mount_below_ref} )); then
+      _mount_below_ref="${decoded_path}"
+    fi
+  done
+  [[ -n "${_mount_below_ref}" ]]
+}
+
+require_unmounted_tree() {
+  local -r path="${1}"
+  local mount_path="" status=0
+
+  mount_below "$(realpath -m -- "${path}")" mount_path || status=$?
+  case "${status}" in
+    0)
+      error 12 <<MESSAGE
+Mounted filesystem detected below ISO build path: '${mount_path}'
+Unmount stale mkarchiso mounts explicitly; automatic cleanup was refused.
+MESSAGE
+      ;;
+    1) ;;
+    *) error 12 <<<'Could not inspect mount state; ISO cleanup was refused.' ;;
+  esac
+}
+
+cleanup_build_tree() {
+  local -r path="${1}" owner="${2}"
+
+  [[ -e "${path}" || -L "${path}" ]] || return 0
+  require_unmounted_tree "${path}"
+  sudo /usr/bin/find -P -- "${path}" -xdev \
+    -exec /usr/bin/chown -h -- "${owner}" {} +
+  require_unmounted_tree "${path}"
+  rm -rf --one-file-system -- "${path}"
+}
+
+invoking_uid="$(/usr/bin/id -u)"
+invoking_gid="$(/usr/bin/id -g)"
+if [[ ! "${invoking_uid}" =~ ^[0-9]+$ || ! "${invoking_gid}" =~ ^[0-9]+$ ]]; then
+  error 11 <<<'could not resolve numeric build owner (internal bug)'
+fi
+invoking_owner="${invoking_uid}:${invoking_gid}"
 printf >&2 'Clearing build tree...\n'
-[[ -e "${work_directory}"    ]] && sudo chown -R "${USER}:${USER}" "${work_directory}"
-[[ -e "${profile_directory}" ]] && sudo chown -R "${USER}:${USER}" "${profile_directory}"
-rm -rf "${work_directory:?}" "${profile_directory:?}"
+cleanup_build_tree "${work_directory}" "${invoking_owner}"
+cleanup_build_tree "${profile_directory}" "${invoking_owner}"
 mkdir -p "${work_directory}" "${profile_directory}"
 
 printf >&2 "Copying profile: '%s'\n" "${profile}"

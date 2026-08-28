@@ -1097,6 +1097,10 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
                         with `virtdev-recreate --provision <path>`.
 ```
 
+`virtdev-iso` refuses cleanup when mountinfo contains a mount at or below
+`work/` or `profile/`. Ownership recovery uses the caller's numeric IDs and a
+non-crossing traversal; deletion is also restricted to one filesystem.
+
 The host egress lockdown (Phase 2) stores root-owned state outside
 `${VIRTDEV_HOME}`, established by `sudo virtdev firewall apply`:
 
