@@ -186,10 +186,16 @@ Triggers are user-supplied executables at two levels:
 - Standalone executables, run as child processes (not sourced).
 - Inherit the caller's full environment. virtdev exports `VIRTDEV_*`
   variables; everything else comes from the user's session naturally.
-- Stdout is captured by virtdev (meaning is event-specific). Stderr
-  passes through to the terminal.
-- Pre-event non-zero exit: `error 80` aborts the command. Post-event
-  non-zero exit: warning to stderr, no effect on command exit code.
+- Stdout is captured through a bounded anonymous file (meaning is
+  event-specific). Stderr passes through to the terminal.
+- Each trigger gets `VIRTDEV_TRIGGER_TIMEOUT` seconds and
+  `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` bytes. Timeout sends TERM, then KILL
+  after `VIRTDEV_TRIGGER_KILL_AFTER` seconds. The hook and stdout reader run
+  in a supervised process group; leftover members are a failure. Hooks must
+  not change process group, create a separate session, or daemonize.
+- Pre-event failure, timeout, or overflow: `error 80` aborts the command.
+  Post-event failure, timeout, or overflow: warning to stderr, no effect on the
+  command's primary exit code.
 - No arguments — all context via environment.
 - Triggers determine their own applicability. virtdev fires them
   unconditionally (interactive and scripted). A trigger that should
@@ -217,13 +223,11 @@ The user's `~/.ssh/config` is intentionally excluded. This prevents
 dangerous global settings (`ForwardAgent`, `ControlMaster`) from
 leaking into untrusted VM connections.
 
-**Trap composition in `virtdev-ssh`:** ssh runs in the foreground
-(not backgrounded). An EXIT trap handles all cleanup: fires post-ssh
-triggers and removes the temp file. Signal traps (INT, TERM, HUP)
-simply call `exit` which triggers the EXIT trap — they do not
-perform cleanup themselves, preventing double-cleanup. A
-`pre_ssh_fired` guard ensures post-ssh only fires if pre-ssh
-succeeded.
+**Trap composition in `virtdev-ssh`:** ssh runs in the foreground. The EXIT
+trap unlinks the config before optional post hooks. During cleanup, signal
+traps record the final signal status; trigger supervision stops its process
+group before re-raising the signal. `pre_ssh_fired` prevents a post hook when
+the pre hook failed.
 
 ### Library file rules (`lib/virtdev/*`)
 
@@ -280,16 +284,17 @@ recursing forever.
 
 ## Verification gates
 
-After any change to `bin/` or `lib/virtdev/`:
+Run the canonical gate after a change:
 
 ```bash
-bash -n bin/virtdev-* lib/virtdev/*       # syntax
-shellcheck bin/virtdev-* lib/virtdev/*    # lint
+make check
 ```
 
-Plus a smoke test of the affected script via real invocation. Don't claim a
-change is done without running these. There's no formal test suite; the
-scripts are the contract.
+It runs Bash syntax checks, ShellCheck, the behavioral shell suite, and locked
+offline Rust tests. The trigger containment test requires unified cgroup v2
+and a reachable `systemd --user` manager; that integration coverage is
+required and must not be silently skipped. Add a focused real invocation when
+the changed runtime path needs evidence beyond the suite.
 
 `.shellcheckrc` enables `external-sources=true` so shellcheck follows
 `source -p` into the library files when warnings are suppressed for SC1090

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Internal trigger pipeline. lib/virtdev/trigger owns its process group.
+
+set -euo pipefail
+
+# shellcheck disable=SC2329  # called by the trigger supervisor
+trigger_runner() {
+  local -r path="${1}" capture_bytes="${2}"
+  local output_fd="${3}" status_fd="${4}"
+  local -a pipeline_status
+
+  if (
+      exec {output_fd}>&-
+      exec {status_fd}>&-
+      exec "${path}"
+    ) | (
+      exec {status_fd}>&-
+      head -c "$(( capture_bytes + 1 ))" >&"${output_fd}"
+    ); then
+    pipeline_status=( "${PIPESTATUS[@]}" )
+  else
+    pipeline_status=( "${PIPESTATUS[@]}" )
+  fi
+
+  printf '%s %s\n' \
+    "${pipeline_status[0]:-125}" \
+    "${pipeline_status[1]:-125}" \
+    >&"${status_fd}"
+
+  exec {output_fd}>&-
+  exec {status_fd}>&-
+}

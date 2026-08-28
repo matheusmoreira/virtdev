@@ -69,7 +69,6 @@ shift
 
 validate_project_name "${project}"
 
-
 project_require "${project}"
 
 if ! project_is_running "${project}"; then
@@ -96,28 +95,41 @@ pre_ssh_fired=0
 
 config_file=""
 ssh_exit=0
+cleanup_phase=0
+cleanup_signal_status=0
+
+# shellcheck disable=SC2329  # invoked via trap
+cleanup_signal() {
+  local -r status="${1}"
+  if (( cleanup_phase )); then
+    (( cleanup_signal_status )) || cleanup_signal_status="${status}"
+  else
+    exit "${status}"
+  fi
+}
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
-  # Capture the triggering exit code FIRST. Under set -e the EXIT trap's final
-  # command status becomes the process exit code, so the config_file rm
-  # short-circuiting (when config_file is empty, on an early exit) would clobber the
-  # real code — a pre-ssh `error 80` or a signal-trap `exit 130`/143/129 would
-  # otherwise all surface as 1, breaking the project's "callers can discriminate
-  # exit codes" contract. Reporting rc (not the stale ssh_exit) also gives post-ssh
-  # triggers the true outcome, including the signal codes.
-  local rc=$?
+  local rc=$? cleanup_phase=1 cleanup_signal_status=0
+
+  trap - EXIT
+  # Unlink mandatory state before optional post-event work.
+  [[ -n "${config_file}" ]] && rm -f "${config_file}"
   if (( pre_ssh_fired )); then
     export VIRTDEV_SSH_EXIT="${rc}"
     trigger_fire post-ssh || true
   fi
-  [[ -n "${config_file}" ]] && rm -f "${config_file}"
+
+  trap - INT TERM HUP
+  if (( cleanup_signal_status )); then
+    exit "${cleanup_signal_status}"
+  fi
   return "${rc}"
 }
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
+trap 'cleanup_signal 130' INT
+trap 'cleanup_signal 143' TERM
+trap 'cleanup_signal 129' HUP
 
 trigger_fire pre-ssh system_trigger_config project_trigger_config
 pre_ssh_fired=1

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# trigger library: run user-supplied trigger scripts at defined
-# lifecycle points.
+# Run bounded user-supplied lifecycle triggers.
 #
 # Public:
 #   trigger_fire <event> [<system-output-var> <project-output-var>]
+#     Output variable names beginning with __trigger_fire_ are reserved.
 #
 # Exit codes:
+#   64  invalid trigger event or resource budget
 #   80  pre-event trigger aborted the command
 #
 # Triggers are standalone executables discovered at two levels:
@@ -18,9 +19,9 @@
 # A trigger must be a regular file with the executable bit set;
 # otherwise it is silently skipped.
 #
-# Stdout is captured and returned via optional nameref variables.
-# Stderr passes through to the terminal. When namerefs are omitted,
-# stdout is discarded.
+# Stdout is bounded and returned through optional namerefs; stderr passes
+# through. Each trigger gets its own time and output budget.
+# Triggers must remain in their inherited process group.
 #
 # For pre-* events, a non-zero trigger exit calls error 80 (terminal).
 # For post-* events, a non-zero trigger exit emits a warning to stderr
@@ -34,33 +35,161 @@ set -euo pipefail
 import error
 
 readonly trigger_aborted_exit_code=80
+readonly trigger_timeout_max=3600
+readonly trigger_kill_after_max=60
+readonly trigger_output_max_bytes=1048576
+
+: "${VIRTDEV_TRIGGER_TIMEOUT:=10}"
+: "${VIRTDEV_TRIGGER_KILL_AFTER:=2}"
+: "${VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES:=65536}"
+
+_trigger_limit_valid() {
+  local -r value="${1}" maximum="${2}"
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1
+  (( ${#value} < ${#maximum} )) && return 0
+  (( ${#value} == ${#maximum} )) || return 1
+  (( 10#${value} <= maximum ))
+}
+
+_trigger_configuration_require() {
+  _trigger_limit_valid "${VIRTDEV_TRIGGER_TIMEOUT}" \
+    "${trigger_timeout_max}" || error 64 <<MESSAGE
+Invalid VIRTDEV_TRIGGER_TIMEOUT: expected 1..${trigger_timeout_max} seconds
+MESSAGE
+  _trigger_limit_valid "${VIRTDEV_TRIGGER_KILL_AFTER}" \
+    "${trigger_kill_after_max}" || error 64 <<MESSAGE
+Invalid VIRTDEV_TRIGGER_KILL_AFTER: expected 1..${trigger_kill_after_max} seconds
+MESSAGE
+  _trigger_limit_valid "${VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES}" \
+    "${trigger_output_max_bytes}" || error 64 <<MESSAGE
+Invalid VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES: expected 1..${trigger_output_max_bytes}
+MESSAGE
+}
+
+_trigger_project_valid() {
+  local LC_ALL=C
+  [[ "${1}" =~ ^[a-zA-Z0-9_-]+$ ]]
+}
+
+_trigger_failure() {
+  local -r event="${1}" path="${2}" reason="${3}"
+  if [[ "${event}" == pre-* ]]; then
+    error "${trigger_aborted_exit_code}" \
+      <<<"Trigger aborted: ${path} (${reason})"
+  fi
+  printf 'Warning: post-event trigger failed: %s (%s)\n' \
+    "${path}" "${reason}" >&2
+}
+
+_trigger_group_live() {
+  local -r process_group="${1}"
+  local stat_file process_stat process_fields state member_group
+
+  kill -0 -- "-${process_group}" 2>/dev/null || return 1
+  for stat_file in /proc/[0-9]*/stat; do
+    [[ -r "${stat_file}" ]] || continue
+    if ! { IFS= read -r process_stat < "${stat_file}"; } 2>/dev/null; then
+      continue
+    fi
+    process_fields="${process_stat##*) }"
+    read -r state _ member_group _ <<<"${process_fields}"
+    if [[ "${member_group}" == "${process_group}" \
+          && "${state}" != Z && "${state}" != X ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+_trigger_group_stop() {
+  local -r process_group="${1}" grace="${2}"
+  local attempt kill_status=0
+
+  kill -TERM -- "-${process_group}" 2>/dev/null || return 2
+
+  for (( attempt = 0; attempt < grace * 20; ++attempt )); do
+    kill -0 -- "-${process_group}" 2>/dev/null || return 0
+    sleep 0.05
+  done
+
+  _trigger_group_kill "${process_group}" || kill_status=$?
+  (( kill_status != 1 ))
+}
+
+_trigger_group_kill() {
+  local -r process_group="${1}"
+  local attempt
+
+  kill -KILL -- "-${process_group}" 2>/dev/null || return 2
+  for (( attempt = 0; attempt < 100; ++attempt )); do
+    _trigger_group_live "${process_group}" || return 0
+    kill -KILL -- "-${process_group}" 2>/dev/null || true
+    sleep 0.01
+  done
+  ! _trigger_group_live "${process_group}"
+}
+
+_trigger_trap_restore() {
+  local -r signal="${1}" saved="${2}"
+  if [[ -n "${saved}" ]]; then
+    # shellcheck disable=SC2294  # trap -p emits reusable shell quoting
+    eval "${saved}"
+  else
+    trap - "${signal}"
+  fi
+}
+
+# shellcheck disable=SC2154  # dynamically scoped by trigger_run
+_trigger_wait_signal() {
+  local -r signal="${1}"
+
+  [[ -n "${wait_signal}" ]] || wait_signal="${signal}"
+  if (( supervisor_pid > 0 )); then
+    kill -TERM -- "-${supervisor_pid}" 2>/dev/null \
+      || kill -TERM "${supervisor_pid}" 2>/dev/null \
+      || true
+  fi
+}
 
 trigger_fire() {
-  local -r event="${1}"
-  local -r system_var="${2:-}"
-  local -r project_var="${3:-}"
+  local -r __trigger_fire_event="${1}"
+  local -r __trigger_fire_system_var="${2:-}"
+  local -r __trigger_fire_project_var="${3:-}"
 
-  local -r system_trigger="${XDG_CONFIG_HOME}/virtdev/triggers/${event}"
-  local -r project_trigger="${XDG_CONFIG_HOME}/virtdev/projects/${VIRTDEV_PROJECT}/triggers/${event}"
+  _trigger_configuration_require
+  case "${__trigger_fire_event}" in
+    pre-ssh|post-ssh) ;;
+    *) error 64 <<<"Unsupported trigger event: ${__trigger_fire_event}" ;;
+  esac
+  _trigger_project_valid "${VIRTDEV_PROJECT:-}" \
+    || error 64 \
+      <<<"Invalid or missing VIRTDEV_PROJECT for trigger: ${__trigger_fire_event}"
 
-  local system_output="" project_output=""
+  local -r __trigger_fire_system_trigger="${XDG_CONFIG_HOME}/virtdev/triggers/${__trigger_fire_event}"
+  local -r __trigger_fire_project_trigger="${XDG_CONFIG_HOME}/virtdev/projects/${VIRTDEV_PROJECT}/triggers/${__trigger_fire_event}"
 
-  if [[ -f "${system_trigger}" && -x "${system_trigger}" ]]; then
-    trigger_run "${event}" "${system_trigger}" system_output
+  local __trigger_fire_system_output="" __trigger_fire_project_output=""
+
+  if [[ -f "${__trigger_fire_system_trigger}" \
+        && -x "${__trigger_fire_system_trigger}" ]]; then
+    trigger_run "${__trigger_fire_event}" \
+      "${__trigger_fire_system_trigger}" __trigger_fire_system_output
   fi
 
-  if [[ -f "${project_trigger}" && -x "${project_trigger}" ]]; then
-    trigger_run "${event}" "${project_trigger}" project_output
+  if [[ -f "${__trigger_fire_project_trigger}" \
+        && -x "${__trigger_fire_project_trigger}" ]]; then
+    trigger_run "${__trigger_fire_event}" \
+      "${__trigger_fire_project_trigger}" __trigger_fire_project_output
   fi
 
-  if [[ -n "${system_var}" ]]; then
-    local -n _trigger_sys_ref="${system_var}"
-    _trigger_sys_ref="${system_output}"
+  if [[ -n "${__trigger_fire_system_var}" ]]; then
+    local -n __trigger_fire_system_ref="${__trigger_fire_system_var}"
+    __trigger_fire_system_ref="${__trigger_fire_system_output}"
   fi
 
-  if [[ -n "${project_var}" ]]; then
-    local -n _trigger_proj_ref="${project_var}"
-    _trigger_proj_ref="${project_output}"
+  if [[ -n "${__trigger_fire_project_var}" ]]; then
+    local -n __trigger_fire_project_ref="${__trigger_fire_project_var}"
+    __trigger_fire_project_ref="${__trigger_fire_project_output}"
   fi
 }
 
@@ -68,14 +197,204 @@ trigger_run() {
   local -r event="${1}"
   local -r path="${2}"
   local -n _trigger_output_ref="${3}"
-  local exit_code=0
-  _trigger_output_ref="$("${path}")" || exit_code=$?
+  local LC_ALL=C capture_path status_path output="" output_size non_nul_size=-1
+  local output_write_fd output_read_fd status_write_fd status_read_fd
+  local supervisor_pid=0 supervisor_status=125 descendants_left=0 group_stopped=1
+  local group_status=2
+  local wait_signal="" shell_pid="${BASHPID}"
+  local saved_int saved_term saved_hup status_record="" status_size=-1
+  local trigger_status=125 capture_status=125
 
-  if (( exit_code != 0 )); then
-    if [[ "${event}" == pre-* ]]; then
-      error "${trigger_aborted_exit_code}" <<<"Trigger aborted: ${path} (exit ${exit_code})"
+  if ! capture_path="$(mktemp)"; then
+    _trigger_failure "${event}" "${path}" 'could not create bounded stdout capture'
+    return 0
+  fi
+  if ! exec {output_write_fd}> "${capture_path}"; then
+    rm -f -- "${capture_path}"
+    _trigger_failure "${event}" "${path}" 'could not open bounded stdout capture'
+    return 0
+  fi
+  if ! exec {output_read_fd}< "${capture_path}"; then
+    exec {output_write_fd}>&-
+    rm -f -- "${capture_path}"
+    _trigger_failure "${event}" "${path}" 'could not open bounded stdout capture'
+    return 0
+  fi
+  if ! rm -f -- "${capture_path}"; then
+    exec {output_write_fd}>&-
+    exec {output_read_fd}<&-
+    _trigger_failure "${event}" "${path}" 'could not secure bounded stdout capture'
+    return 0
+  fi
+
+  if ! status_path="$(mktemp)"; then
+    exec {output_write_fd}>&-
+    exec {output_read_fd}<&-
+    _trigger_failure "${event}" "${path}" 'could not create trigger status capture'
+    return 0
+  fi
+  if ! exec {status_write_fd}> "${status_path}"; then
+    rm -f -- "${status_path}"
+    exec {output_write_fd}>&-
+    exec {output_read_fd}<&-
+    _trigger_failure "${event}" "${path}" 'could not open trigger status capture'
+    return 0
+  fi
+  if ! exec {status_read_fd}< "${status_path}"; then
+    exec {status_write_fd}>&-
+    rm -f -- "${status_path}"
+    exec {output_write_fd}>&-
+    exec {output_read_fd}<&-
+    _trigger_failure "${event}" "${path}" 'could not open trigger status capture'
+    return 0
+  fi
+  if ! rm -f -- "${status_path}"; then
+    exec {status_write_fd}>&-
+    exec {status_read_fd}<&-
+    exec {output_write_fd}>&-
+    exec {output_read_fd}<&-
+    _trigger_failure "${event}" "${path}" 'could not secure trigger status capture'
+    return 0
+  fi
+
+  saved_int="$(trap -p INT)"
+  saved_term="$(trap -p TERM)"
+  saved_hup="$(trap -p HUP)"
+  trap '_trigger_wait_signal INT' INT
+  trap '_trigger_wait_signal TERM' TERM
+  trap '_trigger_wait_signal HUP' HUP
+
+  if [[ -z "${wait_signal}" ]]; then
+    # shellcheck disable=SC2016,SC2154  # child expands script; import sets path
+    timeout --signal=TERM \
+      --kill-after="${VIRTDEV_TRIGGER_KILL_AFTER}s" \
+      "${VIRTDEV_TRIGGER_TIMEOUT}s" \
+      bash -c 'source -p "${1}" trigger-runner; shift; trigger_runner "$@"' \
+        _ "${virtdev_library_directory}" "${path}" \
+        "${VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES}" "${output_write_fd}" \
+        "${status_write_fd}" \
+      {output_read_fd}<&- {status_read_fd}<&- &
+    supervisor_pid=$!
+    [[ -z "${wait_signal}" ]] || _trigger_wait_signal "${wait_signal}"
+
+    if wait "${supervisor_pid}"; then
+      supervisor_status=0
     else
-      printf >&2 'Warning: post-event trigger failed: %s (exit %d)\n' "${path}" "${exit_code}"
+      supervisor_status=$?
     fi
   fi
+
+  if [[ -n "${wait_signal}" ]]; then
+    if (( supervisor_pid > 0 )); then
+      group_status=0
+      _trigger_group_stop "${supervisor_pid}" \
+        "${VIRTDEV_TRIGGER_KILL_AFTER}" || group_status=$?
+      if (( group_status == 2 )); then
+        kill -TERM -- "${supervisor_pid}" 2>/dev/null || true
+      elif (( group_status != 0 )); then
+        group_stopped=0
+      fi
+      wait "${supervisor_pid}" 2>/dev/null || true
+    fi
+  elif (( supervisor_status == 124 || supervisor_status == 137 )); then
+    group_status=0
+    _trigger_group_kill "${supervisor_pid}" || group_status=$?
+    (( group_status == 1 )) && group_stopped=0
+  else
+    group_status=0
+    _trigger_group_stop "${supervisor_pid}" \
+      "${VIRTDEV_TRIGGER_KILL_AFTER}" || group_status=$?
+    if (( group_status != 2 )); then
+      descendants_left=1
+      (( group_status == 0 )) || group_stopped=0
+    fi
+  fi
+  supervisor_pid=0
+
+  _trigger_trap_restore INT "${saved_int}"
+  _trigger_trap_restore TERM "${saved_term}"
+  _trigger_trap_restore HUP "${saved_hup}"
+
+  exec {output_write_fd}>&-
+  exec {status_write_fd}>&-
+
+  if [[ -z "${wait_signal}" ]]; then
+    if status_size="$(stat -Lc '%s' "/proc/self/fd/${status_read_fd}")" \
+        && [[ "${status_size}" =~ ^[0-9]+$ ]] \
+        && (( status_size > 0 && status_size <= 16 )); then
+      status_record="$(< "/proc/self/fd/${status_read_fd}")"
+    fi
+  fi
+  exec {status_read_fd}<&-
+
+  if [[ -n "${wait_signal}" ]]; then
+    exec {output_read_fd}<&-
+    kill -s "${wait_signal}" "${shell_pid}"
+    _trigger_failure "${event}" "${path}" \
+      "interrupted by ${wait_signal}"
+    return 0
+  fi
+
+  if ! output_size="$(stat -Lc '%s' "/proc/self/fd/${output_read_fd}")"; then
+    exec {output_read_fd}<&-
+    _trigger_failure "${event}" "${path}" 'could not inspect bounded stdout capture'
+    return 0
+  fi
+  if (( output_size <= VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES )); then
+    if ! non_nul_size="$(
+        tr -d '\0' < "/proc/self/fd/${output_read_fd}" | wc -c
+      )"; then
+      exec {output_read_fd}<&-
+      _trigger_failure "${event}" "${path}" 'could not validate stdout capture'
+      return 0
+    fi
+    if (( output_size > 0 )); then
+      output="$(< "/proc/self/fd/${output_read_fd}")"
+    fi
+  fi
+  exec {output_read_fd}<&-
+
+  _trigger_output_ref=""
+  if (( ! group_stopped )); then
+    _trigger_failure "${event}" "${path}" \
+      'could not terminate descendant processes'
+    return 0
+  fi
+  if (( descendants_left )); then
+    _trigger_failure "${event}" "${path}" 'left descendant processes'
+    return 0
+  fi
+  if (( output_size > VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES )); then
+    _trigger_failure "${event}" "${path}" \
+      "stdout exceeded ${VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES} bytes"
+    return 0
+  fi
+  if [[ ! "${non_nul_size}" =~ ^[0-9]+$ ]] \
+      || (( non_nul_size != output_size )); then
+    _trigger_failure "${event}" "${path}" 'stdout contained NUL'
+    return 0
+  fi
+  if [[ "${status_record}" =~ ^([0-9]{1,3})\ ([0-9]{1,3})$ ]] \
+      && (( BASH_REMATCH[1] <= 255 && BASH_REMATCH[2] <= 255 )); then
+    trigger_status="${BASH_REMATCH[1]}"
+    capture_status="${BASH_REMATCH[2]}"
+  elif (( supervisor_status == 124 || supervisor_status == 137 )); then
+    _trigger_failure "${event}" "${path}" \
+      "timed out after ${VIRTDEV_TRIGGER_TIMEOUT}s"
+    return 0
+  else
+    _trigger_failure "${event}" "${path}" \
+      "trigger supervisor failed (exit ${supervisor_status})"
+    return 0
+  fi
+  if (( capture_status != 0 )); then
+    _trigger_failure "${event}" "${path}" 'stdout capture failed'
+    return 0
+  fi
+  if (( trigger_status != 0 )); then
+    _trigger_failure "${event}" "${path}" "exit ${trigger_status}"
+    return 0
+  fi
+
+  _trigger_output_ref="${output}"
 }

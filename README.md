@@ -366,6 +366,9 @@ Environment variables (defaults shown):
 | `VIRTDEV_VM_CPUS` | `4` |
 | `VIRTDEV_STOP_TIMEOUT` | `60` (seconds) |
 | `VIRTDEV_WAIT_TIMEOUT` | `120` (seconds) |
+| `VIRTDEV_TRIGGER_TIMEOUT` | `10` (seconds per trigger) |
+| `VIRTDEV_TRIGGER_KILL_AFTER` | `2` (seconds from TERM to KILL) |
+| `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` (per trigger) |
 | `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
 | `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` |
 
@@ -397,7 +400,13 @@ pre-ssh triggers; post-ssh triggers also receive `VIRTDEV_SSH_EXIT`.
 For pre-ssh, stdout is treated as SSH config lines and incorporated into
 the SSH config assembly (see below). A non-zero exit aborts the
 connection (exit code 80). For post-ssh, stdout is ignored and a non-zero
-exit produces a warning.
+exit produces a warning. Each trigger has its own wall-clock and stdout
+budget; timeout or overflow follows the same pre/post failure policy. Limits
+are configurable within 1–3600 seconds, 1–60 seconds of TERM grace, and
+1–1048576 output bytes. A trigger and its stdout reader share a supervised
+process group; leaving background processes is a failure and terminates that
+group. Triggers must not change process group, create a separate session, or
+daemonize.
 
 ## SSH configuration
 
@@ -500,7 +509,7 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
     ssh_config                        per-project SSH config (overrides system)
     zone                              default network zone: none|wan|lan|full or a custom zone (default none)
     triggers/
-      pre-ssh, post-ssh              per-project trigger scripts (override system)
+      pre-ssh, post-ssh              per-project scripts (run after system hooks)
     manifest                       canonical backup manifest (survives nuke)
     provision                         auto-run by virtdev-recreate
 ```

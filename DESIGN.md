@@ -898,7 +898,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `lock` | exclusive `flock(2)` acquisition on `${VIRTDEV_HOME}/lock`, with maintain-aware diagnostics | 75 |
 | `ssh` | SSH key validation and connection helpers (`ssh_key_validate`, `ssh_rsync_command`, `ssh_poll_until_ready`) | 77, 78 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
-| `trigger` | run user-supplied trigger scripts at lifecycle points (`trigger_fire`); discovers system and per-project triggers, captures stdout via namerefs | 80 |
+| `trigger` | run user-supplied trigger scripts at explicit lifecycle points (`trigger_fire`); bounds execution and stdout before returning text through namerefs | 80 |
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
 | `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
 | `project` | enumerate and query project state (`project_list`, `project_require`, `project_state`, `project_is_running`, `project_is_stopped`, `project_load_state`, `project_is_outdated`, `project_is_detached`, generation readers); running/stopped predicates are a fail-safe/fail-closed pair and transitional or unknown state satisfies neither | 3, 82 |
@@ -1031,6 +1031,9 @@ All scripts respect these variables:
 | `VIRTDEV_VM_CPUS`         | `4`                                             |
 | `VIRTDEV_STOP_TIMEOUT`    | `60`                                            |
 | `VIRTDEV_WAIT_TIMEOUT`    | `120`                                           |
+| `VIRTDEV_TRIGGER_TIMEOUT` | `10` (per trigger)                              |
+| `VIRTDEV_TRIGGER_KILL_AFTER` | `2` (TERM grace per trigger)                |
+| `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` (per trigger)                 |
 | `OVMF_CODE`               | `/usr/share/edk2/x64/OVMF_CODE.4m.fd`          |
 | `OVMF_VARS`               | `/usr/share/edk2/x64/OVMF_VARS.4m.fd`          |
 
@@ -1123,8 +1126,8 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
     <name>/
       ssh_config          per-project SSH config. Overrides system-level.
       triggers/
-        pre-ssh           per-project pre-ssh trigger (overrides system)
-        post-ssh          per-project post-ssh trigger (overrides system)
+        pre-ssh           per-project pre-ssh trigger; runs after system hook
+        post-ssh          per-project post-ssh trigger; runs after system hook
       manifest       user-curated manifest, dotfile-friendly fallback;
                         used by virtdev-backup when a project-local
                         manifest is absent. Survives virtdev-nuke.
