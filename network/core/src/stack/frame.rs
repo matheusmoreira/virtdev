@@ -1,89 +1,198 @@
-//! QEMU `-netdev stream` frame codec.
+//! Bounded framing primitives for QEMU `-netdev stream`.
 //!
-//! QEMU connects to our unix socket as a client (`server=off`) and speaks the
-//! "qemu socket" stream protocol: each L2 Ethernet frame is preceded by a
-//! 4-byte **big-endian** length prefix whose value is the payload length (the
-//! prefix itself is not counted). The `stream` backend carries no virtio-net
-//! header. Confirmed against QEMU `net/net.c` `net_fill_rstate`:
-//!
-//! ```text
-//! rs->packet_len = ntohl(*(uint32_t *)rs->buf);   // 4 bytes, network order
-//! ```
-//!
-//! Because the transport is a byte stream, one read may deliver a partial
-//! prefix, a partial payload, or several frames at once — so the decoder must
-//! tolerate incomplete input.
+//! Each Ethernet frame has a four-byte big-endian payload length. Reads may
+//! split a frame anywhere or coalesce several frames.
 
-/// The largest L2 Ethernet frame we accept from the guest: the 14-byte header
-/// plus the 1500-byte IP MTU we advertise via DHCP. It is also the MTU we set
-/// on our smoltcp `Device`. A prefix claiming more than this is rejected as
-/// hostile — the cap bounds how much we ever buffer for one frame (a DoS bound)
-/// and keeps `4 + len` far from overflowing `usize`.
-///
-/// Assumes standard-MTU frames: virtio-net segmentation offload (TSO/GSO) must
-/// stay OFF on the `stream` backend (its default — `stream` carries no
-/// virtio-net header to signal GSO). With offload on a guest could emit frames
-/// up to QEMU's `NET_BUFSIZE` (69632); confirm offloads are disabled at the M1
-/// device spike so this cap never rejects legitimate traffic.
-///
-/// (Lives here as the codec is its first user; hoist to a shared constant once
-/// the `Device` and DHCP server reference the same MTU.)
+const PREFIX_LEN: usize = 4;
+
+/// Largest accepted Ethernet frame: a 14-byte header plus the 1500-byte IP MTU.
 pub const MAX_FRAME_LEN: usize = 1514;
 
-/// The outcome of decoding one frame from the front of a buffer.
-#[derive(Debug, PartialEq)]
+/// Capacity needed for one maximum-sized framed packet.
+pub const MAX_WIRE_FRAME_LEN: usize = PREFIX_LEN + MAX_FRAME_LEN;
+
+/// Result of decoding one frame from the front of a byte slice.
+#[derive(Debug, Eq, PartialEq)]
 pub enum Decoded<'a> {
-    /// A complete frame: the payload (borrowing the input) and how many bytes it
-    /// occupied — prefix + payload — so the caller can advance its cursor.
     Complete { payload: &'a [u8], consumed: usize },
-    /// Not enough bytes have arrived yet; keep reading and call again.
     Incomplete,
-    /// The length prefix exceeds `MAX_FRAME_LEN`: a malformed or hostile stream.
-    /// Reject immediately — drop the connection rather than buffer the claim.
     Oversized,
 }
 
-/// Decode a single frame from the front of `buf`.
-///
-/// Returns [`Decoded::Complete`] with the borrowed payload and the byte count
-/// consumed (prefix + payload) when a whole frame is present;
-/// [`Decoded::Incomplete`] when more bytes are needed; or [`Decoded::Oversized`]
-/// when the length prefix exceeds [`MAX_FRAME_LEN`] and the stream should be
-/// dropped.
+/// Decode one length-prefixed frame without retaining state.
 pub fn decode(buf: &[u8]) -> Decoded<'_> {
-    // Need the whole 4-byte length prefix before we can read the length.
-    if buf.len() < 4 {
+    if buf.len() < PREFIX_LEN {
         return Decoded::Incomplete;
     }
-    // The first four bytes are the payload length, big-endian.
+
     let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-    // A prefix larger than the biggest frame we allow is hostile: reject as soon
-    // as we have read it, before waiting to buffer that many bytes.
     if len > MAX_FRAME_LEN {
         return Decoded::Oversized;
     }
-    // The whole frame is the 4-byte prefix plus that payload...
-    let consumed = 4 + len;
-    // ...and all of it must have arrived.
+
+    let consumed = PREFIX_LEN + len;
     if buf.len() < consumed {
         return Decoded::Incomplete;
     }
-    // Return the payload and how far to advance the cursor to the next frame.
+
     Decoded::Complete {
-        payload: &buf[4..consumed],
+        payload: &buf[PREFIX_LEN..consumed],
         consumed,
     }
 }
 
-/// The 4-byte big-endian length prefix for `frame`. Write it and the frame
-/// together — e.g. `writev` with two iovecs — never copying the payload, exactly
-/// how QEMU frames its own outbound packets. The inverse of [`decode`].
-///
-/// `frame` must be at most [`MAX_FRAME_LEN`]; a longer frame is our own bug
-/// (smoltcp produces frames at our MTU), so it trips a debug assertion rather
-/// than a fallible return — untrusted input earns a variant, our own invariant
-/// earns an assert.
-pub fn encode(frame: &[u8]) -> [u8; 4] {
+/// Result of a nonblocking read attempt, translated by the reactor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadEvent {
+    /// Bytes initialized at the front of `FrameDecoder::writable()`.
+    Data(usize),
+    /// A zero-byte read from the stream.
+    Eof,
+    /// `EAGAIN` or `EWOULDBLOCK`; retain state and wait for readability.
+    WouldBlock,
+    /// `EINTR`; retain state and retry immediately.
+    Interrupted,
+}
+
+/// What the reactor should do after applying a read event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadAction {
+    /// Inspect `FrameDecoder::next()` for frames or terminal state.
+    Inspect,
+    /// Wait for another readiness notification.
+    Wait,
+    /// Retry the interrupted read.
+    Retry,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadError {
+    /// Zero must be represented by `ReadEvent::Eof`.
+    ZeroBytes,
+    /// The reported count exceeds the returned writable tail.
+    ExceedsCapacity,
+    /// Data was reported after EOF.
+    AfterEof,
+}
+
+/// Current state at the front of a FrameDecoder.
+#[derive(Debug, Eq, PartialEq)]
+pub enum DecoderState<'a> {
+    /// A complete frame, retained until `consume_frame` is called.
+    Frame(&'a [u8]),
+    /// No complete frame is buffered and the stream is still open.
+    NeedRead,
+    /// The current prefix exceeds `MAX_FRAME_LEN`.
+    Oversized,
+    /// EOF occurred exactly between frames.
+    CleanEof,
+    /// EOF occurred inside a prefix or payload.
+    TruncatedEof,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConsumeError {
+    /// The current frame needs more bytes.
+    Incomplete,
+    /// The current prefix exceeds `MAX_FRAME_LEN`.
+    Oversized,
+}
+
+/// Fixed-capacity stream accumulator for one maximum-sized framed packet.
+pub struct FrameDecoder {
+    buf: [u8; MAX_WIRE_FRAME_LEN],
+    start: usize,
+    end: usize,
+    eof: bool,
+}
+
+impl FrameDecoder {
+    pub const fn new() -> Self {
+        Self {
+            buf: [0; MAX_WIRE_FRAME_LEN],
+            start: 0,
+            end: 0,
+            eof: false,
+        }
+    }
+
+    pub fn buffered_len(&self) -> usize {
+        self.end - self.start
+    }
+
+    pub fn writable_capacity(&self) -> usize {
+        self.buf.len() - self.end
+    }
+
+    /// Tail storage for the next read. Consume and compact to reclaim the front.
+    pub fn writable(&mut self) -> &mut [u8] {
+        if self.eof {
+            &mut self.buf[self.end..self.end]
+        } else {
+            &mut self.buf[self.end..]
+        }
+    }
+
+    /// Commit a translated read result without depending on std::io.
+    pub fn apply_read(&mut self, event: ReadEvent) -> Result<ReadAction, ReadError> {
+        match event {
+            ReadEvent::Data(0) => Err(ReadError::ZeroBytes),
+            ReadEvent::Data(_) if self.eof => Err(ReadError::AfterEof),
+            ReadEvent::Data(n) if n > self.writable_capacity() => Err(ReadError::ExceedsCapacity),
+            ReadEvent::Data(n) => {
+                self.end += n;
+                Ok(ReadAction::Inspect)
+            }
+            ReadEvent::Eof => {
+                self.eof = true;
+                Ok(ReadAction::Inspect)
+            }
+            ReadEvent::WouldBlock => Ok(ReadAction::Wait),
+            ReadEvent::Interrupted => Ok(ReadAction::Retry),
+        }
+    }
+
+    pub fn next(&self) -> DecoderState<'_> {
+        match decode(&self.buf[self.start..self.end]) {
+            Decoded::Complete { payload, .. } => DecoderState::Frame(payload),
+            Decoded::Oversized => DecoderState::Oversized,
+            Decoded::Incomplete if !self.eof => DecoderState::NeedRead,
+            Decoded::Incomplete if self.buffered_len() == 0 => DecoderState::CleanEof,
+            Decoded::Incomplete => DecoderState::TruncatedEof,
+        }
+    }
+
+    /// Remove the complete frame currently returned by next.
+    pub fn consume_frame(&mut self) -> Result<(), ConsumeError> {
+        match decode(&self.buf[self.start..self.end]) {
+            Decoded::Complete { consumed, .. } => {
+                self.start += consumed;
+                Ok(())
+            }
+            Decoded::Incomplete => Err(ConsumeError::Incomplete),
+            Decoded::Oversized => Err(ConsumeError::Oversized),
+        }
+    }
+
+    /// Move unconsumed bytes to the front and restore contiguous read capacity.
+    pub fn compact(&mut self) {
+        if self.start == 0 {
+            return;
+        }
+        self.buf.copy_within(self.start..self.end, 0);
+        self.end -= self.start;
+        self.start = 0;
+    }
+}
+
+impl Default for FrameDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Return the four-byte big-endian prefix for frame.
+pub fn encode(frame: &[u8]) -> [u8; PREFIX_LEN] {
     debug_assert!(frame.len() <= MAX_FRAME_LEN);
     (frame.len() as u32).to_be_bytes()
 }
@@ -92,14 +201,30 @@ pub fn encode(frame: &[u8]) -> [u8; 4] {
 mod tests {
     use super::*;
 
+    fn wire(payload: &[u8]) -> Vec<u8> {
+        let mut wire = encode(payload).to_vec();
+        wire.extend_from_slice(payload);
+        wire
+    }
+
+    fn append(decoder: &mut FrameDecoder, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        decoder.writable()[..bytes.len()].copy_from_slice(bytes);
+        assert_eq!(
+            decoder.apply_read(ReadEvent::Data(bytes.len())),
+            Ok(ReadAction::Inspect)
+        );
+    }
+
     #[test]
     fn decodes_a_single_complete_frame() {
-        // 4-byte big-endian length (0x0000_0004) followed by a 4-byte payload.
         let wire = [0x00, 0x00, 0x00, 0x04, 0xDE, 0xAD, 0xBE, 0xEF];
         assert_eq!(
             decode(&wire),
             Decoded::Complete {
-                payload: &[0xDE, 0xAD, 0xBE, 0xEF][..],
+                payload: &[0xDE, 0xAD, 0xBE, 0xEF],
                 consumed: 8
             }
         );
@@ -107,9 +232,7 @@ mod tests {
 
     #[test]
     fn incomplete_buffer_is_incomplete() {
-        // Fewer than 4 bytes: can't even read the length prefix.
         assert_eq!(decode(&[0x00, 0x00]), Decoded::Incomplete);
-        // A full 4-byte prefix claims 4 payload bytes, but only 2 are present.
         assert_eq!(
             decode(&[0x00, 0x00, 0x00, 0x04, 0xDE, 0xAD]),
             Decoded::Incomplete
@@ -118,92 +241,185 @@ mod tests {
 
     #[test]
     fn decodes_two_frames_back_to_back() {
-        // One socket read can carry several whole frames at once. The decoder
-        // reports how many bytes it consumed so the caller can advance a cursor
-        // to the next frame — it never has to buffer or allocate the frames.
-        let wire = [
-            0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB, // frame 1: len 2
-            0x00, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03, // frame 2: len 3
-        ];
+        let mut bytes = wire(&[0xAA, 0xBB]);
+        bytes.extend_from_slice(&wire(&[0x01, 0x02, 0x03]));
 
         let Decoded::Complete {
             payload: first,
             consumed: n1,
-        } = decode(&wire)
+        } = decode(&bytes)
         else {
             panic!("frame 1 is complete");
         };
-        assert_eq!(first, &[0xAA, 0xBB][..]);
-        assert_eq!(n1, 6); // 4-byte prefix + 2-byte payload
+        assert_eq!(first, &[0xAA, 0xBB]);
+        assert_eq!(n1, 6);
 
-        // Advance the cursor past frame 1, then decode frame 2 from the tail.
-        let Decoded::Complete {
-            payload: second,
-            consumed: n2,
-        } = decode(&wire[n1..])
-        else {
-            panic!("frame 2 is complete");
-        };
-        assert_eq!(second, &[0x01, 0x02, 0x03][..]);
-        assert_eq!(n2, 7); // 4 + 3
+        assert_eq!(
+            decode(&bytes[n1..]),
+            Decoded::Complete {
+                payload: &[0x01, 0x02, 0x03],
+                consumed: 7
+            }
+        );
     }
 
     #[test]
     fn rejects_an_oversized_length_prefix() {
-        // A prefix claiming more than MAX_FRAME_LEN is hostile: reject the moment
-        // we have read the 4-byte prefix, without waiting to buffer the payload.
         let too_big = (MAX_FRAME_LEN as u32 + 1).to_be_bytes();
         assert_eq!(decode(&too_big), Decoded::Oversized);
 
-        // Exactly MAX_FRAME_LEN is allowed — with no payload yet it is merely
-        // Incomplete, not Oversized. Pins the boundary at `>`, not `>=`.
         let at_limit = (MAX_FRAME_LEN as u32).to_be_bytes();
         assert_eq!(decode(&at_limit), Decoded::Incomplete);
+        assert_eq!(decode(&u32::MAX.to_be_bytes()), Decoded::Oversized);
     }
 
     #[test]
-    fn encode_produces_the_big_endian_length_prefix() {
-        // encode yields only the 4-byte header; the caller writev's it with the
-        // frame (zero-copy), so a 4-byte frame gives the prefix 0x0000_0004.
-        let frame = [0xDE, 0xAD, 0xBE, 0xEF];
-        assert_eq!(encode(&frame), [0x00, 0x00, 0x00, 0x04]);
-    }
-
-    #[test]
-    fn encode_then_decode_round_trips() {
-        // encode and decode are inverses: prefix a frame, then decode it back
-        // whole. Pins their symmetry — the test to trust if the wire format ever
-        // changes. (Passes on first write; both sides already exist and are
-        // unit-tested above, so this is a living guard, not a driver.)
-        let frame = [0x01, 0x02, 0x03];
-        let mut wire = encode(&frame).to_vec(); // std Vec is available under cfg(test)
-        wire.extend_from_slice(&frame);
-
-        let Decoded::Complete { payload, consumed } = decode(&wire) else {
-            panic!("a freshly encoded frame must decode as complete");
-        };
-        assert_eq!(payload, &frame[..]);
-        assert_eq!(consumed, 4 + frame.len());
-    }
-
-    #[test]
-    fn oversized_at_the_u32_ceiling_is_rejected() {
-        // A prefix of u32::MAX must be Oversized, never a `4 + len` overflow.
-        let wire = 0xFFFF_FFFFu32.to_be_bytes();
-        assert_eq!(decode(&wire), Decoded::Oversized);
-    }
-
-    #[test]
-    fn round_trips_a_max_length_frame() {
-        // A frame of exactly MAX_FRAME_LEN is accepted (the cap is `>`, not `>=`)
-        // and encode/decode round-trip it at the boundary.
+    fn encode_then_decode_round_trips_at_the_cap() {
         let frame = vec![0xAB; MAX_FRAME_LEN];
-        let mut wire = encode(&frame).to_vec();
-        wire.extend_from_slice(&frame);
-        let Decoded::Complete { payload, consumed } = decode(&wire) else {
-            panic!("a MAX_FRAME_LEN frame must decode as complete");
-        };
-        assert_eq!(payload, &frame[..]);
-        assert_eq!(consumed, 4 + MAX_FRAME_LEN);
+        let bytes = wire(&frame);
+        assert_eq!(
+            decode(&bytes),
+            Decoded::Complete {
+                payload: &frame,
+                consumed: MAX_WIRE_FRAME_LEN
+            }
+        );
+    }
+
+    #[test]
+    fn accumulator_accepts_every_split_point() {
+        let payload: Vec<u8> = (0..32).collect();
+        let bytes = wire(&payload);
+
+        for split in 0..=bytes.len() {
+            let mut decoder = FrameDecoder::new();
+            append(&mut decoder, &bytes[..split]);
+            if split < bytes.len() {
+                assert_eq!(decoder.next(), DecoderState::NeedRead, "split {split}");
+            }
+            append(&mut decoder, &bytes[split..]);
+            assert_eq!(
+                decoder.next(),
+                DecoderState::Frame(&payload),
+                "split {split}"
+            );
+            assert_eq!(decoder.consume_frame(), Ok(()));
+            decoder.compact();
+            assert_eq!(decoder.next(), DecoderState::NeedRead);
+        }
+    }
+
+    #[test]
+    fn consume_and_compact_preserve_coalesced_tail() {
+        let first = wire(&[1, 2]);
+        let second = wire(&[3, 4, 5]);
+        let third = wire(&[6, 7, 8, 9]);
+        let mut decoder = FrameDecoder::new();
+
+        let mut coalesced = first;
+        coalesced.extend_from_slice(&second);
+        coalesced.extend_from_slice(&third[..5]);
+        append(&mut decoder, &coalesced);
+
+        assert_eq!(decoder.next(), DecoderState::Frame(&[1, 2]));
+        assert_eq!(decoder.consume_frame(), Ok(()));
+        assert_eq!(decoder.next(), DecoderState::Frame(&[3, 4, 5]));
+        assert_eq!(decoder.consume_frame(), Ok(()));
+        assert_eq!(decoder.next(), DecoderState::NeedRead);
+
+        decoder.compact();
+        assert_eq!(decoder.buffered_len(), 5);
+        append(&mut decoder, &third[5..]);
+        assert_eq!(decoder.next(), DecoderState::Frame(&[6, 7, 8, 9]));
+    }
+
+    #[test]
+    fn accumulator_enforces_its_exact_capacity() {
+        let payload = vec![0xA5; MAX_FRAME_LEN];
+        let bytes = wire(&payload);
+        let mut decoder = FrameDecoder::new();
+
+        assert_eq!(decoder.writable_capacity(), MAX_WIRE_FRAME_LEN);
+        append(&mut decoder, &bytes);
+        assert_eq!(decoder.writable_capacity(), 0);
+        assert_eq!(decoder.next(), DecoderState::Frame(&payload));
+        assert_eq!(
+            decoder.apply_read(ReadEvent::Data(1)),
+            Err(ReadError::ExceedsCapacity)
+        );
+
+        let mut oversized = FrameDecoder::new();
+        append(&mut oversized, &(MAX_FRAME_LEN as u32 + 1).to_be_bytes());
+        assert_eq!(oversized.next(), DecoderState::Oversized);
+        assert_eq!(oversized.consume_frame(), Err(ConsumeError::Oversized));
+    }
+
+    #[test]
+    fn eof_distinguishes_clean_complete_and_truncated_streams() {
+        let payload = [0x10, 0x20, 0x30, 0x40];
+        let bytes = wire(&payload);
+
+        let mut clean = FrameDecoder::new();
+        assert_eq!(clean.apply_read(ReadEvent::Eof), Ok(ReadAction::Inspect));
+        assert_eq!(clean.next(), DecoderState::CleanEof);
+
+        for cut in 1..bytes.len() {
+            let mut truncated = FrameDecoder::new();
+            append(&mut truncated, &bytes[..cut]);
+            assert_eq!(
+                truncated.apply_read(ReadEvent::Eof),
+                Ok(ReadAction::Inspect)
+            );
+            assert_eq!(truncated.next(), DecoderState::TruncatedEof, "cut {cut}");
+        }
+
+        let mut complete = FrameDecoder::new();
+        append(&mut complete, &bytes);
+        assert_eq!(complete.apply_read(ReadEvent::Eof), Ok(ReadAction::Inspect));
+        assert_eq!(complete.next(), DecoderState::Frame(&payload));
+        assert_eq!(complete.consume_frame(), Ok(()));
+        assert_eq!(complete.next(), DecoderState::CleanEof);
+        assert!(complete.writable().is_empty());
+        assert_eq!(
+            complete.apply_read(ReadEvent::Data(1)),
+            Err(ReadError::AfterEof)
+        );
+    }
+
+    #[test]
+    fn eof_reports_a_truncated_tail_after_complete_frames() {
+        let first = wire(&[1, 2, 3]);
+        let second = wire(&[4, 5, 6]);
+        let mut decoder = FrameDecoder::new();
+        let mut bytes = first;
+        bytes.extend_from_slice(&second[..5]);
+        append(&mut decoder, &bytes);
+        assert_eq!(decoder.apply_read(ReadEvent::Eof), Ok(ReadAction::Inspect));
+
+        assert_eq!(decoder.next(), DecoderState::Frame(&[1, 2, 3]));
+        assert_eq!(decoder.consume_frame(), Ok(()));
+        assert_eq!(decoder.next(), DecoderState::TruncatedEof);
+    }
+
+    #[test]
+    fn retryable_read_results_do_not_change_buffer_state() {
+        let mut decoder = FrameDecoder::new();
+        append(&mut decoder, &[0, 0]);
+        let before = decoder.buffered_len();
+
+        assert_eq!(
+            decoder.apply_read(ReadEvent::WouldBlock),
+            Ok(ReadAction::Wait)
+        );
+        assert_eq!(
+            decoder.apply_read(ReadEvent::Interrupted),
+            Ok(ReadAction::Retry)
+        );
+        assert_eq!(decoder.buffered_len(), before);
+        assert_eq!(decoder.next(), DecoderState::NeedRead);
+        assert_eq!(
+            decoder.apply_read(ReadEvent::Data(0)),
+            Err(ReadError::ZeroBytes)
+        );
     }
 }
