@@ -38,4 +38,18 @@ if [[ ! -L "${destination}/link" ]]; then
   exit 1
 fi
 
-printf 'ok - backup roots recurse only when the root is a real directory\n'
+status=0
+NO_COLOR=1 VIRTDEV_HOME="${test_tmp}/home" \
+  "${repository}/bin/virtdev-backup" --copy-links probe \
+  >"${test_tmp}/output" 2>&1 || status=$?
+if (( status != 64 )); then
+  printf 'backup still accepts unsafe symlink dereferencing\n' >&2
+  exit 1
+fi
+
+if grep -Eq -- '--link-dest|--copy-links' "${repository}/bin/virtdev-backup"; then
+  printf 'backup still aliases snapshots or dereferences guest symlinks\n' >&2
+  exit 1
+fi
+
+printf 'ok - backup roots stay local and snapshots own independent inodes\n'

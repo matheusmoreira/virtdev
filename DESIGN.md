@@ -1248,10 +1248,9 @@ there is no silent shadowing when both files exist.
   out via `virtdev-recreate --no-backup`.
 
 - **Backup system scope.** `virtdev-backup` and `virtdev-restore` are
-  intentionally simple file-list rsync wrappers. `virtdev-backup`
-  hard-links unchanged files from the previous snapshot via rsync
-  `--link-dest`, cheaply deduplicating identical content across
-  snapshots. Not planned: compression, encryption at rest, automated
+  intentionally simple file-list rsync wrappers. Every snapshot owns its
+  inodes independently, so editing one restore point cannot rewrite another.
+  Not planned: compression, encryption at rest, automated
   retention or rotation policy, cross-project restore, system-disk
   backup, or glob/brace expansion in manifests. Per `DESIGN.md`'s threat model the host is trusted, so
   encryption adds complexity without matching a real adversary. The

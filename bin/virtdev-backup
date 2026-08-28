@@ -43,13 +43,6 @@
 # Flags:
 #
 #   --verbose      Show rsync per-file progress.
-#   --copy-links   Dereference guest symlinks and copy their targets'
-#                  contents into the snapshot instead of the links.
-#                  WARNING: this overrides the default --safe-links, so a
-#                  guest symlink pointing outside its tree (including to
-#                  an absolute path) has its target's content pulled into
-#                  the snapshot. Use only to deliberately capture
-#                  symlink-target content from a trusted guest.
 #   --list         Print snapshots for the project. Does not create
 #                  a snapshot; does not require the VM to be running.
 #   --latest       Print the latest snapshot identifier
@@ -110,7 +103,7 @@ import error validate arguments ssh snapshot manifest terminal port project
 umask 077
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([verbose]=bool [list]=bool [latest]=bool [copy-links]=bool)
+declare -A spec=([verbose]=bool [list]=bool [latest]=bool)
 # shellcheck disable=SC2034
 declare -A spec_short=([v]=verbose [l]=list)
 # shellcheck disable=SC2034
@@ -313,11 +306,7 @@ cleanup_partial() {
   [[ -n "${manifest_copy}" ]] && rm -f "${manifest_copy}"
   [[ -n "${rsync_log}" ]] && rm -f "${rsync_log}"
   [[ -n "${rsync_wrapper}" ]] && rm -f "${rsync_wrapper}"
-  # The trap's last statement must succeed: a short-circuited `[[ … ]] && rm` above
-  # returns 1, and under set -e that becomes the script's exit code, clobbering the real
-  # error in early-exit windows (e.g. the base-generation exit 12, raised after this
-  # trap installs but before rsync_wrapper is set, -> 1). Same fix as the virtdev-ssh
-  # cleanup trap; preserve the discriminable exit code.
+  # Preserve the status that entered the EXIT trap.
   return 0
 }
 trap cleanup_partial EXIT
@@ -325,12 +314,7 @@ trap cleanup_partial EXIT
 mv -- "${manifest_copy}" "${partial}/manifest"
 manifest_copy=
 
-# Record the source project. virtdev-restore reads this and refuses
-# to proceed if its <project> argument disagrees, which catches the
-# common 'snapshot directory copied between projects, restore picks
-# the wrong one' failure mode. Without this marker the snapshot is
-# indistinguishable from any other and a cross-project restore would
-# silently overwrite the target project's home with the source's.
+# Restore rejects a snapshot whose source marker names another project.
 printf '%s\n' "${project}" > "${partial}/project"
 
 generation_file="${VIRTDEV_HOME}/system/generation"
@@ -345,42 +329,16 @@ mkdir -m 0700 "${partial}/tree"
 ssh_command=""
 ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 
-# -r is REQUIRED despite -a: rsync's man page documents that, with
-# --files-from in effect, "the --archive (-a) option's behavior does not
-# imply --recursive (-r), so specify it explicitly". Without it a directory
-# manifest entry (e.g. the '.claude/projects/' Claude state) is recreated
-# as an EMPTY directory in the snapshot and its contents are silently
-# skipped — the backup reports success while capturing nothing.
+# `--files-from` makes `-r` independent from `-a`.
 rsync_opts=(
   -a -r --no-D --ignore-missing-args --stats --safe-links
   --one-file-system --sparse
 )
 (( flags[verbose] )) && rsync_opts+=(--info=progress2)
-# rsync gives a trailing-slash --files-from root special directory-following
-# behavior before --safe-links gets a chance to filter it. Normalize those
-# slashes away in a private files-from copy: -r still recurses into real
-# directories, while a root swapped to a symlink is preserved as a symlink and
-# cannot redirect traversal to / or another out-of-tree hierarchy.
-# --one-file-system additionally prevents a compromised guest from grafting a
-# larger/network/pseudo filesystem beneath a legitimate manifest directory;
-# --sparse prevents a huge sparse guest file from expanding on the host.
+# Normalized roots recurse only when they remain real directories. Mounts and
+# symlink targets cannot expand the guest-selected source tree.
 rsync_files_from="${partial}/files-from"
 manifest_write_rsync_files_from "${partial}/manifest" "${rsync_files_from}"
-#
-# --copy-links is appended AFTER --safe-links and overrides it: rsync
-# dereferences symlinks on the sender (guest) side, so a guest symlink
-# to an out-of-tree path has its target's content copied into the
-# snapshot. Off by default so --safe-links protects the snapshot tree;
-# an explicit opt-in for capturing symlink-target content.
-(( flags[copy-links] )) && rsync_opts+=(--copy-links)
-
-previous="$(snapshot_latest "${project}")"
-if [[ -n "${previous}" ]]; then
-  previous_tree="${VIRTDEV_HOME}/backups/${project}/${previous}/tree"
-  if [[ -d "${previous_tree}" ]]; then
-    rsync_opts+=(--link-dest="${previous_tree}")
-  fi
-fi
 
 rsync_log="$(mktemp)"
 
@@ -448,13 +406,7 @@ rm -f "${rsync_files_from}"
 # user would only discover it at restore time, possibly after a
 # destroy-recreate had already removed the source data.
 #
-# Count the tree's actual contents, NOT rsync's "files transferred"
-# counter: with --link-dest an unchanged guest is hardlinked from the
-# previous snapshot, so rsync reports zero transferred while the tree
-# is fully populated. That idempotent re-run is the common steady
-# state (and virtdev-recreate's first step), so counting transfers
-# would wrongly reject — and the EXIT trap would delete — a valid
-# snapshot. Mirrors the equivalent guard in virtdev-restore.
+# Count the tree itself so directory-only captures remain valid.
 entries_captured="$(snapshot_tree_count_entries "${partial}/tree")"
 
 if (( entries_captured == 0 )); then
