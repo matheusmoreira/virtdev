@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments
+import error arguments lock
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -70,26 +70,15 @@ if [[ ! -d "${profile}" ]]; then
   error 5 <<<"archiso releng profile not found: '${profile}'"
 fi
 
+lock_acquire_cache
+
 build_directory="${VIRTDEV_CACHE}"
 output_directory="${build_directory}"
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile
 
-# Defense in depth around the privileged cleanup below. mkarchiso
-# produces root-owned files in the work directory, so a naive cleanup
-# would need sudo rm -rf on a path computed from environment variables.
-# Three independent guards make a wrong-path delete extremely unlikely:
-#
-#   Layer 1: refuse if either rm target resolves outside the build root.
-#            Anchored on the resolved build directory, not $HOME, so a
-#            relocated XDG_CACHE_HOME (e.g. /var/cache/$USER) works.
-#            realpath -m on both sides blocks ../ and symlink escapes.
-#   Layer 2: refuse if the work/profile suffixes do not match the
-#            expected construction. Catches a future code bug that
-#            would happen to land under the build root but at the wrong path.
-#   Layer 3: chown the targets to the invoking user, then plain rm.
-#            A wrong-path chown is recoverable; a wrong-path rm -rf
-#            is not. After chown, plain rm is bounded by user perms.
+# Bound privileged cleanup to the two derived children of the canonical build
+# root. Chown first so deletion runs with the caller's ordinary permissions.
 
 build_root="$(realpath -m "${build_directory}")"
 for path in "${work_directory}" "${profile_directory}"; do

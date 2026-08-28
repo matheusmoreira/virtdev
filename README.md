@@ -474,15 +474,20 @@ cannot make its project identities invalid for management and recovery.
 
 ### Concurrency
 
-Mutating commands take an exclusive `flock(2)` on `${VIRTDEV_HOME}/lock`
-and fail fast on contention (exit 75). `cat ${VIRTDEV_HOME}/lock` shows
-the holder's PID.
+Store mutations use a canonical-path-keyed lock outside `VIRTDEV_HOME`, so
+`virtdev-nuke` cannot unlink the rendezvous it holds. ISO builds and nuke also
+share a cache lock. Contention fails fast with exit 75 and prints the lock path
+and holder PID.
 
 ## Data layout
 
 ```
+${XDG_RUNTIME_DIR}/virtdev/locks/   (falls back to $XDG_STATE_HOME)
+  store-<sha256>.lock                per-canonical-store rendezvous
+  cache-<sha256>.lock                per-canonical-cache rendezvous
+
 ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
-  lock                              flock(2) target; holder PID
+  lock                              compatibility lock for firewall coordination
   ssh/id, ssh/id.pub                SSH key pair
   system/                           sealed base (mode 444)
   maintenance/                      transient staging for virtdev-maintain

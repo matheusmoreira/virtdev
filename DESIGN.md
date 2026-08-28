@@ -761,109 +761,41 @@ relaunched — fail CLOSED; `recreate`/`upgrade` relaunch to migrate it.
 
 ## Concurrency and Locking
 
-Every mutating command takes an exclusive `flock(2)` on
-`${VIRTDEV_HOME}/lock`, held for the lifetime of the script via fd 9 and
-released automatically on exit. The lock is visible — intentionally not
-hidden under a dotfile — and contains the PID of the current holder:
+Store locks live outside the data they protect:
 
 ```
-$ cat ${VIRTDEV_HOME}/lock
-12345
+${XDG_RUNTIME_DIR}/virtdev/locks/store-<sha256>.lock
 ```
 
-On contention, `flock -n` fails immediately rather than queueing and the
-script exits 75 (BSD `EX_TEMPFAIL` — temporary failure, retry possible);
-this is uniform across every locking script. The user sees the lock-file
-path and holder PID and can inspect with their own tools (`ps`,
-`/proc/12345/cmdline`, `systemctl --user status`). If the holder's
-`/proc/<pid>/cmdline` matches `virtdev-maintain`, the error message
-specifically points at the maintenance VM, since a maintenance session can
-hold the lock for the duration of a `pacman -Syu` or similar long
-operation and a generic "operation in progress" is unhelpful in that case.
+The fallback is `${XDG_STATE_HOME:-~/.local/state}/virtdev/locks`; an
+explicit `VIRTDEV_LOCK_DIRECTORY` overrides both. The hash includes the
+canonical `VIRTDEV_HOME`, so aliases of one store collide while distinct
+stores remain independent. The stable file survives `virtdev-nuke`.
 
-The lock acquisition logic is factored into `lib/virtdev/lock`. Two
-public entry points cover the observed flavors:
+Store locks use fd 9. A compatibility lock on `${VIRTDEV_HOME}/lock` uses
+fd 7 so the current firewall apply path remains coordinated. Cache operations
+use fd 8 and a separately keyed `cache-<sha256>.lock`; `virtdev-iso` and
+`virtdev-nuke` therefore cannot mutate the same build tree concurrently.
 
-- `lock_acquire` — used by every locking script except `virtdev-maintain`.
-  When the holder is also `virtdev-maintain`, prints the "base system
-  maintenance is in progress" diagnostic.
-- `lock_acquire_for_maintain` — used only by `virtdev-maintain`. When
-  the holder is also `virtdev-maintain`, prints "another virtdev-maintain
-  is already running" instead, since the user invoked `maintain`
-  expecting a fresh session.
+`flock -n` fails immediately with exit 75. Setup failures use exit 76.
+Holder records are one bounded PID line, and maintenance detection reads at
+most 512 bytes from `/proc/<pid>/cmdline`. The contention message prints the
+exact primary path.
 
-`virtdev-stop`'s special case for the maintenance project (skip the lock so an
-ACPI shutdown request can still reach a stuck session) lives at the call site:
+`virtdev-recreate` and `virtdev-upgrade` hold one store lock across their
+whole transaction. Lock-aware children verify and reuse the inherited
+descriptors, covering backup, restore, provisioning, maintenance, and every
+inter-step boundary without self-deadlock.
 
-```bash
-if [[ "${project}" != "maintenance" ]]; then
-  lock_acquire
-fi
-```
+Store-lock users are install, seal, maintain, create, start, stop, destroy,
+detach, move, key, recreate, upgrade, and nuke. ISO uses only the cache lock;
+nuke takes store then cache. Direct list/status/SSH/wait/console/transfer/
+backup/restore commands do not acquire a store lock. `virtdev-stop
+maintenance` keeps its explicit lock exception so it can stop the session
+whose parent holds the store lock.
 
-The library does not reach into the consumer's `${project}` variable;
-the guard is one line and depends on the script's own state.
-
-**Commands that take the lock** (serialized against each other):
-
-- `virtdev-install`, `virtdev-seal`, `virtdev-maintain`
-- `virtdev-create`, `virtdev-start`, `virtdev-stop`, `virtdev-destroy`, `virtdev-detach`, `virtdev-move`
-- `virtdev-nuke`
-
-**Commands that do not take the lock** (read-only or ISO-level):
-
-- `virtdev-list`, `virtdev-ssh`, `virtdev-wait`, `virtdev-console`
-- `virtdev-transfer`, `virtdev-key`, `virtdev-iso`
-- `virtdev-backup`, `virtdev-restore`, `virtdev-recreate`, `virtdev-upgrade`
-
-`virtdev-start` is the one special case: it holds the lock until
-`systemctl --user is-active <unit>` returns true for the transient unit,
-with a 5-second deadline. `systemd-run` returns as soon as the unit is
-queued, which is before systemd has transitioned it from `activating` to
-`active`; if `virtdev-start` released the lock at that instant, another
-virtdev command could take the lock and its own `is-active` check would
-falsely conclude the VM was not running. Holding until the unit is
-detectable to systemd makes the systemd unit state the authoritative
-"is this VM running" signal once the lock is released.
-
-`virtdev-maintain` holds the lock for the entire maintenance session,
-which may last hours. This is intentional: during maintenance the base
-images are being modified, and any concurrent `virtdev-create` or
-`virtdev-start` would read an inconsistent view. The lock converts the
-existing "refuse if any VMs are running" check into a genuine mutual
-exclusion with all other mutating operations.
-
-`virtdev-backup` and `virtdev-restore` take no lock, matching
-`virtdev-transfer`'s precedent. Both operate as SSH-level read/write
-into the running guest, produce only append-only output under
-`${VIRTDEV_HOME}/backups/`, and never modify shared virtdev state
-(base images, project trees, ports). Dangerous cross-project
-interactions are prevented by existing preconditions elsewhere:
-`virtdev-maintain` refuses when any VM is running, `virtdev-destroy`
-and `virtdev-nuke` refuse when the target VM is running, and backup
-requires a running VM — so backup and maintain are mutually exclusive
-without the lock. Concurrent same-project backup at the same second
-is blocked by `mkdir` EEXIST on the per-second partial directory.
-
-`virtdev-recreate` also takes no top-level lock. It composes the
-existing primitives — `virtdev-backup`, `virtdev-stop`,
-`virtdev-destroy --yes`, `virtdev-create`, `virtdev-start`,
-`virtdev-wait`, an optional provision script, and
-`virtdev-restore` — and each subcommand it spawns acquires the
-lock as it needs to. Holding a top-level lock for the chain's
-full duration (potentially many minutes during the rsync transfers)
-would block unrelated operations across all projects for no
-benefit. The cost is small inter-step race windows where another
-virtdev script could squeeze in; the snapshot taken in step 1 is
-the durable artifact across all realistic failures, so a race that
-breaks a later step still leaves the user with recoverable state.
-The one scenario where recreate's no-lock model loses data is
-concurrent `virtdev-nuke`, which wipes everything under
-`${VIRTDEV_HOME}` including `backups/` — a documented "nuke means
-nuke" outcome rather than a recreate bug. `virtdev-destroy`
-exposes a `--yes` flag for recreate and other scripted callers
-(bulk cleanup loops, pipelines); the type-the-name confirmation
-is moved to the recreate top-level so the user is asked once.
+`virtdev-start` retains its lock until systemd reports the transient unit
+active. `virtdev-maintain` retains it for the full maintenance session.
 
 ---
 
@@ -898,7 +830,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `error` | terminal failure helper used by every script (`error <code>` with message via stdin/heredoc) | none (caller-supplied) |
 | `validate` | input validation (`validate_project_name`) | 2 |
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`); universal `--help` and `--color` handling | 64 |
-| `lock` | exclusive `flock(2)` acquisition on `${VIRTDEV_HOME}/lock`, with maintain-aware diagnostics | 75 |
+| `lock` | canonical store/cache `flock(2)` domains, inherited composition, bounded diagnostics | 75, 76 |
 | `ssh` | SSH key validation and connection helpers (`ssh_key_validate`, `ssh_rsync_command`, `ssh_poll_until_ready`) | 77, 78 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at explicit lifecycle points (`trigger_fire`); bounds execution and stdout before returning text through namerefs | 80 |
@@ -1045,8 +977,12 @@ All scripts respect these variables:
 ## Data Layout
 
 ```
+${XDG_RUNTIME_DIR}/virtdev/locks/
+  store-<sha256>.lock  canonical store lock (state-directory fallback)
+  cache-<sha256>.lock  canonical cache lock (state-directory fallback)
+
 ${VIRTDEV_HOME}/
-  lock                  flock(2) target; contains PID of current holder
+  lock                  compatibility lock for firewall coordination
   ssh/
     id                  ed25519 private key (mode 600)
     id.pub              ed25519 public key (injected at install time via fw_cfg)

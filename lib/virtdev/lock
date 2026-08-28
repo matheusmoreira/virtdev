@@ -1,129 +1,259 @@
 #!/usr/bin/env bash
 #
-# lock library: exclusive virtdev lock acquisition.
+# lock library: fail-fast store and cache serialization.
 # Public:
-#   lock_acquire                  every script except maintain
-#   lock_acquire_for_maintain     maintain (different message when
-#                                 holder is also maintain)
+#   lock_acquire                  store lock, ordinary diagnostic
+#   lock_acquire_for_maintain     store lock, maintenance diagnostic
+#   lock_acquire_cache            cache/ISO lock
+#   lock_store_path               print the stable store lock path
+#   lock_cache_path               print the stable cache lock path
+#   lock_control_directory        print the lock directory
 # Exit codes:
-#   75  lock contention (EX_TEMPFAIL — retry possible)
-#   76  lock setup failure (cannot create/open the lock file)
+#   75  contention (EX_TEMPFAIL)
+#   76  lock setup failure
 #
-# The lock is held via fd 9 for the entire lifetime of the calling
-# process and released automatically when the process exits (fd 9
-# closes). Opening with >> (append) preserves the holder PID file
-# for the contention path; O_TRUNC would wipe it before the loser
-# could read it.
-#
+# Store locks use fd 9; cache locks use fd 8. A store operation also holds the
+# legacy ${VIRTDEV_HOME}/lock on fd 7 so the current firewall apply path stays
+# coordinated. Exported path markers let composed commands reuse inherited
+# descriptors instead of deadlocking against their parent.
+
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 import error
 
 readonly lock_contention_exit_code=75
 readonly lock_setup_exit_code=76
+readonly lock_pid_record_max_bytes=11
+readonly lock_cmdline_max_bytes=512
 
-# lock_file is deliberately NOT declared as a top-level readonly:
-# its value derives from VIRTDEV_HOME, and a top-level binding would
-# capture VIRTDEV_HOME's current value at source time — freezing the
-# lock target even if a consumer rebinds VIRTDEV_HOME afterward
-# (e.g., from a --virtdev-home flag parsed after the import). Each
-# function that needs the path declares it as `local -r` at entry,
-# which still forbids rebinding within the call but evaluates
-# ${VIRTDEV_HOME} fresh each time.
-
-lock_acquire() {
-  local -r lock_file="${VIRTDEV_HOME}/lock"
-  lock_open "${lock_file}"
-  if ! flock -n 9; then
-    lock_die_for_other
+lock_configured_directory() {
+  local directory
+  if [[ -n "${VIRTDEV_LOCK_DIRECTORY:-}" ]]; then
+    directory="${VIRTDEV_LOCK_DIRECTORY}"
+  elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    directory="${XDG_RUNTIME_DIR}/virtdev/locks"
+  else
+    directory="${XDG_STATE_HOME:-${HOME}/.local/state}/virtdev/locks"
   fi
-  printf '%d\n' "$$" > "${lock_file}"
+  realpath -ms -- "${directory}"
 }
 
-lock_acquire_for_maintain() {
-  local -r lock_file="${VIRTDEV_HOME}/lock"
-  lock_open "${lock_file}"
-  if ! flock -n 9; then
-    lock_die_for_maintain
-  fi
-  printf '%d\n' "$$" > "${lock_file}"
+lock_control_directory() {
+  local directory
+  directory="$(lock_configured_directory)" || return 1
+  realpath -m -- "${directory}"
 }
 
-# lock_open <lock-file>
-#   Create VIRTDEV_HOME (mode 0700) and open the lock file on fd 9.
-#   A failure here is a STRUCTURAL problem (path is a directory,
-#   unwritable, read-only filesystem, ENOSPC) — fatal with the
-#   distinct, non-retryable code 76. Previously open and flock shared
-#   one code path, so a failed open fell through to `flock -n 9`
-#   (EBADF) and was misreported as retryable lock contention (75).
-lock_open() {
+lock_identity_path() {
+  local -r domain="${1}" configured_path="${2}"
+  local canonical digest directory
+  canonical="$(realpath -m -- "${configured_path}")" || return 1
+  digest="$(printf '%s\0%s' "${domain}" "${canonical}" | sha256sum)" \
+    || return 1
+  digest="${digest%% *}"
+  [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  directory="$(lock_control_directory)" || return 1
+  printf '%s/%s-%s.lock\n' "${directory}" "${domain}" "${digest}"
+}
+
+lock_store_path() {
+  lock_identity_path store "${VIRTDEV_HOME}"
+}
+
+lock_cache_path() {
+  : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
+  lock_identity_path cache "${VIRTDEV_CACHE}"
+}
+
+lock_setup_die() {
+  error "${lock_setup_exit_code}" <<<"${1}"
+}
+
+lock_prepare_control_directory() {
+  local configured directory owner mode
+  configured="$(lock_configured_directory)" \
+    || lock_setup_die 'Cannot resolve the configured virtdev lock directory.'
+  directory="$(lock_control_directory)" \
+    || lock_setup_die 'Cannot resolve the virtdev lock directory.'
+
+  if [[ -L "${configured}" ]]; then
+    lock_setup_die "Lock directory must not be a symbolic link: '${configured}'"
+  fi
+  # shellcheck disable=SC2174  # the deepest directory is the security boundary
+  if ! mkdir -p -m 0700 -- "${directory}" 2>/dev/null; then
+    lock_setup_die "Cannot create virtdev lock directory: '${directory}'"
+  fi
+  if [[ ! -d "${directory}" || -L "${directory}" ]]; then
+    lock_setup_die "Unsafe virtdev lock directory: '${directory}'"
+  fi
+
+  owner="$(stat -c '%u' -- "${directory}" 2>/dev/null || true)"
+  if [[ "${owner}" != "${EUID}" ]]; then
+    lock_setup_die "Virtdev lock directory is not owned by uid ${EUID}: '${directory}'"
+  fi
+  chmod 0700 -- "${directory}" 2>/dev/null \
+    || lock_setup_die "Cannot secure virtdev lock directory: '${directory}'"
+  mode="$(stat -c '%a' -- "${directory}" 2>/dev/null || true)"
+  if [[ "${mode}" != 700 ]]; then
+    lock_setup_die "Virtdev lock directory must have mode 0700: '${directory}'"
+  fi
+}
+
+lock_prepare_file() {
   local -r lock_file="${1}"
-  # shellcheck disable=SC2174  # VIRTDEV_HOME is the deepest component, so -m applies to it
-  if ! mkdir -p -m 0700 "${VIRTDEV_HOME}" 2>/dev/null; then
-    error "${lock_setup_exit_code}" <<MESSAGE
-Cannot create virtdev home directory: '${VIRTDEV_HOME}'
-Check that its parent directory is writable.
-MESSAGE
+  local owner
+
+  if [[ -L "${lock_file}" \
+        || ( -e "${lock_file}" && ! -f "${lock_file}" ) ]]; then
+    lock_setup_die "Lock target must be a regular non-symlink file: '${lock_file}'"
   fi
-  # Best-effort harden a pre-existing VIRTDEV_HOME (may be owned by
-  # another user on shared storage); don't abort if the chmod fails.
-  chmod 0700 "${VIRTDEV_HOME}" 2>/dev/null || true
-  # Probe openability with a catchable redirection before the fd-9
-  # `exec`: an exec redirection error would exit the shell outright,
-  # bypassing this diagnostic.
-  if ! { : >> "${lock_file}"; } 2>/dev/null; then
-    error "${lock_setup_exit_code}" <<MESSAGE
-Cannot open lock file: '${lock_file}'
-Check that '${VIRTDEV_HOME}' is writable and on a normal filesystem.
-MESSAGE
+  if ! ( umask 077; : >> "${lock_file}" ) 2>/dev/null; then
+    lock_setup_die "Cannot open lock file: '${lock_file}'"
   fi
-  exec 9>>"${lock_file}"
+  owner="$(stat -c '%u' -- "${lock_file}" 2>/dev/null || true)"
+  if [[ "${owner}" != "${EUID}" ]]; then
+    lock_setup_die "Lock file is not owned by uid ${EUID}: '${lock_file}'"
+  fi
+  chmod 0600 -- "${lock_file}" 2>/dev/null \
+    || lock_setup_die "Cannot secure lock file: '${lock_file}'"
 }
 
-lock_holder_pid_and_cmdline() {
-  local -r lock_file="${VIRTDEV_HOME}/lock"
-  local pid cmdline=""
-  pid="$(cat "${lock_file}" 2>/dev/null || true)"
-  if [[ -n "${pid}" && -r "/proc/${pid}/cmdline" ]]; then
-    cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline")"
-  fi
-  printf '%s\t%s\n' "${pid}" "${cmdline}"
+lock_fd_matches() {
+  local -r fd="${1}" expected="${2}"
+  local target
+  target="$(readlink -- "/proc/${BASHPID}/fd/${fd}" 2>/dev/null)" || return 1
+  [[ "${target}" == "${expected}" ]]
 }
 
-lock_die_for_other() {
-  local -r lock_file="${VIRTDEV_HOME}/lock"
-  local pid cmdline
-  IFS=$'\t' read -r pid cmdline < <(lock_holder_pid_and_cmdline)
+lock_read_holder_pid() {
+  local -r lock_file="${1}"
+  local size pid
+  [[ -f "${lock_file}" && ! -L "${lock_file}" ]] || return 1
+  size="$(stat -c '%s' -- "${lock_file}" 2>/dev/null)" || return 1
+  [[ "${size}" =~ ^[0-9]+$ ]] || return 1
+  (( size >= 2 && size <= lock_pid_record_max_bytes )) || return 1
+  IFS= read -r pid < "${lock_file}" || return 1
+  [[ "${pid}" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+  (( size == ${#pid} + 1 )) || return 1
+  printf '%s\n' "${pid}"
+}
+
+lock_holder_cmdline() {
+  local -r pid="${1}"
+  [[ -r "/proc/${pid}/cmdline" ]] || return 1
+  LC_ALL=C head -c "${lock_cmdline_max_bytes}" -- "/proc/${pid}/cmdline" \
+    2>/dev/null | tr '\0' ' '
+}
+
+lock_die() {
+  local -r flavor="${1}" lock_file="${2}"
+  local pid="" cmdline=""
+  pid="$(lock_read_holder_pid "${lock_file}" 2>/dev/null || true)"
+  if [[ -n "${pid}" ]]; then
+    cmdline="$(lock_holder_cmdline "${pid}" 2>/dev/null || true)"
+  fi
+
   if [[ "${cmdline}" == *virtdev-maintain* ]]; then
+    if [[ "${flavor}" == maintain ]]; then
+      error "${lock_contention_exit_code}" <<MESSAGE
+Another virtdev-maintain is already running (PID ${pid}).
+Wait for it to finish or inspect its virtual machine:
+    systemctl --user status virtdev-maintenance
+MESSAGE
+    fi
     error "${lock_contention_exit_code}" <<MESSAGE
 Base system maintenance is in progress (virtdev-maintain, PID ${pid}).
 Wait for it to finish or inspect its virtual machine:
     systemctl --user status virtdev-maintenance
 MESSAGE
-  else
-    error "${lock_contention_exit_code}" <<MESSAGE
+  fi
+
+  error "${lock_contention_exit_code}" <<MESSAGE
 Another virtdev operation is in progress.
 Lock file: ${lock_file}
 Holder PID: ${pid:-unknown}
 MESSAGE
-  fi
 }
 
-lock_die_for_maintain() {
-  local -r lock_file="${VIRTDEV_HOME}/lock"
-  local pid cmdline
-  IFS=$'\t' read -r pid cmdline < <(lock_holder_pid_and_cmdline)
-  if [[ "${cmdline}" == *virtdev-maintain* ]]; then
-    error "${lock_contention_exit_code}" <<MESSAGE
-Another virtdev-maintain is already running (PID ${pid}).
-Wait for it to finish or inspect its virtual machine:
-    systemctl --user status virtdev-maintenance
-MESSAGE
-  else
-    error "${lock_contention_exit_code}" <<MESSAGE
-Another virtdev operation is in progress.
-Lock file: ${lock_file}
-Holder PID: ${pid:-unknown}
-MESSAGE
+lock_open_external_store() {
+  local -r flavor="${1}" lock_file="${2}"
+
+  if [[ "${VIRTDEV_STORE_LOCK_PATH:-}" == "${lock_file}" ]] \
+      && lock_fd_matches 9 "${lock_file}"; then
+    flock -n 9 || lock_die "${flavor}" "${lock_file}"
+    return 0
   fi
+
+  lock_prepare_control_directory
+  lock_prepare_file "${lock_file}"
+  if ! exec 9>>"${lock_file}"; then
+    lock_setup_die "Cannot open lock file: '${lock_file}'"
+  fi
+  flock -n 9 || lock_die "${flavor}" "${lock_file}"
+  printf '%d\n' "${BASHPID}" > "${lock_file}"
+  export VIRTDEV_STORE_LOCK_PATH="${lock_file}"
+}
+
+lock_open_legacy_store() {
+  local -r flavor="${1}"
+  local lock_file
+  lock_file="$(realpath -m -- "${VIRTDEV_HOME}/lock")" \
+    || lock_setup_die "Cannot resolve legacy lock path under '${VIRTDEV_HOME}'"
+
+  if [[ "${VIRTDEV_LEGACY_LOCK_PATH:-}" == "${lock_file}" ]] \
+      && lock_fd_matches 7 "${lock_file}"; then
+    flock -n 7 || lock_die "${flavor}" "${lock_file}"
+    return 0
+  fi
+
+  # shellcheck disable=SC2174  # VIRTDEV_HOME is the deepest component
+  if ! mkdir -p -m 0700 -- "${VIRTDEV_HOME}" 2>/dev/null; then
+    lock_setup_die "Cannot create virtdev home directory: '${VIRTDEV_HOME}'"
+  fi
+  chmod 0700 -- "${VIRTDEV_HOME}" 2>/dev/null || true
+  lock_prepare_file "${lock_file}"
+  if ! exec 7>>"${lock_file}"; then
+    lock_setup_die "Cannot open lock file: '${lock_file}'"
+  fi
+  flock -n 7 || lock_die "${flavor}" "${lock_file}"
+  printf '%d\n' "${BASHPID}" > "${lock_file}"
+  export VIRTDEV_LEGACY_LOCK_PATH="${lock_file}"
+}
+
+lock_acquire_store() {
+  local -r flavor="${1}"
+  local lock_file
+  lock_file="$(lock_store_path)" \
+    || lock_setup_die "Cannot derive a lock identity for '${VIRTDEV_HOME}'"
+  lock_open_external_store "${flavor}" "${lock_file}"
+  lock_open_legacy_store "${flavor}"
+}
+
+lock_acquire() {
+  lock_acquire_store other
+}
+
+lock_acquire_for_maintain() {
+  lock_acquire_store maintain
+}
+
+lock_acquire_cache() {
+  local lock_file
+  lock_file="$(lock_cache_path)" \
+    || lock_setup_die "Cannot derive a cache lock identity for '${VIRTDEV_CACHE}'"
+
+  if [[ "${VIRTDEV_CACHE_LOCK_PATH:-}" == "${lock_file}" ]] \
+      && lock_fd_matches 8 "${lock_file}"; then
+    flock -n 8 || lock_die other "${lock_file}"
+    return 0
+  fi
+
+  lock_prepare_control_directory
+  lock_prepare_file "${lock_file}"
+  if ! exec 8>>"${lock_file}"; then
+    lock_setup_die "Cannot open lock file: '${lock_file}'"
+  fi
+  flock -n 8 || lock_die other "${lock_file}"
+  printf '%d\n' "${BASHPID}" > "${lock_file}"
+  export VIRTDEV_CACHE_LOCK_PATH="${lock_file}"
 }

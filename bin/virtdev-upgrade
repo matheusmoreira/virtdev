@@ -26,7 +26,7 @@
 # exact old base bytes its delta still requires, so the audit fails closed
 # before backup or maintenance begins.
 #
-# Lock model: no top-level lock. Each subprocess acquires locks as needed.
+# One inherited store lock covers audit, backup, maintenance, and rebuild.
 #
 # Exit codes:
 #
@@ -57,7 +57,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project snapshot confirm terminal firewall recreate-result
+import error validate arguments manifest project snapshot confirm terminal firewall recreate-result lock
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -90,6 +90,8 @@ fi
 if [[ -n "${flags[only]}" && -n "${flags[except]}" ]]; then
   error 4 <<<"--only and --except are mutually exclusive"
 fi
+
+lock_acquire
 
 # Resolve the requested zone (Phase 2). An explicit --zone forces every rebuilt
 # machine into that zone; otherwise each machine that was running is restored to

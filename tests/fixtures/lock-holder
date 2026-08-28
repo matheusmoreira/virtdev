@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repository="${1}"
+domain="${2}"
+ready_file="${3}"
+release_file="${4}"
+
+# shellcheck disable=SC1091
+source "${repository}/lib/virtdev/import"
+import lock
+
+case "${domain}" in
+  store) lock_acquire ;;
+  cache) lock_acquire_cache ;;
+  *) printf 'unknown lock domain: %s\n' "${domain}" >&2; exit 64 ;;
+esac
+
+if [[ -n "${LOCK_FIXTURE_RECORD_BYTES:-}" ]]; then
+  case "${domain}" in
+    store) lock_file="$(lock_store_path)" ;;
+    cache) lock_file="$(lock_cache_path)" ;;
+  esac
+  truncate -s "${LOCK_FIXTURE_RECORD_BYTES}" -- "${lock_file}"
+fi
+
+: > "${ready_file}"
+[[ "${release_file}" == - ]] && exit 0
+while [[ ! -e "${release_file}" ]]; do
+  sleep 0.02
+done

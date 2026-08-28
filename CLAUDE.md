@@ -403,11 +403,11 @@ glob in `PKGBUILD` picks it up automatically.
   auto-logs in as the `dev` user. This is emergency access for when SSH
   is unavailable (e.g., network misconfiguration). Reachable from the
   host via `socat - UNIX-CONNECT:${VIRTDEV_HOME}/projects/<project>/console.sock`.
-- **Lock visibility.** `${VIRTDEV_HOME}/lock` is a normal file with the
-  current holder's PID written into it. `cat` it during a contention
-  error to see who holds it. The library reads `/proc/<pid>/cmdline`
-  to detect when the holder is `virtdev-maintain` and emits a
-  maintenance-specific message instead of the generic one.
+- **Lock visibility.** Store and cache locks live under
+  `${XDG_RUNTIME_DIR}/virtdev/locks` (or the XDG state fallback), keyed by
+  the canonical configured root. Contention prints the exact path and bounded
+  holder PID. `${VIRTDEV_HOME}/lock` remains only as the firewall
+  coordination bridge.
 - **passt network backend.** `virtdev-start` and `virtdev-maintain` use
   passt instead of QEMU SLIRP (`-netdev user`). The private `virtdev-netexec`
   helper starts passt (with `--map-host-loopback none` and
@@ -437,10 +437,8 @@ glob in `PKGBUILD` picks it up automatically.
   `bind()` returns `EADDRINUSE` on a leftover socket file.
 - **Per-project directory permissions (mode 0700).** `virtdev-create`
   and `virtdev-maintain` create project directories with mode 0700.
-  `lib/virtdev/lock` (`lock_open`) runs `chmod 0700
-  ${VIRTDEV_HOME}` on every lock acquisition to harden pre-existing
-  installs. This protects the socket files (`network.sock`, `monitor.sock`)
-  from other local users.
+  Store lock acquisition also hardens `${VIRTDEV_HOME}`. This protects the
+  socket files (`network.sock`, `monitor.sock`) from other local users.
 - **Host egress lockdown (Phase 2 network isolation).** A host-root nftables
   `inet virtdev` table (`lib/virtdev/firewall` policy + `bin/virtdev-firewall`
   root tool + a resident holder unit and a `--user` pin template under

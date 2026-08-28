@@ -33,13 +33,8 @@
 # directory is the dev user's /home/dev/. Wrap other interpreters
 # from a one-line bash launcher.
 #
-# Lock model: recreate does NOT take the virtdev lock at the top
-# level. Each subcommand takes the lock as needed (stop, destroy,
-# create, start). Backup, restore, wait, and provision do not. This
-# avoids holding the lock across the slow rsync transfers in backup
-# and restore. The narrow inter-step race windows are documented in
-# DESIGN.md; the snapshot is the durable artifact across all
-# realistic failures.
+# One inherited store lock covers the complete transaction, including backup,
+# provision, and restore. Lock-aware child commands reuse its descriptors.
 #
 # Failure semantics: fail-fast at any non-zero subcommand exit. The
 # exit code identifies which step failed (20 backup, 21 stop, 22
@@ -62,7 +57,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest confirm terminal project firewall recreate-result
+import error validate arguments snapshot manifest confirm terminal project firewall recreate-result lock
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -108,6 +103,8 @@ if [[ -n "${pinned_snapshot}" ]]; then
     error 64 <<<"--snapshot and --no-restore are mutually exclusive"
   fi
 fi
+
+lock_acquire
 
 # Resolve the zone to relaunch into (Phase 2 network isolation). Precedence:
 #   1. an explicit --zone always wins;
