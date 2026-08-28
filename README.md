@@ -187,7 +187,9 @@ project-a/.env.local
 .config/nvim/
 ```
 
-Paths are relative to `/home/dev/` in the guest. Then:
+Paths are lexical roots relative to `/home/dev/` in the guest. Absolute paths
+and `..` components are rejected; trailing slashes are normalized. Blank lines
+and lines beginning with `#` are ignored. Then:
 
 ```bash
 virtdev backup myproject          # snapshot listed paths to host
@@ -376,9 +378,14 @@ Environment variables (defaults shown):
 | `VIRTDEV_WAIT_TIMEOUT` | `120` (seconds) |
 | `VIRTDEV_TRIGGER_TIMEOUT` | `10` (seconds per trigger) |
 | `VIRTDEV_TRIGGER_KILL_AFTER` | `2` (seconds from TERM to KILL) |
-| `VIRTDEV_BACKUP_MAX_BYTES` | `8589934592` (8 GiB archive ceiling) |
-| `VIRTDEV_BACKUP_MAX_ENTRIES` | `200000` |
-| `VIRTDEV_BACKUP_TIMEOUT` | `3600` (seconds total) |
+| `VIRTDEV_BACKUP_MAX_BYTES` | `8589934592` (8 GiB archive and regular logical data; range 1–1099511627776) |
+| `VIRTDEV_BACKUP_MAX_ENTRIES` | `200000` (range 1–10000000) |
+| `VIRTDEV_BACKUP_TIMEOUT` | `3600` seconds total (range 1–86400) |
+| `VIRTDEV_BACKUP_KILL_AFTER` | `5` seconds from TERM to KILL (range 1–60) |
+| `VIRTDEV_RESTORE_MAX_BYTES` | `8589934592` (8 GiB apparent snapshot data; range 1–1099511627776) |
+| `VIRTDEV_RESTORE_MAX_ENTRIES` | `200000` (range 1–10000000) |
+| `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total (range 1–86400) |
+| `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds from TERM to KILL (range 1–60) |
 | `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` (per trigger) |
 | `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
 | `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` |
@@ -437,11 +444,15 @@ connects to untrusted virtual machines and dangerous global settings
 Every VM receives a host-generated, project-specific ed25519 host key through
 QEMU fw_cfg. The guest uses it only from `/run`; disks retain no host private
 key. The client pins the key to the exact alias `virtdev-<project>` in
-project-local known-host state. Strict checking, alias, key algorithm, client
-identity, port, and disabled connection sharing are fixed command-line policy
-shared by interactive ssh, polling, rsync, backup, restore, and maintenance.
-Agent and GSSAPI credential forwarding are disabled. User config cannot weaken
-those settings.
+project-local known-host state. Strict checking, alias, key algorithm,
+public-key-only authentication, client identity, port, and disabled connection
+sharing are fixed command-line policy shared by interactive ssh, polling,
+rsync, backup, restore, and maintenance. Agent and GSSAPI credential forwarding
+are disabled. User config cannot weaken those settings.
+
+Use `virtdev ssh` for SSH connections. `virtdev-port` exposes the forwarded
+number for integrations, but raw `ssh -p ...` omits project identity unless the
+caller reproduces every fixed transport option.
 
 Repeatable client options use `--client-option=<one-token-option>` before the
 remote delimiter. Remote command arguments follow `--` unchanged:

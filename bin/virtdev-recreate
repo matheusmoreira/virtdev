@@ -406,7 +406,7 @@ if (( do_backup )); then
   if ! backup_path="$(backup)"; then
     error "${recreate_result_backup_failed}" <<MESSAGE
 backup failed (virtdev-backup exited non-zero).
-Project ${project} is unchanged. Investigate the rsync output above
+Project ${project} is unchanged. Inspect the backup output above
 and rerun:
     $(recreate_resume)
 MESSAGE

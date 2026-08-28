@@ -220,9 +220,10 @@ leaking into untrusted VM connections.
 
 `ssh_transport_argv` is the only transport-policy builder. It pins the
 project-local known-host file and exact `virtdev-<project>` alias, strict
-ed25519 host checking, client key, port, and disabled control sockets. These
-command-line values win over all assembled config. Poll, rsync, backup,
-restore, transfer, and maintenance call the same builder.
+ed25519 host checking, public-key-only authentication, client key, port, and
+disabled control sockets. These command-line values win over all assembled
+config. Poll, rsync, backup, restore, transfer, and maintenance call the same
+builder.
 
 The interactive grammar is:
 
@@ -394,12 +395,10 @@ Public commands and private helpers are installed by separate `bin/` and
   start checks the project copy, and maintain/recreate/upgrade check the base.
   Detached projects keep their copy. Never add an insecure compatibility
   fallback: migrate an older image with its matching host tools, then rebuild.
-- **Backup and restore over SSH.** Both run rsync to/from the running
-  guest's filesystem; the host does not touch `projects/<name>/*.qcow2`.
-  Neither acquires the virtdev lock (see `DESIGN.md`'s "Concurrency and
-  Locking" section for the full reasoning). The realistic concurrency
-  hazard is `virtdev-stop` mid-transfer, which manifests as a noisy rsync
-  failure handled by the PIPESTATUS distinction in both scripts.
+- **Backup and restore over SSH.** Backup pulls a bounded tar stream; restore
+  pushes the recorded tree with rsync. Neither touches project qcow2 images or
+  takes the virtdev lock. A concurrent stop fails through the captured pipeline
+  status.
 - **Generation counter.** `virtdev-seal` writes the initial counter as `1`
   to `system/generation`; `virtdev-maintain` increments on reseal.
   `virtdev-create` copies the current value into the project's

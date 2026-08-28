@@ -6,10 +6,11 @@
 # Prints the SSH port of a running project virtual machine.
 # Exits non-zero if the project is not running.
 #
-# Machine-readable: stdout contains only the port number.
-# Useful in scripts and shell substitutions:
+# Machine-readable: stdout contains only the port number. For SSH, retain
+# virtdev's project-bound identity policy:
 #
-#     ssh -p "$(virtdev port lone)" dev@127.0.0.1
+#     virtdev ssh lone
+#     virtdev ssh lone -- uname -a
 #
 # Exit codes:
 #

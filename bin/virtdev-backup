@@ -12,11 +12,10 @@
 #
 # Each snapshot contains:
 #
-#   project            the source project name; virtdev-restore uses
-#                      this to refuse cross-project restoration
-#   manifest        copy of projects/<project>/manifest at backup time
-#   generation         canonical integer from ${VIRTDEV_HOME}/system/generation
-#   tree/              user-content subtree, rsync-preserved
+#   project       source project name, used to reject cross-project restore
+#   manifest      frozen copy of the selected manifest
+#   generation    base generation at capture time
+#   tree/         extracted user-content subtree
 #
 # The manifest is user-curated and required. Lookup order:
 #
@@ -39,7 +38,7 @@
 #
 # Flags:
 #
-#   --verbose      Show rsync per-file progress.
+#   --verbose      Show archive member names.
 #   --list         Print snapshots for the project. Does not create
 #                  a snapshot; does not require the VM to be running.
 #   --latest       Print the latest snapshot identifier
@@ -229,9 +228,7 @@ Blank lines and '#' comments are ignored.
 MESSAGE
 fi
 
-# Freeze the exact manifest bytes that this backup will validate, record, and
-# pass to rsync. Validating the mutable source path and copying it later would
-# allow a replacement between those steps to bypass the checks.
+# Freeze one manifest copy for validation, metadata, and guest capture.
 manifest_copy="$(mktemp)"
 cleanup_manifest_copy() {
   rm -f "${manifest_copy}"
@@ -247,13 +244,7 @@ starting at column 0 (leading whitespace is rejected as malformed).
 MESSAGE
 fi
 
-# Reject absolute paths. rsync's --files-from semantics strip the
-# leading '/' and resolve every entry relative to the source dir
-# (here, /home/dev/), so '/etc/foo.conf' would silently look up
-# /home/dev/etc/foo.conf and (with --ignore-missing-args) be
-# omitted from the snapshot. Surface this as a hard error rather
-# than allow a silently-incomplete backup. Match leading-slash
-# entries even with surrounding whitespace.
+# The remote existence check and tar both accept absolute names.
 abs_lines="$(grep -nE '^\s*/' "${manifest_copy}" || true)"
 if [[ -n "${abs_lines}" ]]; then
   error 15 <<MESSAGE
@@ -272,15 +263,7 @@ Manifest entries must remain beneath the guest's /home/dev/.
 MESSAGE
 fi
 
-# Reject malformed path-shape entries: leading whitespace, trailing
-# whitespace, embedded control characters. rsync's --files-from
-# treats each line literally, so 'notes.md  ' (trailing spaces, common
-# on copy-paste) becomes a path with two trailing spaces — which
-# does not exist and gets silently skipped under
-# --ignore-missing-args. Same for ' .bashrc' (leading space, easy
-# to introduce when reformatting). Embedded tabs and CRs (Windows
-# line endings) are similarly suspicious. Validate up front so the
-# user fixes the manifest, not the snapshot.
+# Manifest whitespace is literal; reject ambiguous path shapes.
 bad_shape="$(awk '
   /^[[:space:]]*$/ { next }
   /^[[:space:]]*#/ { next }
@@ -511,10 +494,7 @@ Verify the manifest against the guest: virtdev-ssh ${project} -- ls -la
 MESSAGE
 fi
 
-# Refuse rather than mv INTO an existing final/: a second backup within the same UTC
-# second would nest partial/ inside final/ — a silent double, invisible to
-# snapshot_list (which matches the exact <date>/<time> depth). The EXIT trap removes
-# partial/.
+# `mv -T` must fail rather than nest a partial under an existing snapshot.
 if [[ -e "${final}" ]]; then
   error 13 <<MESSAGE
 A snapshot already exists at this timestamp: ${final}

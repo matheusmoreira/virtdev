@@ -844,7 +844,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at explicit lifecycle points (`trigger_fire`); bounds execution and stdout before returning text through namerefs | 80 |
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
-| `manifest` | resolve and validate backup manifest files (`manifest_resolve`, `manifest_has_entries`) | none (caller-supplied) |
+| `manifest` | resolve, validate, and normalize backup manifests (`manifest_resolve`, `manifest_has_entries`, `manifest_parent_entries`, `manifest_write_rsync_files_from`) | none (caller-supplied) |
 | `machine` | resolve project and maintenance machine targets into explicit kind, unit, data-root, and runtime-root descriptors; owns authoritative single-machine state mapping and fail-closed predicates | 2, 3 (returned) |
 | `project` | enumerate projects and enforce ordinary-project data operations (`project_require_ordinary`, batch state, generation and detached-state readers); compatibility state predicates delegate to `machine` | 3, 82 |
 | `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets, atomic `port` readiness signal, and `launch.phase` exit-provenance marker | none |
@@ -1042,9 +1042,9 @@ ${VIRTDEV_HOME}/
         <HH-MM-SS>/
           project       source project name; virtdev-restore refuses
                         to apply a snapshot to a different project
-          manifest   copy of projects/<project>/manifest at backup time
+          manifest      frozen manifest used for capture
           generation    mandatory canonical base generation at backup time
-          tree/         user content, rsync-preserved
+          tree/         extracted user content
         <HH-MM-SS>.partial/  transient; present during an in-flight backup
 
 ${XDG_CACHE_HOME:-~/.cache}/virtdev/
@@ -1200,9 +1200,10 @@ there is no silent shadowing when both files exist.
   out via `virtdev-recreate --no-backup`.
 
 - **Backup system scope.** `virtdev-backup` captures a bounded uncompressed tar
-  stream and extracts it only after validating its byte and entry budgets;
-  `virtdev-restore` uses the recorded manifest with rsync. Every snapshot owns
-  its inodes independently, so editing one restore point cannot rewrite
+  stream and extracts it only after validating byte and entry budgets;
+  `virtdev-restore` preflights apparent bytes, entries, and elapsed time before
+  pushing the recorded tree with rsync. Every snapshot owns its inodes
+  independently, so editing one restore point cannot rewrite
   another. Not planned: compression, encryption at rest, automated
   retention or rotation policy, cross-project restore, system-disk
   backup, or glob/brace expansion in manifests. Per `DESIGN.md`'s threat model the host is trusted, so
