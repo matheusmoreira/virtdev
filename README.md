@@ -368,6 +368,9 @@ Environment variables (defaults shown):
 | `VIRTDEV_WAIT_TIMEOUT` | `120` (seconds) |
 | `VIRTDEV_TRIGGER_TIMEOUT` | `10` (seconds per trigger) |
 | `VIRTDEV_TRIGGER_KILL_AFTER` | `2` (seconds from TERM to KILL) |
+| `VIRTDEV_BACKUP_MAX_BYTES` | `8589934592` (8 GiB archive ceiling) |
+| `VIRTDEV_BACKUP_MAX_ENTRIES` | `200000` |
+| `VIRTDEV_BACKUP_TIMEOUT` | `3600` (seconds total) |
 | `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` (per trigger) |
 | `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
 | `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` |

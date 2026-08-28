@@ -1247,10 +1247,11 @@ there is no silent shadowing when both files exist.
   `virtdev-nuke`. Ephemeral projects without a manifest opt
   out via `virtdev-recreate --no-backup`.
 
-- **Backup system scope.** `virtdev-backup` and `virtdev-restore` are
-  intentionally simple file-list rsync wrappers. Every snapshot owns its
-  inodes independently, so editing one restore point cannot rewrite another.
-  Not planned: compression, encryption at rest, automated
+- **Backup system scope.** `virtdev-backup` captures a bounded uncompressed tar
+  stream and extracts it only after validating its byte and entry budgets;
+  `virtdev-restore` uses the recorded manifest with rsync. Every snapshot owns
+  its inodes independently, so editing one restore point cannot rewrite
+  another. Not planned: compression, encryption at rest, automated
   retention or rotation policy, cross-project restore, system-disk
   backup, or glob/brace expansion in manifests. Per `DESIGN.md`'s threat model the host is trusted, so
   encryption adds complexity without matching a real adversary. The

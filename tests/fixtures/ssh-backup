@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+[[ -n "${BACKUP_PID_FILE:-}" ]] && printf '%d\n' "$$" > "${BACKUP_PID_FILE}"
+cat >/dev/null
+if [[ -n "${BACKUP_STREAM_DELAY:-}" ]]; then
+  sleep "${BACKUP_STREAM_DELAY}"
+fi
+cat -- "${BACKUP_TAR_STREAM:?}"
+exit "${BACKUP_SSH_STATUS:-0}"

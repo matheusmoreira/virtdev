@@ -53,15 +53,15 @@
 # host-forwarded port). Concurrent same-project backups at the same
 # second are prevented by mkdir EEXIST on the partial directory.
 #
-# Requires rsync on both host and guest:
-#
-#     pacman -S rsync
-#
 # Configuration via environment variables:
 #
-#   VIRTDEV_HOME       Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
-#   VIRTDEV_SSH_KEY    Default: ${VIRTDEV_HOME}/ssh/id
-#   XDG_CONFIG_HOME    Default: ~/.config
+#   VIRTDEV_HOME                Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_SSH_KEY             Default: ${VIRTDEV_HOME}/ssh/id
+#   VIRTDEV_BACKUP_MAX_BYTES    Default: 8589934592 (8 GiB archive)
+#   VIRTDEV_BACKUP_MAX_ENTRIES  Default: 200000
+#   VIRTDEV_BACKUP_TIMEOUT      Default: 3600 seconds total
+#   VIRTDEV_BACKUP_KILL_AFTER   Default: 5 seconds from TERM to KILL
+#   XDG_CONFIG_HOME             Default: ~/.config
 #
 # Exit codes:
 #
@@ -69,8 +69,8 @@
 #   2   invalid project name
 #   3   project not found
 #   4   virtual machine is not running
-#   6   rsync not found
-#   7   rsync partial transfer (some files skipped or failed)
+#   6   host tar not found
+#   7   reserved (legacy rsync partial transfer)
 #   8   manifest not found
 #   9   manifest has no paths
 #   10  partial snapshot directory already exists
@@ -79,8 +79,10 @@
 #   13  a snapshot with this timestamp already exists
 #   15  manifest contains absolute paths
 #   16  manifest has malformed path entries
-#   17  rsync transport failure (SSH connection lost)
-#   18  rsync failed with unexpected exit code
+#   17  SSH transport failure
+#   18  archive creation, validation, or extraction failure
+#   19  byte, entry, inode, or free-space budget exceeded
+#   20  backup wall-clock deadline exceeded
 #   64  usage error
 #   77  SSH key not found
 #   78  SSH key permissions too open
@@ -94,11 +96,24 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh snapshot manifest terminal port project
+import error validate arguments ssh snapshot manifest terminal port project integer
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
+: "${VIRTDEV_BACKUP_MAX_BYTES:=8589934592}"
+: "${VIRTDEV_BACKUP_MAX_ENTRIES:=200000}"
+: "${VIRTDEV_BACKUP_TIMEOUT:=3600}"
+: "${VIRTDEV_BACKUP_KILL_AFTER:=5}"
+
+integer_is_bounded_positive "${VIRTDEV_BACKUP_MAX_BYTES}" 1099511627776 \
+  || error 64 <<<'Invalid VIRTDEV_BACKUP_MAX_BYTES: expected 1..1099511627776'
+integer_is_bounded_positive "${VIRTDEV_BACKUP_MAX_ENTRIES}" 10000000 \
+  || error 64 <<<'Invalid VIRTDEV_BACKUP_MAX_ENTRIES: expected 1..10000000'
+integer_is_bounded_positive "${VIRTDEV_BACKUP_TIMEOUT}" 86400 \
+  || error 64 <<<'Invalid VIRTDEV_BACKUP_TIMEOUT: expected 1..86400'
+integer_is_bounded_positive "${VIRTDEV_BACKUP_KILL_AFTER}" 60 \
+  || error 64 <<<'Invalid VIRTDEV_BACKUP_KILL_AFTER: expected 1..60'
 
 umask 077
 
@@ -200,10 +215,10 @@ port_require port "${project}"
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 
-if ! command -v rsync &>/dev/null; then
+if ! command -v tar &>/dev/null; then
   error 6 <<MESSAGE
-rsync not found
-Install it with: pacman -S rsync
+tar not found on the host
+Install it with: pacman -S tar
 MESSAGE
 fi
 
@@ -299,13 +314,11 @@ MESSAGE
 fi
 
 backup_succeeded=0
-rsync_log=
-rsync_wrapper=
+ssh_wrapper=
 cleanup_partial() {
   (( backup_succeeded )) || rm -rf "${partial}"
   [[ -n "${manifest_copy}" ]] && rm -f "${manifest_copy}"
-  [[ -n "${rsync_log}" ]] && rm -f "${rsync_log}"
-  [[ -n "${rsync_wrapper}" ]] && rm -f "${rsync_wrapper}"
+  [[ -n "${ssh_wrapper}" ]] && rm -f "${ssh_wrapper}"
   # Preserve the status that entered the EXIT trap.
   return 0
 }
@@ -327,87 +340,135 @@ printf '%s\n' "${base_generation}" > "${partial}/generation"
 mkdir -m 0700 "${partial}/tree"
 
 ssh_command=""
-ssh_rsync_command ssh_command rsync_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
+ssh_rsync_command ssh_command ssh_wrapper "${VIRTDEV_SSH_KEY}" "${port}"
 
-# `--files-from` makes `-r` independent from `-a`.
-rsync_opts=(
-  -a -r --no-D --ignore-missing-args --stats --safe-links
-  --one-file-system --sparse
-)
-(( flags[verbose] )) && rsync_opts+=(--info=progress2)
-# Normalized roots recurse only when they remain real directories. Mounts and
-# symlink targets cannot expand the guest-selected source tree.
-rsync_files_from="${partial}/files-from"
-manifest_write_rsync_files_from "${partial}/manifest" "${rsync_files_from}"
+files_from="${partial}/files-from"
+manifest_write_rsync_files_from "${partial}/manifest" "${files_from}"
+archive="${partial}/capture.tar"
+backup_deadline=$(( BASH_MONOSECONDS + VIRTDEV_BACKUP_TIMEOUT ))
+readonly backup_free_space_reserve=536870912
+readonly backup_inode_reserve=4096
 
-rsync_log="$(mktemp)"
+available_bytes="$(df -B1 --output=avail -- "${partial}" 2>/dev/null \
+  | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
+  || available_bytes=''
+if [[ ! "${available_bytes}" =~ ^[0-9]+$ \
+      || ${#available_bytes} -gt 18 ]]; then
+  error 18 <<<'Could not determine bounded backup free space'
+fi
+if (( available_bytes <= backup_free_space_reserve + 1 )); then
+  error 19 <<<'Not enough host free space to preserve the backup safety reserve'
+fi
+archive_limit="${VIRTDEV_BACKUP_MAX_BYTES}"
+free_archive_limit=$(( available_bytes - backup_free_space_reserve ))
+(( archive_limit <= free_archive_limit )) || archive_limit=${free_archive_limit}
+
+# The guest receives only normalized relative roots. The loop drops roots that
+# are already absent; tar then fails on unreadable data or a later race.
+remote_tar=$'set -o pipefail\ncd /home/dev || exit 1\nwhile IFS= read -r path || [[ -n "${path}" ]]; do\n  if [[ -e "${path}" || -L "${path}" ]]; then\n    printf "%s\\n" "${path}"\n  fi\ndone | /usr/bin/tar --create --file=- --one-file-system --sparse --verbatim-files-from --files-from=-'
+(( flags[verbose] )) && remote_tar+=' --verbose'
+printf -v remote_tar_quoted '%q' "${remote_tar}"
 
 printf >&2 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
 
-# Force LC_ALL=C so rsync's --stats output is in English. The
-# partial-transfer count (the exit 23/24 path below) parses the
-# 'Number of regular files transferred:' line; under a non-English
-# locale rsync would emit a translated label and the awk match would
-# fail silently.
-if ! LC_ALL=C rsync "${rsync_opts[@]}" \
-    --files-from="${rsync_files_from}" \
-    -e "${ssh_command}" \
-    "dev@127.0.0.1:/home/dev/" \
-    "${partial}/tree/" \
-    | tee "${rsync_log}" >&2; then
-  # PIPESTATUS[0] is rsync's exit code; pipefail propagates it as the
-  # pipeline's non-zero status. Distinguish the partial-transfer
-  # codes (23, 24) from a transport failure (255) and from any other
-  # rsync-level error so the user sees a targeted hint, mirroring
-  # virtdev-restore. The trap removes the partial snapshot in all
-  # paths, so host-side state stays consistent across the dispatch.
-  rsync_exit="${PIPESTATUS[0]}"
-  case "${rsync_exit}" in
-    23|24)
-      partial_count="$(awk -F: '/^Number of regular files transferred:/ {
-        gsub(/[ ,]/, "", $2); print $2
-      }' "${rsync_log}")"
-      error 7 <<MESSAGE
-rsync transfer of ${project} completed with errors (exit ${rsync_exit}).
-${partial_count:-?} files were transferred; the rest were skipped or failed.
-The partial snapshot has been removed.
-See the per-file output above for which entries failed; verify the
-manifest against the guest with: virtdev-ssh ${project} ls -la
-MESSAGE
-      ;;
-    255)
-      error 17 <<MESSAGE
-rsync transfer failed during backup of ${project} (exit 255: transport).
-The SSH connection to the guest could not be established or was lost.
-The partial snapshot has been removed.
-Verify the virtual machine is reachable, then retry:
+remaining=$(( backup_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) || error 20 <<<'Backup deadline expired before capture'
+set +e
+LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+  "${remaining}" \
+  "${ssh_command}" dev@127.0.0.1 /usr/bin/bash -c "${remote_tar_quoted}" \
+  < "${files_from}" \
+  | head -c "$(( archive_limit + 1 ))" > "${archive}"
+capture_status=("${PIPESTATUS[@]}")
+set -e
 
-    virtdev-ssh ${project} true
-    virtdev-backup ${project}
+archive_size="$(stat -c '%s' -- "${archive}" 2>/dev/null || true)"
+[[ "${archive_size}" =~ ^[0-9]+$ ]] \
+  || error 18 <<<'Could not validate the captured backup archive'
+if (( archive_size > archive_limit )); then
+  error 19 <<MESSAGE
+Backup exceeded its ${archive_limit}-byte effective archive budget.
+The partial snapshot has been removed.
 MESSAGE
-      ;;
-    *)
-      error 18 <<MESSAGE
-rsync transfer failed during backup of ${project} (exit ${rsync_exit}).
-The transfer aborted before completion. See the per-file output
-above for the cause. The partial snapshot has been removed.
-MESSAGE
-      ;;
+fi
+if (( capture_status[1] != 0 )); then
+  error 18 <<<'Could not write the bounded backup archive'
+fi
+case "${capture_status[0]}" in
+  0) ;;
+  124|137) error 20 <<<'Backup capture exceeded its wall-clock deadline' ;;
+  255) error 17 <<<'SSH transport failed while capturing the backup' ;;
+  *) error 18 <<<"Guest archive creation failed (exit ${capture_status[0]})" ;;
+esac
+
+remaining=$(( backup_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) || error 20 <<<'Backup deadline expired before validation'
+set +e
+archive_summary="$({
+  LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+    "${remaining}" tar --quoting-style=escape --list --verbose --file="${archive}" \
+    | awk -v maximum="${VIRTDEV_BACKUP_MAX_ENTRIES}" '
+      {
+        count++
+        type = substr($0, 1, 1)
+        if (type !~ /^[-dlh]$/) bad_type = 1
+        if (count > maximum) { over = 1; exit }
+      }
+      END {
+        if (over) exit 42
+        print count + 0
+        if (bad_type) exit 43
+      }
+    '
+})"
+validation_status=$?
+set -e
+case "${validation_status}" in
+  0) ;;
+  42) error 19 <<<"Backup exceeded its ${VIRTDEV_BACKUP_MAX_ENTRIES}-entry budget" ;;
+  43) error 18 <<<'Backup archive contains an unsupported special file' ;;
+  124|137) error 20 <<<'Backup validation exceeded its wall-clock deadline' ;;
+  *) error 18 <<<'Guest produced an invalid backup archive' ;;
+esac
+entries_captured="${archive_summary}"
+[[ "${entries_captured}" =~ ^[0-9]+$ ]] \
+  || error 18 <<<'Could not count backup archive entries'
+
+available_extract_bytes="$(df -B1 --output=avail -- "${partial}" 2>/dev/null \
+  | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
+  || available_extract_bytes=''
+available_inodes="$(df --output=iavail -- "${partial}" 2>/dev/null \
+  | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
+  || available_inodes=''
+metadata_budget=$(( entries_captured * 4096 ))
+extract_budget=$(( archive_size + metadata_budget + backup_free_space_reserve ))
+if [[ ! "${available_extract_bytes}" =~ ^[0-9]+$ \
+      || ${#available_extract_bytes} -gt 18 \
+      || available_extract_bytes -lt extract_budget ]]; then
+  error 19 <<<'Not enough host free space to extract the bounded backup archive'
+fi
+if [[ "${available_inodes}" =~ ^[0-9]+$ ]] \
+    && (( available_inodes < entries_captured + backup_inode_reserve )); then
+  error 19 <<<'Not enough host inodes to extract the bounded backup archive'
+fi
+
+remaining=$(( backup_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) || error 20 <<<'Backup deadline expired before extraction'
+set +e
+timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+    "${remaining}" tar --extract --file="${archive}" \
+      --directory="${partial}/tree" --no-same-owner --same-permissions \
+      --delay-directory-restore --sparse
+extraction_status=$?
+set -e
+if (( extraction_status != 0 )); then
+  case "${extraction_status}" in
+    124|137) error 20 <<<'Backup extraction exceeded its wall-clock deadline' ;;
+    *) error 18 <<<"Backup extraction failed (exit ${extraction_status})" ;;
   esac
 fi
 
-rm -f "${rsync_files_from}"
-
-# Refuse a snapshot whose tree captured nothing. The manifest may
-# reference paths that are all absent on the guest (typo, wrong
-# project, recently deleted) — with --ignore-missing-args rsync
-# silently skips them and exits 0, leaving an empty tree; without
-# this guard the empty snapshot would be promoted to final/ and the
-# user would only discover it at restore time, possibly after a
-# destroy-recreate had already removed the source data.
-#
-# Count the tree itself so directory-only captures remain valid.
-entries_captured="$(snapshot_tree_count_entries "${partial}/tree")"
+rm -f "${archive}" "${files_from}"
 
 if (( entries_captured == 0 )); then
   error 11 <<MESSAGE
