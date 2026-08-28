@@ -102,6 +102,24 @@ if (( status != 15 )); then
 fi
 
 status=0
+VIRTDEV_INSTALL_DNS=999.1.1.1 \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-install" >"${output}" 2>&1 || status=$?
+if (( status != 15 )); then
+  printf 'installer accepted an invalid VIRTDEV_INSTALL_DNS value\n' >&2
+  exit 1
+fi
+
+status=0
+VIRTDEV_DNS=999.1.1.1 \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-install" >"${output}" 2>&1 || status=$?
+if (( status != 15 )); then
+  printf 'installer compatibility DNS alias is not validated\n' >&2
+  exit 1
+fi
+
+status=0
 VIRTDEV_PACKAGES="${test_tmp}/missing-packages" \
 NO_COLOR=1 \
   "${repository}/bin/virtdev-install" \
@@ -118,5 +136,15 @@ if ! grep -Fq "if ! ip_literal_is_valid \"\${dns}\"; then" \
   exit 1
 fi
 
+# shellcheck disable=SC1090
+source "${repository}/lib/virtdev/passt"
+declare -a passt_argv=()
+VIRTDEV_DNS=192.0.2.53 passt_command passt_argv "${test_tmp}/network.sock"
+if [[ " ${passt_argv[*]} " == *' --dns '* \
+      || " ${passt_argv[*]} " == *' 192.0.2.53 '* ]]; then
+  printf 'install-time DNS leaked into the runtime backend argv\n' >&2
+  exit 1
+fi
+
 printf 'ok - host and guest accept only IPv4 or IPv6 literals\n'
-printf 'ok - invalid explicit DNS is rejected before installation mutation\n'
+printf 'ok - installer DNS is validated and absent from runtime backend policy\n'

@@ -41,7 +41,8 @@
 #   VIRTDEV_TIMEZONE          Default: host timezone (UTC fallback)
 #   VIRTDEV_LOCALE            Default: host locale (en_US.UTF-8 fallback)
 #   VIRTDEV_KEYMAP            Default: host keymap (us fallback)
-#   VIRTDEV_DNS               Default: 9.9.9.9
+#   VIRTDEV_INSTALL_DNS       Default: ${VIRTDEV_DNS:-9.9.9.9}
+#   VIRTDEV_DNS               Legacy alias for VIRTDEV_INSTALL_DNS
 #   VIRTDEV_PACKAGES          Default: (none) path to extra packages file
 #   VIRTDEV_SCRIPT            Default: (none) path to custom install script
 #   VIRTDEV_INVENTORY         Default: (none) path to user inventory script
@@ -78,7 +79,7 @@ host_locale="$(sed -n 's/^LANG=//p' /etc/locale.conf 2>/dev/null || true)"
 host_keymap="$(sed -n 's/^KEYMAP=//p' /etc/vconsole.conf 2>/dev/null || true)"
 : "${VIRTDEV_KEYMAP:="${host_keymap:-us}"}"
 
-: "${VIRTDEV_DNS:=9.9.9.9}"
+: "${VIRTDEV_INSTALL_DNS:=${VIRTDEV_DNS:-9.9.9.9}}"
 
 : "${VIRTDEV_SYSTEM_DISK_SIZE:=24G}"
 : "${VIRTDEV_HOME_DISK_SIZE:=48G}"
@@ -120,7 +121,7 @@ declare -A spec_placeholders=([timezone]=tz [locale]=locale [keymap]=keymap
 # shellcheck disable=SC2034
 declare -a spec_positionals=("iso?")
 # shellcheck disable=SC2034
-declare -A flags=([dns]="${VIRTDEV_DNS}")
+declare -A flags=([dns]="${VIRTDEV_INSTALL_DNS}")
 declare -a positional=()
 arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
@@ -128,7 +129,7 @@ set -- "${positional[@]}"
 [[ -n "${flags[timezone]:-}" ]]  && VIRTDEV_TIMEZONE="${flags[timezone]}"
 [[ -n "${flags[locale]:-}" ]]    && VIRTDEV_LOCALE="${flags[locale]}"
 [[ -n "${flags[keymap]:-}" ]]    && VIRTDEV_KEYMAP="${flags[keymap]}"
-VIRTDEV_DNS="${flags[dns]}"
+VIRTDEV_INSTALL_DNS="${flags[dns]}"
 [[ -n "${flags[packages]:-}" ]]  && VIRTDEV_PACKAGES="${flags[packages]}"
 [[ -n "${flags[script]:-}" ]]    && VIRTDEV_SCRIPT="${flags[script]}"
 [[ -n "${flags[inventory]:-}" ]] && VIRTDEV_INVENTORY="${flags[inventory]}"
@@ -141,8 +142,8 @@ if [[ $# -eq 1 ]]; then
   VIRTDEV_ISO="${1}"
 fi
 
-if ! ip_literal_is_valid "${VIRTDEV_DNS}"; then
-  error 15 <<<"Invalid DNS address: '${VIRTDEV_DNS}' (expected an IPv4 or IPv6 literal)"
+if ! ip_literal_is_valid "${VIRTDEV_INSTALL_DNS}"; then
+  error 15 <<<"Invalid DNS address: '${VIRTDEV_INSTALL_DNS}' (expected an IPv4 or IPv6 literal)"
 fi
 
 if [[ -n "${VIRTDEV_PACKAGES:-}" && \
@@ -405,7 +406,7 @@ qemu-system-x86_64 \
     -fw_cfg name=opt/virtdev/timezone,string="${VIRTDEV_TIMEZONE}" \
     -fw_cfg name=opt/virtdev/locale,string="${VIRTDEV_LOCALE}" \
     -fw_cfg name=opt/virtdev/keymap,string="${VIRTDEV_KEYMAP}" \
-    -fw_cfg name=opt/virtdev/dns,string="${VIRTDEV_DNS}" \
+    -fw_cfg name=opt/virtdev/dns,string="${VIRTDEV_INSTALL_DNS}" \
     "${qemu_extra_args[@]+"${qemu_extra_args[@]}"}" &
 qemu_pid=$!
 

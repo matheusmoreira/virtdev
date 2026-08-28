@@ -1,62 +1,9 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034  # exit-code constants exported to consumers (virtdev-netexec, virtdev-start, virtdev-maintain)
-#
-# passt library: constructor helpers for the passt network backend.
-#
-# passt replaces QEMU user-mode (SLIRP) networking for project and
-# maintenance virtual machines. It always blocks the guest-to-host
-# global-address path (--map-guest-addr none); it blocks the guest-to-host
-# loopback path BY DEFAULT (--map-host-loopback none). A custom host-hole zone
-# opts a single launch back into loopback (allow_host_loopback=1, which OMITS
-# the none, falling back to passt's default map = the guest's default gateway ->
-# host 127.0.0.1); the per-port restriction is then enforced in nft, because
-# passt's host mapping is all-or-nothing.
-#
-# Public:
-#   passt_command <array_name> <socket> [<forward_port>] [<allow_host_loopback>]
-#       Fills the named array with the passt argv (pure; no process
-#       spawned). Single source of truth for the flag set used by every
-#       caller. Returning an array (rather than a string the caller must
-#       re-split) keeps the socket path intact even if it contains
-#       whitespace.
-#       array_name          — caller-declared array to populate.
-#       socket              — path passt creates and listens on; QEMU connects.
-#       forward_port        — if given, adds -t 127.0.0.1/<port>:22 to forward
-#                             host loopback port <port> to guest port 22.
-#       allow_host_loopback — "1" omits --map-host-loopback none (host-hole
-#                             zones); anything else keeps the default block.
-#
-#   passt_socket_clean <socket>
-#       Idempotent unlink of a stale passt socket file. passt's bind()
-#       returns EADDRINUSE on a leftover socket file; this unlink is
-#       load-bearing and must run before each passt start. The caller
-#       holds the virtdev lock, so there is no race with a concurrent
-#       start.
-#
-# The forward-port bind race is detected by the consumer via port_in_use
-# (lib/virtdev/port) — not duplicated here.
-#
-# Environment:
-#   VIRTDEV_DNS   DNS address passt advertises over DHCP (default 9.9.9.9).
-#                 The guest runs UseDNS=false and resolves via the value
-#                 baked into resolved.conf.d at install time, so this
-#                 selects the guest resolver only at install time.
-#
-# Exit codes reserved for the passt backend (raised by virtdev-netexec,
-# which owns the constants below):
-#   83  passt binary not found in PATH
-#   84  passt failed to initialise (non-zero exit before QEMU exec)
-#   85  forward-port bind race (port taken when passt tried to bind)
-#   86  QEMU command not found / not executable (pre-flight before exec)
-#
-# Design note: passt initialises its listening socket *before* it forks
-# to background (default mode). The instant passt's foreground invocation
-# returns 0 the socket is listening and QEMU can connect — no socket-wait
-# loop needed. The shim (virtdev-netexec) relies on this invariant.
+# shellcheck disable=SC2034  # exit constants are consumed by launch commands
+# Temporary passt backend argv. passt creates the stream socket before its
+# successful foreground invocation returns.
 #
 set -euo pipefail
-
-: "${VIRTDEV_DNS:="9.9.9.9"}"
 
 readonly passt_missing_exit_code=83
 readonly passt_init_failure_exit_code=84
@@ -69,27 +16,13 @@ passt_command() {
   local -r forward_port="${3:-}"
   local -r allow_host_loopback="${4:-}"
 
-  # --dns is defense-bearing, not cosmetic: by default passt advertises
-  # the host's own resolver address (e.g. systemd-resolved at
-  # 127.0.0.53) to the guest over DHCP. Pinning a fixed value overrides
-  # that. This controls only what passt advertises, not what the guest
-  # resolves with: the guest runs UseDNS=false and uses the
-  # resolved.conf.d value baked at install time, so VIRTDEV_DNS selects
-  # the guest resolver at install time, not at runtime. A runtime
-  # VIRTDEV_DNS is not delivered into this transient --user unit either;
-  # the value here is just the advertised default.
   _command=(
     passt
     --socket "${socket}"
     --map-guest-addr none
-    --dns "${VIRTDEV_DNS}"
   )
-  # Host-loopback gate. Default: block guest->host loopback entirely. A host-hole
-  # zone launch passes allow_host_loopback=1 to OMIT the block, falling back to
-  # passt's default map (the guest's default gateway -> host 127.0.0.1). The
-  # per-port restriction is enforced by the nft `inet virtdev` table, NOT here —
-  # passt's host mapping is all-or-nothing. --map-guest-addr none stays in both
-  # cases, so the host's global/LAN-IP path remains blocked (loopback-only).
+  # A host-hole zone omits the all-or-nothing loopback block; the temporary
+  # firewall then restricts the mapped path by port.
   if [[ "${allow_host_loopback}" != "1" ]]; then
     _command+=(--map-host-loopback none)
   fi

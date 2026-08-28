@@ -147,7 +147,8 @@ project VM without modifying fstab.
 - Installed system: same stack, with `UseDNS=false` in the `[DHCPv4]` section
   so the guest ignores the DNS server advertised over DHCP (by passt) and
   resolves via the fixed `systemd/resolved.conf.d/dns.conf` instead — Quad9 by
-  default, set from an IPv4 or IPv6 literal in `VIRTDEV_DNS` at install time
+  default, set from an IPv4 or IPv6 literal in `VIRTDEV_INSTALL_DNS` at install
+  time (`VIRTDEV_DNS` remains a compatibility alias)
 
 ### User
 
@@ -1021,7 +1022,7 @@ All scripts respect these variables:
 | `VIRTDEV_TIMEZONE`        | host timezone (UTC fallback)                    |
 | `VIRTDEV_LOCALE`          | host locale (`en_US.UTF-8` fallback)            |
 | `VIRTDEV_KEYMAP`          | host keymap (`us` fallback)                     |
-| `VIRTDEV_DNS`             | `9.9.9.9` (IPv4 or IPv6 literal)                |
+| `VIRTDEV_INSTALL_DNS`     | `9.9.9.9` (install-time IP literal; legacy alias `VIRTDEV_DNS`) |
 | `VIRTDEV_PACKAGES`        | (none)                                          |
 | `VIRTDEV_SCRIPT`          | (none)                                          |
 | `VIRTDEV_INVENTORY`       | (none)                                          |
