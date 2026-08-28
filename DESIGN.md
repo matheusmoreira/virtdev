@@ -1203,8 +1203,8 @@ there is no silent shadowing when both files exist.
 
 - **Backup system scope.** `virtdev-backup` captures a bounded uncompressed tar
   stream and extracts it only after validating byte and entry budgets;
-  `virtdev-restore` preflights apparent bytes, entries, and elapsed time before
-  pushing the recorded tree with rsync. Every snapshot owns its inodes
+  `virtdev-restore` preflights regular logical bytes, entries, and elapsed time
+  before pushing the recorded tree with rsync. Every snapshot owns its inodes
   independently, so editing one restore point cannot rewrite
   another. Not planned: compression, encryption at rest, automated
   retention or rotation policy, cross-project restore, system-disk

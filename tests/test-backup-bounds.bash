@@ -7,12 +7,16 @@ test_tmp="$(mktemp -d)"
 trap 'rm -rf -- "${test_tmp}"' EXIT
 
 fixture_bin="${test_tmp}/bin"
+restore_bin="${test_tmp}/restore-bin"
 sync_bin="${test_tmp}/sync-bin"
-mkdir -p "${fixture_bin}" "${test_tmp}/guest/data/sub"
+mkdir -p "${fixture_bin}" "${restore_bin}" "${test_tmp}/guest/data/sub"
 mkdir "${sync_bin}"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
 chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl"
+cp "${repository}/tests/fixtures/ssh-restore" "${restore_bin}/ssh"
+cp "${repository}/tests/fixtures/systemctl" "${restore_bin}/systemctl"
+chmod +x "${restore_bin}/ssh" "${restore_bin}/systemctl"
 ln -s "${repository}/tests/fixtures/sync-counted" "${sync_bin}/sync"
 
 printf 'payload\n' > "${test_tmp}/guest/data/sub/file"
@@ -33,6 +37,7 @@ prepare_home() {
   mkdir -p "${home}/projects/probe" "${home}/system"
   printf 'data\n' > "${home}/projects/probe/manifest"
   printf '2222\n' > "${home}/projects/probe/port"
+  printf '1\n' > "${home}/projects/probe/generation"
   printf 'ssh-host-identity=1\n' > "${home}/projects/probe/guest-contract"
   printf '1\n' > "${home}/system/generation"
   (
@@ -75,6 +80,44 @@ if [[ ! -f "${snapshot}/tree/data/sub/file" \
       || "$(< "${snapshot}/tree/data/sub/file")" != payload \
       || -e "${snapshot}/capture.tar" ]]; then
   printf 'bounded archive was not promoted as an ordinary snapshot tree\n' >&2
+  exit 1
+fi
+
+boundary_home="${test_tmp}/boundary-home"
+prepare_home "${boundary_home}"
+printf 'sparse\n' > "${boundary_home}/projects/probe/manifest"
+status=0
+boundary_snapshot="$(run_backup "${boundary_home}" 2097152 1 10 \
+  env BACKUP_TAR_STREAM="${test_tmp}/sparse.tar" \
+  2>"${test_tmp}/boundary-backup.stderr")" || status=$?
+if (( status != 0 )); then
+  printf 'exact logical-byte backup failed (status %d)\n' "${status}" >&2
+  cat "${test_tmp}/boundary-backup.stderr" >&2
+  exit 1
+fi
+boundary_id="${boundary_snapshot#"${boundary_home}/backups/probe/"}"
+boundary_guest="${test_tmp}/boundary-guest"
+mkdir "${boundary_guest}"
+status=0
+PATH="${restore_bin}:${PATH}" \
+  HOME="${test_tmp}" \
+  XDG_CONFIG_HOME="${test_tmp}/config" \
+  NO_COLOR=1 \
+  SYSTEMCTL_ACTIVE_STATE=active \
+  VIRTDEV_HOME="${boundary_home}" \
+  VIRTDEV_SSH_KEY="${ssh_key}" \
+  VIRTDEV_RESTORE_MAX_BYTES=2097152 \
+  VIRTDEV_RESTORE_MAX_ENTRIES=1 \
+  VIRTDEV_RESTORE_TIMEOUT=10 \
+  VIRTDEV_RESTORE_KILL_AFTER=1 \
+  RESTORE_GUEST_ROOT="${boundary_guest}" \
+  "${repository}/bin/virtdev-restore" probe "${boundary_id}" \
+  >"${test_tmp}/boundary-restore.output" 2>&1 || status=$?
+if (( status != 0 )) \
+    || [[ "$(stat -c '%s' "${boundary_guest}/sparse" 2>/dev/null)" != 2097152 ]]; then
+  printf 'backup/restore logical-byte boundary disagreed (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/boundary-restore.output" >&2
   exit 1
 fi
 
@@ -187,4 +230,5 @@ if (( status != 18 )) || [[ "$(< "${post_sync_count}")" != 2 \
 fi
 
 printf 'ok - backup capture enforces physical, logical, entry, and time budgets\n'
+printf 'ok - backup and restore agree at the logical-byte boundary\n'
 printf 'ok - backup publication is durable or preserves inspectable recovery state\n'

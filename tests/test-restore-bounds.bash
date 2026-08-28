@@ -63,8 +63,13 @@ run_restore() {
 }
 
 guest="${test_tmp}/guest"
+logical_bytes=$((
+  $(stat -c '%s' "${snapshot}/tree/real/sub/file")
+  + $(stat -c '%s' "${snapshot}/tree/hard-one")
+  + $(stat -c '%s' "${snapshot}/tree/sparse")
+))
 status=0
-run_restore "${guest}" 8388608 100 10 \
+run_restore "${guest}" "${logical_bytes}" 100 10 \
   >"${test_tmp}/success.output" 2>&1 || status=$?
 if (( status != 0 )) || [[ ! -f "${guest}/real/sub/file" \
       || ! -L "${guest}/link" \
@@ -107,7 +112,7 @@ printf 'many/\n' >> "${snapshot}/manifest"
 entry_guest="${test_tmp}/entry-guest"
 entry_ssh_started="${test_tmp}/entry-ssh-started"
 status=0
-run_restore "${entry_guest}" 8388608 10 10 \
+run_restore "${entry_guest}" "${logical_bytes}" 10 10 \
   env RESTORE_SSH_STARTED_FILE="${entry_ssh_started}" \
   >"${test_tmp}/entry.output" 2>&1 || status=$?
 if (( status != 19 )) || [[ -e "${entry_ssh_started}" ]] \
@@ -121,7 +126,7 @@ fi
 timeout_guest="${test_tmp}/timeout-guest"
 timeout_pid_file="${test_tmp}/timeout.pid"
 status=0
-run_restore "${timeout_guest}" 8388608 100 2 \
+run_restore "${timeout_guest}" "${logical_bytes}" 100 2 \
   env RESTORE_SSH_DELAY=5 RESTORE_SSH_PID_FILE="${timeout_pid_file}" \
   >"${test_tmp}/timeout.output" 2>&1 || status=$?
 if (( status != 20 )) || [[ ! -s "${timeout_pid_file}" ]] \
@@ -134,4 +139,4 @@ if (( status != 20 )) || [[ ! -s "${timeout_pid_file}" ]] \
 fi
 
 printf 'ok - restore uses a compatible manifest file and preserves inode fidelity\n'
-printf 'ok - restore bounds apparent bytes, entry count, and total transfer time\n'
+printf 'ok - restore bounds regular logical bytes, entry count, and total time\n'
