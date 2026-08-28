@@ -18,6 +18,7 @@ fi
 disk_dir='disk,a,,b=c d\e'
 sock_dir='sock,a,,b=c d\e'
 project='project,a,,b=c d\e'
+ssh_host_key='key,a,,b=c d\e'
 ovmf_code='firmware,a,,b=c d\e'
 standalone='standalone,a,,b=c d\e'
 network_device='virtio-net-pci,netdev=net0,host_mtu=1500'
@@ -31,7 +32,7 @@ network_device+=',ctrl_guest_offloads=off'
 
 declare -a actual=()
 qemu_command actual "${disk_dir}" "${sock_dir}" "${project}" \
-  4096 4 "${ovmf_code}" -cdrom "${standalone}"
+  "${ssh_host_key}" 4096 4 "${ovmf_code}" -cdrom "${standalone}"
 
 # shellcheck disable=SC2054  # commas are literal QEMU option syntax
 declare -a expected=(
@@ -56,6 +57,7 @@ declare -a expected=(
   -chardev 'socket,id=serial,path=sock,,a,,,,b=c d\e/console.sock,server=on,wait=off'
   -serial chardev:serial
   -fw_cfg 'name=opt/virtdev/project,string=project,,a,,,,b=c d\e'
+  -fw_cfg 'name=opt/virtdev/ssh_host_key,file=key,,a,,,,b=c d\e'
   -cdrom 'standalone,a,,b=c d\e'
 )
 

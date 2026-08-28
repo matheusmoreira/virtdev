@@ -264,13 +264,21 @@ maintenance_boot() {
       "${maintenance_project}"
     return 1
   fi
+  if ! ssh_host_identity_remove maintenance; then
+    printf >&2 "Could not remove stale maintenance SSH identity: '%s'\n" \
+      "${maintenance_project}/ssh-host"
+    return 1
+  fi
+  ssh_host_identity_ensure maintenance
+  local ssh_host_key
+  ssh_host_key="$(ssh_host_identity_key maintenance)"
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
   # Disk and runtime roots differ; shared flags own the isolation boundary.
   local -a qemu_argv=()
   if ! qemu_command qemu_argv \
       "${maintenance_directory}" "${maintenance_project}" maintenance \
-      "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" "${OVMF_CODE}" \
+      "${ssh_host_key}" "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" "${OVMF_CODE}" \
       "${qemu_extra_args[@]}"; then
     printf >&2 'Could not construct the maintenance QEMU command.\n'
     return 1
@@ -317,6 +325,9 @@ maintenance_cleanup() {
 
   local cleanup_status=0
   lifecycle_clean_unowned "${maintenance_project}" || cleanup_status=$?
+  if ! ssh_host_identity_remove maintenance; then
+    (( cleanup_status )) || cleanup_status=1
+  fi
   systemctl --user reset-failed "${unit}" 2>/dev/null || true
   rmdir "${maintenance_project}" 2>/dev/null || true
   # Once terminal state is proven, a malformed runtime artifact does not keep
@@ -379,7 +390,8 @@ MESSAGE
 }
 
 maintenance_wait_ssh() {
-  ssh_poll_until_ready "${VIRTDEV_SSH_KEY}" "${maintenance_port}" "${unit}" "${VIRTDEV_WAIT_TIMEOUT}"
+  ssh_poll_until_ready maintenance "${VIRTDEV_SSH_KEY}" \
+    "${maintenance_port}" "${unit}" "${VIRTDEV_WAIT_TIMEOUT}"
 }
 
 # Wait for final ExecMainStatus. `escalate` delegates TERM/KILL to systemd;

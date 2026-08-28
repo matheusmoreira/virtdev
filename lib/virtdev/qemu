@@ -10,7 +10,7 @@
 #       comma-delimited QEMU option. Other bytes are preserved.
 #
 #   qemu_command <array_name> <disk_dir> <sock_dir> <fw_cfg_project> \
-#                <memory> <cpus> <ovmf_code> [extra_args...]
+#                <ssh_host_key> <memory> <cpus> <ovmf_code> [extra_args...]
 #       Build the argv after the `virtdev-netexec ... --` boundary without
 #       spawning it. disk_dir holds the images; sock_dir holds the HMP, QMP,
 #       serial, and passt sockets. They differ during maintenance. Fixed-field
@@ -38,10 +38,11 @@ qemu_command() {
   local -r disk_dir="${2}"
   local -r sock_dir="${3}"
   local fw_cfg_project="${4}"
-  local -r memory="${5}"
-  local -r cpus="${6}"
-  local ovmf_code="${7}"
-  shift 7
+  local ssh_host_key="${5}"
+  local -r memory="${6}"
+  local -r cpus="${7}"
+  local ovmf_code="${8}"
+  shift 8
   # Remaining positionals (if any) are the caller's trailing extra args.
 
   runtime_socket_paths_fit "${sock_dir}" || return 1
@@ -65,6 +66,7 @@ qemu_command() {
   qemu_suboption_encode qmp_sock
   qemu_suboption_encode console_sock
   qemu_suboption_encode fw_cfg_project
+  qemu_suboption_encode ssh_host_key
 
   # The stream wire format has no virtio-net header. Disable every negotiated
   # segmentation/checksum offload so each framed payload is one ordinary L2
@@ -102,6 +104,7 @@ qemu_command() {
     -chardev socket,id=serial,path="${console_sock}",server=on,wait=off
     -serial chardev:serial
     -fw_cfg name=opt/virtdev/project,string="${fw_cfg_project}"
+    -fw_cfg name=opt/virtdev/ssh_host_key,file="${ssh_host_key}"
   )
 
   # Trailing arguments cannot rewrite the fixed drive/network entries above.

@@ -27,7 +27,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments project terminal port qemu firewall runtime lifecycle integer
+import error validate lock arguments project terminal port qemu firewall runtime lifecycle integer ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_VM_MEMORY:=4096}"
@@ -232,6 +232,9 @@ if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
   error 6 <<<"Project virtual machine is already running: ${project}"
 fi
 
+ssh_host_identity_ensure "${project}"
+ssh_host_key="$(ssh_host_identity_key "${project}")"
+
 # Resolve SSH port
 port_file="$(runtime_port_file "${project_directory}")"
 
@@ -322,7 +325,7 @@ printf >&2 "Starting project virtual machine %s on SSH port %d...\n" "${project}
 declare -a qemu_argv=()
 qemu_command qemu_argv \
     "${project_directory}" "${project_directory}" "${project}" \
-    "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" "${OVMF_CODE}"
+    "${ssh_host_key}" "${VIRTDEV_VM_MEMORY}" "${VIRTDEV_VM_CPUS}" "${OVMF_CODE}"
 
 # --collect intentionally omitted: it sets CollectMode=inactive-or-failed,
 # which would let systemd garbage-collect a failed unit before anything
