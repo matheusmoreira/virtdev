@@ -3,11 +3,12 @@
 set -euo pipefail
 
 project_file="${VIRTDEV_FW_CFG_PROJECT:-/sys/firmware/qemu_fw_cfg/by_name/opt/virtdev/project/raw}"
+host_key_file="${VIRTDEV_SSH_HOST_KEY_FILE:-/sys/firmware/qemu_fw_cfg/by_name/opt/virtdev/ssh_host_key/raw}"
 ssh_directory="${VIRTDEV_SSH_DIRECTORY:-/etc/ssh}"
 runtime_directory="${VIRTDEV_SSH_RUNTIME_DIRECTORY:-/run/virtdev-sshd}"
 keygen="${VIRTDEV_SSH_KEYGEN:-/usr/bin/ssh-keygen}"
 runtime_key="${runtime_directory}/ssh_host_ed25519_key"
-maintenance_marker="${runtime_directory}/maintenance"
+prepared_marker="${runtime_directory}/prepared"
 
 read_project() {
   local project=""
@@ -45,33 +46,43 @@ scrub() {
 }
 
 prepare() {
-  local project
+  local project public_key key_type key_blob key_extra
   project="$(read_project)" || return 1
-  [[ "${project}" == maintenance ]] || return 0
+  [[ -f "${host_key_file}" && ! -L "${host_key_file}" \
+      && -r "${host_key_file}" ]] || {
+    printf >&2 'virtdev: missing injected SSH host identity for %s\n' "${project}"
+    return 1
+  }
 
   install -d -m 0700 "${runtime_directory}"
   rm -f -- "${runtime_key}" "${runtime_key}.pub" \
-    "${runtime_directory}/hostkey.conf" "${maintenance_marker}"
-  umask 077
-  "${keygen}" -q -t ed25519 -N '' -f "${runtime_key}"
+    "${runtime_directory}/hostkey.conf" "${prepared_marker}"
+  install -m 0600 -- "${host_key_file}" "${runtime_key}"
+  public_key="$("${keygen}" -y -P '' -f "${runtime_key}" 2>/dev/null)" || {
+    printf >&2 'virtdev: invalid injected SSH host identity for %s\n' "${project}"
+    return 1
+  }
+  read -r key_type key_blob key_extra <<< "${public_key}"
+  if [[ "${key_type}" != ssh-ed25519 || -z "${key_blob}" \
+      || -n "${key_extra}" ]]; then
+    printf >&2 'virtdev: injected SSH host identity is not ed25519\n'
+    return 1
+  fi
+  printf '%s %s\n' "${key_type}" "${key_blob}" > "${runtime_key}.pub"
+  chmod 0644 "${runtime_key}.pub"
   printf 'HostKey %s\n' "${runtime_key}" \
     > "${runtime_directory}/hostkey.conf"
 
   scrub
-  : > "${maintenance_marker}"
+  : > "${prepared_marker}"
 }
 
 generate() {
-  local project
-  project="$(read_project)" || return 1
-  if [[ "${project}" == maintenance ]]; then
-    if [[ ! -f "${maintenance_marker}" ]]; then
-      printf >&2 'virtdev: maintenance host-key preparation is incomplete\n'
-      return 1
-    fi
-    return 0
+  read_project >/dev/null || return 1
+  if [[ ! -f "${prepared_marker}" ]]; then
+    printf >&2 'virtdev: SSH host-key preparation is incomplete\n'
+    return 1
   fi
-  exec "${keygen}" -A
 }
 
 case "${1:-}" in

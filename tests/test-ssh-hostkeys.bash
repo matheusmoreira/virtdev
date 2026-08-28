@@ -8,10 +8,44 @@ test_tmp="$(mktemp -d)"
 trap 'rm -rf -- "${test_tmp}"' EXIT
 
 project_file="${test_tmp}/project"
+host_key_file="${test_tmp}/injected-host-key"
 ssh_directory="${test_tmp}/ssh"
 runtime_directory="${test_tmp}/run"
 all_marker="${test_tmp}/keygen-all"
+
+host_store="${test_tmp}/host-store"
+mkdir -p "${host_store}/projects/project-a" \
+  "${host_store}/projects/project-b"
+(
+  export VIRTDEV_HOME="${host_store}"
+  # shellcheck disable=SC1090
+  source "${repository}/lib/virtdev/import"
+  import ssh
+  ssh_host_identity_ensure project-a
+  ssh_host_identity_ensure project-b
+  ssh_host_identity_require project-a
+  project_a_first="$(< "$(ssh_host_identity_key project-a).pub")"
+  ssh_host_identity_ensure project-a
+  [[ "$(< "$(ssh_host_identity_key project-a).pub")" == "${project_a_first}" ]]
+  [[ "${project_a_first}" != "$(< "$(ssh_host_identity_key project-b).pub")" ]]
+  [[ "$(( $(stat -c '%s' "$(ssh_host_identity_key project-a).pub") + 2 ))" \
+        == "$(stat -c '%s' "$(ssh_host_identity_known_hosts project-a)")" ]]
+  grep -Fqx -- "* ${project_a_first}" \
+    "$(ssh_host_identity_known_hosts project-a)"
+
+  printf 'corrupt\n' > "$(ssh_host_identity_known_hosts project-a)"
+  status=0
+  (ssh_host_identity_require project-a) 2>/dev/null || status=$?
+  (( status == 103 ))
+  [[ "$(< "$(ssh_host_identity_key project-a).pub")" == "${project_a_first}" ]]
+
+  ssh_host_identity_remove project-b
+  ssh_host_identity_ensure project-b
+  [[ "${project_a_first}" != "$(< "$(ssh_host_identity_key project-b).pub")" ]]
+)
+
 mkdir -p "${ssh_directory}"
+/usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' -f "${host_key_file}"
 printf %s maintenance > "${project_file}"
 printf 'config sentinel\n' > "${ssh_directory}/sshd_config"
 for algorithm in dsa ecdsa ed25519 rsa; do
@@ -24,6 +58,7 @@ printf 'future public\n' > \
   "${ssh_directory}/ssh_host_mldsa44_ed25519_key.pub"
 
 VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
 VIRTDEV_SSH_DIRECTORY="${ssh_directory}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${runtime_directory}" \
   "${helper}" prepare
@@ -43,10 +78,14 @@ if compgen -G "${ssh_directory}/ssh_host_*_key" >/dev/null \
 fi
 if [[ ! -s "${runtime_directory}/ssh_host_ed25519_key" \
       || ! -s "${runtime_directory}/ssh_host_ed25519_key.pub" \
-      || ! -f "${runtime_directory}/maintenance" ]]; then
-  printf 'maintenance did not prepare its ephemeral host identity\n' >&2
+      || ! -f "${runtime_directory}/prepared" ]]; then
+  printf 'guest did not prepare its injected host identity\n' >&2
   exit 1
 fi
+cmp -s "${host_key_file}" "${runtime_directory}/ssh_host_ed25519_key" || {
+  printf 'guest host identity differs from the injected key\n' >&2
+  exit 1
+}
 if [[ "$(stat -c '%a' "${runtime_directory}/ssh_host_ed25519_key")" != 600 ]]; then
   printf 'ephemeral host private key has unsafe permissions\n' >&2
   exit 1
@@ -67,11 +106,11 @@ VIRTDEV_SSH_KEYGEN="${repository}/tests/fixtures/ssh-keygen-hostkeys" \
 SSH_KEYGEN_ALL_MARKER="${all_marker}" \
   "${helper}" generate
 if [[ -e "${all_marker}" ]]; then
-  printf 'maintenance invoked persistent host-key generation\n' >&2
+  printf 'guest invoked persistent host-key generation\n' >&2
   exit 1
 fi
 
-rm -f -- "${runtime_directory}/maintenance"
+rm -f -- "${runtime_directory}/prepared"
 status=0
 VIRTDEV_FW_CFG_PROJECT="${project_file}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${runtime_directory}" \
@@ -79,7 +118,7 @@ VIRTDEV_SSH_KEYGEN="${repository}/tests/fixtures/ssh-keygen-hostkeys" \
 SSH_KEYGEN_ALL_MARKER="${all_marker}" \
   "${helper}" generate 2>/dev/null || status=$?
 if (( status == 0 )) || [[ -e "${all_marker}" ]]; then
-  printf 'incomplete maintenance preparation failed open\n' >&2
+  printf 'incomplete host-key preparation failed open\n' >&2
   exit 1
 fi
 
@@ -89,33 +128,47 @@ project_runtime="${test_tmp}/project-run"
 mkdir -p "${project_ssh}"
 printf 'keep\n' > "${project_ssh}/ssh_host_ed25519_key"
 VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
 VIRTDEV_SSH_DIRECTORY="${project_ssh}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${project_runtime}" \
   "${helper}" prepare
-if [[ "$(< "${project_ssh}/ssh_host_ed25519_key")" != keep \
-      || -e "${project_runtime}/maintenance" ]]; then
-  printf 'ordinary project identity was treated as maintenance\n' >&2
+if [[ -e "${project_ssh}/ssh_host_ed25519_key" \
+      || ! -f "${project_runtime}/prepared" ]]; then
+  printf 'ordinary project did not use the injected host identity\n' >&2
   exit 1
 fi
+cmp -s "${host_key_file}" "${project_runtime}/ssh_host_ed25519_key" || exit 1
 
 VIRTDEV_FW_CFG_PROJECT="${project_file}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${project_runtime}" \
 VIRTDEV_SSH_KEYGEN="${repository}/tests/fixtures/ssh-keygen-hostkeys" \
 SSH_KEYGEN_ALL_MARKER="${all_marker}" \
   "${helper}" generate
-if [[ ! -e "${all_marker}" ]]; then
-  printf 'ordinary project skipped persistent host-key generation\n' >&2
+if [[ -e "${all_marker}" ]]; then
+  printf 'ordinary project invoked persistent host-key generation\n' >&2
   exit 1
 fi
 
 missing_project="${test_tmp}/missing-project"
 status=0
 VIRTDEV_FW_CFG_PROJECT="${missing_project}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
 VIRTDEV_SSH_DIRECTORY="${project_ssh}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${test_tmp}/missing-run" \
   "${helper}" prepare 2>/dev/null || status=$?
 if (( status == 0 )); then
   printf 'missing fw_cfg identity was accepted\n' >&2
+  exit 1
+fi
+
+status=0
+VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${test_tmp}/missing-host-key" \
+VIRTDEV_SSH_DIRECTORY="${project_ssh}" \
+VIRTDEV_SSH_RUNTIME_DIRECTORY="${test_tmp}/missing-key-run" \
+  "${helper}" prepare 2>/dev/null || status=$?
+if (( status == 0 )); then
+  printf 'missing injected host key was accepted\n' >&2
   exit 1
 fi
 
@@ -139,10 +192,11 @@ assert_project_rejected() {
   local -r description="${1}"
   status=0
   VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+  VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
   VIRTDEV_SSH_DIRECTORY="${parser_ssh}" \
   VIRTDEV_SSH_RUNTIME_DIRECTORY="${parser_runtime}" \
     "${helper}" prepare 2>/dev/null || status=$?
-  if (( status == 0 )) || [[ -e "${parser_runtime}/maintenance" ]]; then
+  if (( status == 0 )) || [[ -e "${parser_runtime}/prepared" ]]; then
     printf 'invalid fw_cfg identity was accepted: %s\n' \
       "${description}" >&2
     exit 1
@@ -164,12 +218,13 @@ assert_project_rejected length
 printf %s maintenance-other > "${project_file}"
 printf 'prefix sentinel\n' > "${parser_ssh}/ssh_host_ed25519_key"
 VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
 VIRTDEV_SSH_DIRECTORY="${parser_ssh}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${parser_runtime}" \
   "${helper}" prepare
-if [[ "$(< "${parser_ssh}/ssh_host_ed25519_key")" != 'prefix sentinel' \
-      || -e "${parser_runtime}/maintenance" ]]; then
-  printf 'maintenance prefix was treated as the reserved identity\n' >&2
+if [[ -e "${parser_ssh}/ssh_host_ed25519_key" \
+      || ! -e "${parser_runtime}/prepared" ]]; then
+  printf 'valid project identity did not use injected host key\n' >&2
   exit 1
 fi
 
@@ -190,10 +245,11 @@ for unsafe_type in directory fifo; do
   fi
   status=0
   VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+  VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
   VIRTDEV_SSH_DIRECTORY="${unsafe_ssh}" \
   VIRTDEV_SSH_RUNTIME_DIRECTORY="${unsafe_runtime}" \
     "${helper}" prepare 2>/dev/null || status=$?
-  if (( status == 0 )) || [[ -e "${unsafe_runtime}/maintenance" ]]; then
+  if (( status == 0 )) || [[ -e "${unsafe_runtime}/prepared" ]]; then
     printf 'unsafe %s host-key entry was accepted\n' \
       "${unsafe_type}" >&2
     exit 1
@@ -206,13 +262,14 @@ mkdir -p "${keygen_ssh}"
 printf 'persistent\n' > "${keygen_ssh}/ssh_host_ed25519_key"
 status=0
 VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
 VIRTDEV_SSH_DIRECTORY="${keygen_ssh}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${keygen_runtime}" \
 VIRTDEV_SSH_KEYGEN=/usr/bin/false \
   "${helper}" prepare 2>/dev/null || status=$?
-if (( status == 0 )) || [[ -e "${keygen_runtime}/maintenance" ]] \
+if (( status == 0 )) || [[ -e "${keygen_runtime}/prepared" ]] \
     || [[ ! -e "${keygen_ssh}/ssh_host_ed25519_key" ]]; then
-  printf 'ephemeral key-generation failure did not fail closed\n' >&2
+  printf 'host-key validation failure did not fail closed\n' >&2
   exit 1
 fi
 
@@ -225,11 +282,11 @@ status=0
 PATH="${failure_bin}:${PATH}" \
 SSH_RM_FAIL_TARGET="${rm_target}" \
 VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
 VIRTDEV_SSH_DIRECTORY="${rm_ssh}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${rm_runtime}" \
-VIRTDEV_SSH_KEYGEN="${repository}/tests/fixtures/ssh-keygen-hostkeys" \
   "${helper}" prepare 2>/dev/null || status=$?
-if (( status == 0 )) || [[ -e "${rm_runtime}/maintenance" ]] \
+if (( status == 0 )) || [[ -e "${rm_runtime}/prepared" ]] \
     || [[ ! -e "${rm_target}" ]]; then
   printf 'persistent key-removal failure did not fail closed\n' >&2
   exit 1
@@ -242,60 +299,59 @@ printf 'persistent\n' > "${sync_ssh}/ssh_host_ed25519_key"
 status=0
 PATH="${failure_bin}:${PATH}" \
 VIRTDEV_FW_CFG_PROJECT="${project_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${host_key_file}" \
 VIRTDEV_SSH_DIRECTORY="${sync_ssh}" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${sync_runtime}" \
-VIRTDEV_SSH_KEYGEN="${repository}/tests/fixtures/ssh-keygen-hostkeys" \
   "${helper}" prepare 2>/dev/null || status=$?
-if (( status == 0 )) || [[ -e "${sync_runtime}/maintenance" ]]; then
+if (( status == 0 )) || [[ -e "${sync_runtime}/prepared" ]]; then
   printf 'host-key deletion sync failure did not fail closed\n' >&2
   exit 1
 fi
 
 project_a_file="${test_tmp}/project-a"
 project_b_file="${test_tmp}/project-b"
-project_a_ssh="${test_tmp}/project-a-ssh"
-project_b_ssh="${test_tmp}/project-b-ssh"
+project_a_key="${test_tmp}/project-a-key"
+project_b_key="${test_tmp}/project-b-key"
 printf %s project-a > "${project_a_file}"
 printf %s project-b > "${project_b_file}"
+/usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' -f "${project_a_key}"
+/usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' -f "${project_b_key}"
+mkdir -p "${test_tmp}/project-a-ssh" "${test_tmp}/project-b-ssh"
 for project_case in a b; do
   project_path_name="project_${project_case}_file"
-  ssh_path_name="project_${project_case}_ssh"
+  key_path_name="project_${project_case}_key"
   project_path="${!project_path_name}"
-  ssh_path="${!ssh_path_name}"
-  lifecycle_marker="${test_tmp}/project-${project_case}-keygen"
+  key_path="${!key_path_name}"
   VIRTDEV_FW_CFG_PROJECT="${project_path}" \
+  VIRTDEV_SSH_HOST_KEY_FILE="${key_path}" \
+  VIRTDEV_SSH_DIRECTORY="${test_tmp}/project-${project_case}-ssh" \
   VIRTDEV_SSH_RUNTIME_DIRECTORY="${test_tmp}/project-${project_case}-run" \
-  VIRTDEV_SSH_KEYGEN="${repository}/tests/fixtures/ssh-keygen-hostkeys" \
-  SSH_KEYGEN_ALL_MARKER="${lifecycle_marker}" \
-  SSH_KEYGEN_DIRECTORY="${ssh_path}" \
-    "${helper}" generate
+    "${helper}" prepare
 done
-project_a_public="$(< "${project_a_ssh}/ssh_host_ed25519_key.pub")"
-project_b_public="$(< "${project_b_ssh}/ssh_host_ed25519_key.pub")"
+project_a_public="$(< "${test_tmp}/project-a-run/ssh_host_ed25519_key.pub")"
+project_b_public="$(< "${test_tmp}/project-b-run/ssh_host_ed25519_key.pub")"
 if [[ "${project_a_public}" == "${project_b_public}" ]]; then
   printf 'two projects received the same host identity\n' >&2
   exit 1
 fi
 VIRTDEV_FW_CFG_PROJECT="${project_a_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${project_a_key}" \
+VIRTDEV_SSH_DIRECTORY="${test_tmp}/project-a-ssh" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${test_tmp}/project-a-run" \
-VIRTDEV_SSH_KEYGEN="${repository}/tests/fixtures/ssh-keygen-hostkeys" \
-SSH_KEYGEN_ALL_MARKER="${test_tmp}/project-a-keygen" \
-SSH_KEYGEN_DIRECTORY="${project_a_ssh}" \
-  "${helper}" generate
-if [[ "$(< "${project_a_ssh}/ssh_host_ed25519_key.pub")" \
+  "${helper}" prepare
+if [[ "$(< "${test_tmp}/project-a-run/ssh_host_ed25519_key.pub")" \
       != "${project_a_public}" ]]; then
   printf 'ordinary project host identity changed across restart\n' >&2
   exit 1
 fi
-rm -f -- "${project_a_ssh}/ssh_host_ed25519_key" \
-  "${project_a_ssh}/ssh_host_ed25519_key.pub"
+/usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' \
+  -f "${test_tmp}/project-a-recreated-key"
 VIRTDEV_FW_CFG_PROJECT="${project_a_file}" \
+VIRTDEV_SSH_HOST_KEY_FILE="${test_tmp}/project-a-recreated-key" \
+VIRTDEV_SSH_DIRECTORY="${test_tmp}/project-a-ssh" \
 VIRTDEV_SSH_RUNTIME_DIRECTORY="${test_tmp}/project-a-run" \
-VIRTDEV_SSH_KEYGEN="${repository}/tests/fixtures/ssh-keygen-hostkeys" \
-SSH_KEYGEN_ALL_MARKER="${test_tmp}/project-a-keygen" \
-SSH_KEYGEN_DIRECTORY="${project_a_ssh}" \
-  "${helper}" generate
-if [[ "$(< "${project_a_ssh}/ssh_host_ed25519_key.pub")" \
+  "${helper}" prepare
+if [[ "$(< "${test_tmp}/project-a-run/ssh_host_ed25519_key.pub")" \
       == "${project_a_public}" ]]; then
   printf 'recreated project retained its old host identity\n' >&2
   exit 1

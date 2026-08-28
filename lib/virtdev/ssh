@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 #
-# ssh library: SSH helpers for virtdev guest connections.
+# ssh library: host identity and client transport helpers.
 #
 # Public:
+#   ssh_host_identity_ensure <project>
+#       Create or validate the project's host-owned ed25519 identity.
+#   ssh_host_identity_require <project>
+#       Require valid existing identity state.
+#   ssh_host_identity_remove <project>
+#       Remove only the known identity files and their directory.
+#   ssh_host_identity_key <project>
+#   ssh_host_identity_known_hosts <project>
+#   ssh_host_identity_alias <project>
+#       Print an identity path or lookup alias.
+#
 #   ssh_rsync_command <cmd-varname> <wrapper-varname> <key-path> <port>
 #       Creates a temporary wrapper script and assigns its path to
 #       <cmd-varname> for use as rsync's -e argument. Also assigns
@@ -31,12 +42,174 @@
 # Exit codes:
 #   77  SSH key not found
 #   78  SSH key permissions too open
+#   103 guest host identity is missing, corrupt, or could not be created
 #
 set -euo pipefail
 import error integer
 
 readonly ssh_key_not_found_exit_code=77
 readonly ssh_key_permissions_exit_code=78
+readonly ssh_host_identity_exit_code=103
+readonly ssh_host_identity_directory_name=ssh-host
+readonly ssh_host_private_key_name=host_key
+readonly ssh_host_public_key_name=host_key.pub
+readonly ssh_known_hosts_name=known_hosts
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+_ssh_project_name_valid() {
+  local LC_ALL=C
+  [[ "${1}" =~ ^[a-zA-Z0-9_-]+$ ]] && (( ${#1} <= 64 ))
+}
+
+ssh_host_identity_root() {
+  _ssh_project_name_valid "${1}" || return 1
+  printf '%s' "${VIRTDEV_HOME}/projects/${1}/${ssh_host_identity_directory_name}"
+}
+
+ssh_host_identity_key() {
+  local root
+  root="$(ssh_host_identity_root "${1}")" || return 1
+  printf '%s/%s' "${root}" "${ssh_host_private_key_name}"
+}
+
+ssh_host_identity_known_hosts() {
+  local root
+  root="$(ssh_host_identity_root "${1}")" || return 1
+  printf '%s/%s' "${root}" "${ssh_known_hosts_name}"
+}
+
+ssh_host_identity_alias() {
+  _ssh_project_name_valid "${1}" || return 1
+  printf 'virtdev-%s' "${1}"
+}
+
+_ssh_host_identity_remove_directory() {
+  local -r directory="${1}"
+  [[ -e "${directory}" || -L "${directory}" ]] || return 0
+  [[ -d "${directory}" && ! -L "${directory}" ]] || return 1
+
+  local path
+  for path in \
+      "${directory}/${ssh_host_private_key_name}" \
+      "${directory}/${ssh_host_public_key_name}" \
+      "${directory}/${ssh_known_hosts_name}"; do
+    [[ -e "${path}" || -L "${path}" ]] || continue
+    [[ -f "${path}" && ! -L "${path}" ]] || return 1
+    rm -f -- "${path}" || return 1
+  done
+  rmdir -- "${directory}"
+}
+
+_ssh_host_identity_validate() {
+  local -r project="${1}"
+  local root private_key public_key known_hosts
+  root="$(ssh_host_identity_root "${project}")" || return 1
+  private_key="${root}/${ssh_host_private_key_name}"
+  public_key="${root}/${ssh_host_public_key_name}"
+  known_hosts="${root}/${ssh_known_hosts_name}"
+
+  [[ -d "${root}" && ! -L "${root}" ]] || return 1
+  [[ "$(stat -c '%a' -- "${root}" 2>/dev/null)" == 700 ]] || return 1
+  local file
+  for file in "${private_key}" "${public_key}" "${known_hosts}"; do
+    [[ -f "${file}" && ! -L "${file}" ]] || return 1
+  done
+  case "$(stat -c '%a' -- "${private_key}" 2>/dev/null)" in
+    400|600) ;;
+    *) return 1 ;;
+  esac
+
+  local private_size
+  private_size="$(stat -c '%s' -- "${private_key}" 2>/dev/null)" || return 1
+  [[ "${private_size}" =~ ^[0-9]+$ ]] \
+    && (( private_size > 0 && private_size <= 16384 )) || return 1
+
+  local derived type blob extra
+  derived="$(ssh-keygen -y -P '' -f "${private_key}" 2>/dev/null)" || return 1
+  [[ -n "${derived}" && "${derived}" != *$'\n'* ]] || return 1
+  read -r type blob extra <<< "${derived}"
+  [[ "${type}" == ssh-ed25519 && -n "${blob}" && -z "${extra}" ]] || return 1
+  derived="${type} ${blob}"
+
+  local expected_public="${derived}" expected_known="* ${derived}"
+  [[ "$(stat -c '%s' -- "${public_key}" 2>/dev/null)" \
+        == "$(( ${#expected_public} + 1 ))" ]] || return 1
+  [[ "$(stat -c '%s' -- "${known_hosts}" 2>/dev/null)" \
+        == "$(( ${#expected_known} + 1 ))" ]] || return 1
+  grep -Fqx -- "${expected_public}" "${public_key}" || return 1
+  grep -Fqx -- "${expected_known}" "${known_hosts}" || return 1
+}
+
+_ssh_host_identity_create() {
+  local -r project="${1}"
+  local project_directory="${VIRTDEV_HOME}/projects/${project}"
+  local root staging private_key public_key known_hosts derived
+  root="$(ssh_host_identity_root "${project}")" || return 1
+  staging="${project_directory}/.${ssh_host_identity_directory_name}.tmp"
+
+  [[ -d "${project_directory}" && ! -L "${project_directory}" ]] || return 1
+  [[ ! -e "${root}" && ! -L "${root}" ]] || return 1
+  _ssh_host_identity_remove_directory "${staging}" || return 1
+  mkdir -m 0700 -- "${staging}" || return 1
+
+  private_key="${staging}/${ssh_host_private_key_name}"
+  public_key="${staging}/${ssh_host_public_key_name}"
+  known_hosts="${staging}/${ssh_known_hosts_name}"
+  if ! ssh-keygen -q -t ed25519 -N '' -C '' -f "${private_key}"; then
+    _ssh_host_identity_remove_directory "${staging}" || true
+    return 1
+  fi
+  derived="$(ssh-keygen -y -P '' -f "${private_key}" 2>/dev/null)" || {
+    _ssh_host_identity_remove_directory "${staging}" || true
+    return 1
+  }
+  printf '%s\n' "${derived}" > "${public_key}" \
+    && printf '* %s\n' "${derived}" > "${known_hosts}" \
+    && chmod 0600 "${private_key}" "${known_hosts}" \
+    && chmod 0644 "${public_key}" \
+    && sync -f "${private_key}" "${public_key}" "${known_hosts}" \
+    && sync -f "${staging}" \
+    && mv -T -- "${staging}" "${root}" \
+    && sync -f "${project_directory}" \
+    && _ssh_host_identity_validate "${project}" && return 0
+
+  _ssh_host_identity_remove_directory "${staging}" || true
+  return 1
+}
+
+ssh_host_identity_ensure() {
+  local -r project="${1}"
+  local root
+  root="$(ssh_host_identity_root "${project}")" || {
+    error "${ssh_host_identity_exit_code}" <<<'Invalid SSH host-identity project name'
+  }
+  if [[ -e "${root}" || -L "${root}" ]]; then
+    _ssh_host_identity_validate "${project}" || error "${ssh_host_identity_exit_code}" <<MESSAGE
+Guest SSH host identity is corrupt: '${root}'
+Refusing to replace existing identity state automatically.
+MESSAGE
+    return 0
+  fi
+  _ssh_host_identity_create "${project}" || error "${ssh_host_identity_exit_code}" <<MESSAGE
+Could not create guest SSH host identity: '${root}'
+MESSAGE
+}
+
+ssh_host_identity_require() {
+  local -r project="${1}"
+  _ssh_host_identity_validate "${project}" || error "${ssh_host_identity_exit_code}" <<MESSAGE
+Guest SSH host identity is missing or corrupt for project: ${project}
+Stop and restart the virtual machine to repair missing identity state.
+Existing corrupt state is never replaced automatically.
+MESSAGE
+}
+
+ssh_host_identity_remove() {
+  local root
+  root="$(ssh_host_identity_root "${1}")" || return 1
+  _ssh_host_identity_remove_directory "${root}"
+}
 
 ssh_rsync_command() {
   local -r cmd_varname="${1}" wrapper_varname="${2}" key="${3}" port="${4}"
