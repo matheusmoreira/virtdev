@@ -27,11 +27,11 @@ The tradeoff accepted is operational overhead: virtual machines cost more to
 create and manage than directories. `virtdev` exists to reduce that overhead to
 the point where the isolation is practical for day-to-day development.
 
-**Isolation scope:** the isolation virtdev provides is _host-and-inter-project_
-— a compromised guest should not reach the host or other project guests.
-**Exfiltration (outbound internet access) is not a goal.** Project guests
-require internet egress (package managers, Claude Code's Anthropic API calls,
-etc.), so outbound network access is intentionally unrestricted.
+**Isolation scope:** host and inter-project isolation are hard boundaries. A
+compromised guest must not reach the host or another project. Internet and LAN
+egress are explicit user policy rather than an absolute security boundary:
+projects start in zone `none`, and the user may grant `wan`, `lan`, `full`, or a
+custom host-port zone when the workload needs it. Policy failure is fail-closed.
 
 **Network backend:** virtdev uses passt as its network backend (`start` and
 `maintain` paths) with both host-translation paths disabled:
@@ -98,6 +98,10 @@ Remaining residuals (documented openly):
 ---
 
 ## Architecture Overview
+
+The behavioral contract for the planned freestanding backend is tracked in
+[`network/CONTRACT.md`](network/CONTRACT.md). It preserves the shipped zone
+surface while separating future backend work from the temporary firewall.
 
 ### Two-Disk Design
 

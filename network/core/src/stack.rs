@@ -1,19 +1,13 @@
 //! The network datapath.
 //!
-//! Terminates the guest's traffic — the QEMU `-netdev stream` transport feeds a
-//! smoltcp interface acting as the guest's gateway — and splices allowed flows
-//! onto real host sockets. Submodules arrive as the walking skeleton grows: the
-//! frame codec, the smoltcp interface, the NAT/flow manager, the DHCP server,
-//! the DNS resolver/observer, and the reactor.
+//! QEMU's framed stream feeds a smoltcp interface acting as the guest gateway.
+//! This module currently contains bounded frame, device, inspection, and
+//! interface primitives; host-socket flow management is not implemented.
 
-// QEMU `-netdev stream` framing: deframe the length-prefixed byte stream.
 pub mod frame;
 
-// The smoltcp datapath device: fixed-buffer, single-frame conduit.
 pub mod device;
 
-// The guest's L3: an AnyIP smoltcp interface (transparent-termination gateway).
 pub mod netstack;
 
-// Flow inspection: peek a new TCP flow's (dst, port) off an inbound frame.
 pub mod inspect;
