@@ -73,7 +73,7 @@ printf 'active\nfailed\n' > "${active_sequence}"
 export SYSTEMCTL_ACTIVE_SEQUENCE_FILE="${active_sequence}"
 runtime_launch_phase_publish "${phase_file}" "${runtime_launch_phase_shim}"
 classification=0
-qemu_activation_classify virtdev-probe 1 "${phase_file}" \
+qemu_activation_classify virtdev-probe 5 "${phase_file}" \
   || classification=$?
 if (( classification != passt_missing_exit_code )); then
   printf 'active-to-failed shim exit 83 classified as %d\n' \
