@@ -54,7 +54,7 @@
 #
 #   VIRTDEV_HOME                Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #   VIRTDEV_SSH_KEY             Default: ${VIRTDEV_HOME}/ssh/id
-#   VIRTDEV_BACKUP_MAX_BYTES    Default: 8589934592 (8 GiB archive)
+#   VIRTDEV_BACKUP_MAX_BYTES    Default: 8589934592 (8 GiB archive and data)
 #   VIRTDEV_BACKUP_MAX_ENTRIES  Default: 200000
 #   VIRTDEV_BACKUP_TIMEOUT      Default: 3600 seconds total
 #   VIRTDEV_BACKUP_KILL_AFTER   Default: 5 seconds from TERM to KILL
@@ -414,18 +414,36 @@ remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 set +e
 archive_summary="$({
   LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
-    "${remaining}" tar --quoting-style=escape --list --verbose --file="${archive}" \
-    | awk -v maximum="${VIRTDEV_BACKUP_MAX_ENTRIES}" '
+    "${remaining}" tar --numeric-owner --quoting-style=escape \
+      --list --verbose --file="${archive}" \
+    | awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" \
+        -v maximum_bytes="${VIRTDEV_BACKUP_MAX_BYTES}" '
       {
         count++
         type = substr($0, 1, 1)
         if (type !~ /^[-dlh]$/) bad_type = 1
-        if (count > maximum) { over = 1; exit }
+        if (count > maximum_entries) { entries_over = 1; exit }
+        if (type == "-") {
+          size = $3
+          if (size !~ /^[0-9]+$/) { bad_size = 1; exit }
+          sub(/^0+/, "", size)
+          if (size == "") size = "0"
+          if (length(size) > length(maximum_bytes) \
+              || (length(size) == length(maximum_bytes) \
+                  && ("x" size) > ("x" maximum_bytes))) {
+            bytes_over = 1
+            exit
+          }
+          logical_bytes += size + 0
+          if (logical_bytes > maximum_bytes) { bytes_over = 1; exit }
+        }
       }
       END {
-        if (over) exit 42
-        print count + 0
+        if (entries_over) exit 42
         if (bad_type) exit 43
+        if (bytes_over) exit 44
+        if (bad_size) exit 45
+        printf("%d %.0f\n", count, logical_bytes)
       }
     '
 })"
@@ -435,12 +453,17 @@ case "${validation_status}" in
   0) ;;
   42) error 19 <<<"Backup exceeded its ${VIRTDEV_BACKUP_MAX_ENTRIES}-entry budget" ;;
   43) error 18 <<<'Backup archive contains an unsupported special file' ;;
+  44) error 19 <<<"Backup exceeded its ${VIRTDEV_BACKUP_MAX_BYTES}-byte logical data budget" ;;
+  45) error 18 <<<'Backup archive contains an invalid regular-file size' ;;
   124|137) error 20 <<<'Backup validation exceeded its wall-clock deadline' ;;
   *) error 18 <<<'Guest produced an invalid backup archive' ;;
 esac
-entries_captured="${archive_summary}"
-[[ "${entries_captured}" =~ ^[0-9]+$ ]] \
-  || error 18 <<<'Could not count backup archive entries'
+read -r entries_captured logical_bytes_captured extra_summary \
+  <<< "${archive_summary}"
+[[ "${entries_captured}" =~ ^[0-9]+$ \
+    && "${logical_bytes_captured}" =~ ^[0-9]+$ \
+    && -z "${extra_summary}" ]] \
+  || error 18 <<<'Could not summarize backup archive entries'
 
 available_extract_bytes="$(df -B1 --output=avail -- "${partial}" 2>/dev/null \
   | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \

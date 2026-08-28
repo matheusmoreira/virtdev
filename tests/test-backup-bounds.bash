@@ -19,6 +19,8 @@ printf 'payload\n' > "${test_tmp}/guest/data/sub/file"
 printf 'second\n' > "${test_tmp}/guest/data/other"
 tar -C "${test_tmp}/guest" -cf "${test_tmp}/capture.tar" data
 archive_bytes="$(stat -c '%s' "${test_tmp}/capture.tar")"
+truncate -s 2097152 "${test_tmp}/guest/sparse"
+tar --sparse -C "${test_tmp}/guest" -cf "${test_tmp}/sparse.tar" sparse
 tar -C "${test_tmp}/guest/data" -cf "${test_tmp}/escape.tar" \
   --transform='s|^other$|../escaped|' other
 
@@ -85,6 +87,20 @@ if (( status != 19 )) \
     || find "${bytes_home}/backups" -name '*.partial' -print -quit \
       | grep -q .; then
   printf 'archive byte overflow was not rejected and cleaned (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
+sparse_home="${test_tmp}/sparse-home"
+prepare_home "${sparse_home}"
+status=0
+run_backup "${sparse_home}" 1048576 100 10 \
+  env BACKUP_TAR_STREAM="${test_tmp}/sparse.tar" \
+  >"${test_tmp}/output" 2>&1 || status=$?
+if (( status != 19 )) \
+    || find "${sparse_home}/backups" -name '*.partial' -print -quit \
+      | grep -q .; then
+  printf 'sparse logical-byte overflow was not rejected (status %d)\n' \
     "${status}" >&2
   exit 1
 fi
@@ -170,5 +186,5 @@ if (( status != 18 )) || [[ "$(< "${post_sync_count}")" != 2 \
   exit 1
 fi
 
-printf 'ok - backup capture enforces byte, entry, and wall-clock budgets\n'
+printf 'ok - backup capture enforces physical, logical, entry, and time budgets\n'
 printf 'ok - backup publication is durable or preserves inspectable recovery state\n'
