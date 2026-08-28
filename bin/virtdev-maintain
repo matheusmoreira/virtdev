@@ -296,8 +296,7 @@ maintenance_boot() {
       --description='virtdev base system maintenance virtual machine' \
       -- \
       "${virtdev_libexec_directory}/virtdev-netexec" \
-          --socket "${passt_sock}" \
-          --phase-file "${maintenance_launch_phase_file}" \
+          --runtime-dir "${maintenance_project}" \
           --forward "${maintenance_port}" \
           -- \
           "${qemu_argv[@]}"
@@ -652,12 +651,8 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# The monitor/console/passt sockets live in projects/maintenance/; the set
-# and the cleanup are owned by lib/virtdev/runtime. Only passt_sock is still
-# spelled out here, for maintenance_boot's netexec --socket argument; it comes
-# from the same runtime source so it cannot drift from the qemu_command /
-# cleanup set.
-passt_sock="$(runtime_passt_sock "${maintenance_project}")"
+# Runtime endpoints live in projects/maintenance/ and are owned by the runtime
+# library. The shim derives its network and provenance paths from that root.
 qmp_sock="$(runtime_qmp_sock "${maintenance_project}")"
 maintenance_launch_phase_file="$(runtime_launch_phase_file "${maintenance_project}")"
 

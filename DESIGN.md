@@ -89,7 +89,7 @@ Remaining residuals (documented openly):
    Accepted: the installer runs only official Arch Linux signed packages
    (no AUR, no `makepkg`, no provisioning), so the threat window is very
    short and the network exposure is similar to any OS installation.
-2. **Host-local-user access to socket files** (`passt.sock`, `monitor.sock`,
+2. **Host-local-user access to socket files** (`network.sock`, `monitor.sock`,
    `qmp.sock`, `console.sock`): mitigated by mode 0700 on the per-project
    directory; outside the primary hypervisor-escape threat model but
    documented for completeness. The QMP control socket is the same host-only
@@ -215,7 +215,7 @@ projects/<name>/
   monitor.sock   (QEMU HMP monitor socket, present while running)
   qmp.sock       (QEMU QMP control socket, present while running)
   console.sock   (serial console socket, present while running)
-  passt.sock     (passt network backend socket, present while running)
+  network.sock   (QEMU network transport socket, present while running)
 ```
 
 ### System Disk Mode
@@ -462,7 +462,7 @@ QEMU flags of note:
 - `-enable-kvm -cpu host` — hardware-assisted virtualisation
 - `-machine q35` — modern PCIe machine type
 - `-drive if=pflash ...` — OVMF firmware; OVMF_CODE read-only, per-project NVRAM copy writable
-- `-netdev stream,id=net0,server=off,addr.type=unix,addr.path=<passt.sock>` — connects QEMU to the
+- `-netdev stream,id=net0,server=off,addr.type=unix,addr.path=<network.sock>` — connects QEMU to the
   passt network backend via a UNIX socket. passt is started by the private `virtdev-netexec` exec shim
   before QEMU, with host-translation paths disabled (`--map-host-loopback none`,
   `--map-guest-addr none`) and a loopback-only SSH forward (`-t 127.0.0.1/<port>:22`).
@@ -1068,7 +1068,7 @@ ${VIRTDEV_HOME}/
     monitor.sock         QEMU HMP monitor socket (present while maintenance virtual machine is running)
     qmp.sock             QEMU QMP control socket (present while maintenance virtual machine is running)
     console.sock         serial console socket (present while maintenance virtual machine is running)
-    passt.sock           passt network backend socket (present while maintenance virtual machine is running)
+    network.sock         QEMU network transport socket (present while maintenance virtual machine is running)
   projects/
     <name>/
       system.qcow2      delta over system/system.qcow2
@@ -1079,7 +1079,7 @@ ${VIRTDEV_HOME}/
       monitor.sock      QEMU HMP monitor socket (present while running)
       qmp.sock          QEMU QMP control socket (present while running)
       console.sock      serial console socket (present while running)
-      passt.sock        passt network backend socket (present while running)
+      network.sock      QEMU network transport socket (present while running)
       manifest       optional; user-curated manifest for virtdev-backup
                         (falls back to
                         ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<name>/manifest

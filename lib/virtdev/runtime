@@ -2,15 +2,8 @@
 #
 # runtime library: the per-machine ephemeral runtime artifact set.
 #
-# One source of truth for a project (or maintenance) virtual machine's
-# transient host-side files: the monitor/console/passt/qmp sockets, the launch
-# phase/provenance marker, and the `port` file that signals "this machine is
-# running". The socket set, the
-# argv path accessors and cleanup helpers derive from the name constants below,
-# so the argv QEMU
-# is launched with and the files cleaned up on teardown cannot drift
-# apart. Adding a socket to the set is a one-line array change that every
-# cleanup site and length check picks up automatically.
+# One source of truth for monitor, console, network, QMP, launch-phase, and
+# port artifacts. QEMU argv, cleanup, and path checks share these basenames.
 #
 # These are host-side artifacts in the 0700 per-project directory. The
 # guest has no path to them — same exposure class as the QEMU monitor
@@ -21,22 +14,20 @@
 #   Name constants (basenames, readonly):
 #     runtime_monitor_sock_name   monitor.sock
 #     runtime_console_sock_name   console.sock
-#     runtime_passt_sock_name     passt.sock
+#     runtime_network_sock_name   network.sock
 #     runtime_qmp_sock_name       qmp.sock
 #     runtime_port_name           port
 #     runtime_launch_phase_name   launch.phase
 #
-#   runtime_socket_basenames      Array of the socket basenames (built
-#                                 from the name constants). The single
-#                                 socket set — accessors, cleanup, and the
-#                                 path checks all read it.
+#   runtime_socket_basenames      Active socket basenames. Cleanup additionally
+#                                 removes legacy passt.sock.
 #
 #   Path accessors (echo <dir>/<name>, no trailing newline). <dir> is the
 #   per-machine socket directory (the per-project directory for a project
 #   machine; projects/maintenance for the maintenance machine):
 #     runtime_monitor_sock <dir>
 #     runtime_console_sock <dir>
-#     runtime_passt_sock <dir>
+#     runtime_network_sock <dir>
 #     runtime_qmp_sock <dir>
 #     runtime_launch_phase_file <dir>
 #   These are what qemu_command uses to wire the QEMU argv, so the argv
@@ -70,7 +61,8 @@ set -euo pipefail
 # True constants — plain basenames, independent of any env var.
 readonly runtime_monitor_sock_name=monitor.sock
 readonly runtime_console_sock_name=console.sock
-readonly runtime_passt_sock_name=passt.sock
+readonly runtime_network_sock_name=network.sock
+readonly runtime_legacy_passt_sock_name=passt.sock
 readonly runtime_qmp_sock_name=qmp.sock
 readonly runtime_port_name=port
 readonly runtime_launch_phase_name=launch.phase
@@ -87,15 +79,20 @@ readonly runtime_socket_path_max=107
 declare -gra runtime_socket_basenames=(
   "${runtime_monitor_sock_name}"
   "${runtime_console_sock_name}"
-  "${runtime_passt_sock_name}"
+  "${runtime_network_sock_name}"
   "${runtime_qmp_sock_name}"
+)
+
+declare -gra runtime_socket_cleanup_basenames=(
+  "${runtime_socket_basenames[@]}"
+  "${runtime_legacy_passt_sock_name}"
 )
 
 # Every artifact removed by a full runtime teardown. Kept separate from the
 # socket-only set because the pre-launch socket sweep must not accidentally
 # remove a deliberately published port/phase in callers that use it.
 declare -gra runtime_control_basenames=(
-  "${runtime_socket_basenames[@]}"
+  "${runtime_socket_cleanup_basenames[@]}"
   "${runtime_port_name}"
   "${runtime_launch_phase_name}"
   "${runtime_launch_phase_tmp_name}"
@@ -109,8 +106,8 @@ runtime_console_sock() {
   printf '%s' "${1}/${runtime_console_sock_name}"
 }
 
-runtime_passt_sock() {
-  printf '%s' "${1}/${runtime_passt_sock_name}"
+runtime_network_sock() {
+  printf '%s' "${1}/${runtime_network_sock_name}"
 }
 
 runtime_qmp_sock() {
@@ -175,7 +172,7 @@ runtime_remove_artifact() {
 runtime_clean_sockets() {
   local -r dir="${1}"
   local name status=0
-  for name in "${runtime_socket_basenames[@]}"; do
+  for name in "${runtime_socket_cleanup_basenames[@]}"; do
     runtime_remove_artifact "${dir}/${name}" || status=1
   done
   return "${status}"

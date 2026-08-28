@@ -409,10 +409,10 @@ glob in `PKGBUILD` picks it up automatically.
   to detect when the holder is `virtdev-maintain` and emits a
   maintenance-specific message instead of the generic one.
 - **passt network backend.** `virtdev-start` and `virtdev-maintain` use
-  passt instead of QEMU SLIRP (`-netdev user`). The exec-shim
-  the private `virtdev-netexec` helper starts passt (with `--map-host-loopback none` and
+  passt instead of QEMU SLIRP (`-netdev user`). The private `virtdev-netexec`
+  helper starts passt (with `--map-host-loopback none` and
   `--map-guest-addr none` to block guest→host translations), then `exec`s
-  QEMU. QEMU uses `-netdev stream,addr.type=unix,addr.path=<passt.sock>`
+  QEMU. QEMU uses `-netdev stream,addr.type=unix,addr.path=<network.sock>`
   to connect. The keystone invariant: passt creates the socket *before*
   forking to background, so a zero exit from passt means QEMU can connect
   immediately. A host-owned `launch.phase` marker records `shim` before
@@ -421,7 +421,7 @@ glob in `PKGBUILD` picks it up automatically.
   a numerically identical QEMU exit is never misdiagnosed.
   `virtdev-install` is unchanged (keeps SLIRP). `passt` is a required
   dependency; see `PKGBUILD` `depends` and `README.md` Requirements.
-- **passt.sock cleanup.** `passt.sock` lives next to `monitor.sock`,
+- **Network socket cleanup.** `network.sock` lives next to `monitor.sock`,
   `qmp.sock`, and `console.sock` in the per-project directory. The socket set
   is single-sourced in `lib/virtdev/runtime` (`runtime_socket_basenames`),
   and every teardown routes through `runtime_clean` (sockets + port + launch
@@ -431,14 +431,15 @@ glob in `PKGBUILD` picks it up automatically.
   `maintenance_cleanup` and its pre-launch sweep in `maintenance_boot`, and
   `virtdev-start`'s `cleanup_failed_start` trap and pre-launch sweep (now the
   full `runtime_clean` — it clears a stale port too, since the port is written
-  last, after the QMP liveness confirm). `virtdev-netexec` unlinks
-  `passt.sock` before each passt start (`passt_socket_clean`) — passt's
+  last, after the QMP liveness confirm). `virtdev-netexec` accepts one secured
+  runtime directory, derives its fixed artifacts, and unlinks a stale
+  `network.sock` before each passt start (`passt_socket_clean`) — passt's
   `bind()` returns `EADDRINUSE` on a leftover socket file.
 - **Per-project directory permissions (mode 0700).** `virtdev-create`
   and `virtdev-maintain` create project directories with mode 0700.
   `lib/virtdev/lock` (`lock_open`) runs `chmod 0700
   ${VIRTDEV_HOME}` on every lock acquisition to harden pre-existing
-  installs. This protects the socket files (`passt.sock`, `monitor.sock`)
+  installs. This protects the socket files (`network.sock`, `monitor.sock`)
   from other local users.
 - **Host egress lockdown (Phase 2 network isolation).** A host-root nftables
   `inet virtdev` table (`lib/virtdev/firewall` policy + `bin/virtdev-firewall`

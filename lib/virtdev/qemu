@@ -101,21 +101,23 @@ qemu_command() {
   shift 7
   # Remaining positionals (if any) are the caller's trailing extra args.
 
+  runtime_socket_paths_fit "${sock_dir}" || return 1
+
   local system_disk="${disk_dir}/system.qcow2"
   local home_disk="${disk_dir}/home.qcow2"
   local nvram="${disk_dir}/nvram"
   # Keep argv socket names aligned with runtime cleanup.
-  local monitor_sock console_sock passt_sock qmp_sock
+  local monitor_sock console_sock network_sock qmp_sock
   monitor_sock="$(runtime_monitor_sock "${sock_dir}")"
   console_sock="$(runtime_console_sock "${sock_dir}")"
-  passt_sock="$(runtime_passt_sock "${sock_dir}")"
+  network_sock="$(runtime_network_sock "${sock_dir}")"
   qmp_sock="$(runtime_qmp_sock "${sock_dir}")"
 
   qemu_suboption_encode ovmf_code
   qemu_suboption_encode nvram
   qemu_suboption_encode system_disk
   qemu_suboption_encode home_disk
-  qemu_suboption_encode passt_sock
+  qemu_suboption_encode network_sock
   qemu_suboption_encode monitor_sock
   qemu_suboption_encode qmp_sock
   qemu_suboption_encode console_sock
@@ -134,7 +136,7 @@ qemu_command() {
     -drive if=pflash,format=raw,file="${nvram}"
     -drive file="${system_disk}",if=virtio,format=qcow2
     -drive file="${home_disk}",if=virtio,format=qcow2
-    -netdev stream,id=net0,server=off,addr.type=unix,addr.path="${passt_sock}"
+    -netdev stream,id=net0,server=off,addr.type=unix,addr.path="${network_sock}"
     -device virtio-net-pci,netdev=net0
     -device virtio-rng-pci
     -display none

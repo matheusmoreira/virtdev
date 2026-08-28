@@ -18,6 +18,7 @@ trap cleanup EXIT
 fixture_bin="${test_tmp}/bin"
 runtime_directory="${test_tmp}/runtime"
 mkdir -p "${fixture_bin}" "${runtime_directory}"
+chmod 0700 "${runtime_directory}"
 cp "${repository}/tests/fixtures/passt-success" "${fixture_bin}/passt"
 cp "${repository}/tests/fixtures/qemu-exit" "${fixture_bin}/qemu-test"
 chmod +x "${fixture_bin}/passt" "${fixture_bin}/qemu-test"
@@ -28,8 +29,7 @@ output="${test_tmp}/output"
 status=0
 PATH="${fixture_bin}:${PATH}" \
   "${repository}/libexec/virtdev/virtdev-netexec" \
-    --socket "${runtime_directory}/passt.sock" \
-    --phase-file "${phase_file}" \
+    --runtime-dir "${runtime_directory}" \
     -- does-not-exist-virtdev-qemu >"${output}" 2>&1 || status=$?
 if (( status != 86 )); then
   printf 'expected pre-exec missing-QEMU exit 86, got %d\n' "${status}" >&2
@@ -68,8 +68,7 @@ fi
 status=0
 PASST_EXIT_STATUS=42 PATH="${fixture_bin}:${PATH}" \
   "${repository}/libexec/virtdev/virtdev-netexec" \
-    --socket "${runtime_directory}/passt.sock" \
-    --phase-file "${phase_file}" \
+    --runtime-dir "${runtime_directory}" \
     --forward "${occupied_port}" \
     -- qemu-test >"${output}" 2>&1 || status=$?
 kill "${listener_pid}" 2>/dev/null || true
@@ -85,8 +84,7 @@ for qemu_status in 83 84 85 86; do
   status=0
   PATH="${fixture_bin}:${PATH}" QEMU_EXIT_STATUS="${qemu_status}" \
     "${repository}/libexec/virtdev/virtdev-netexec" \
-      --socket "${runtime_directory}/passt.sock" \
-      --phase-file "${phase_file}" \
+      --runtime-dir "${runtime_directory}" \
       -- qemu-test >"${output}" 2>&1 || status=$?
   if (( status != qemu_status )); then
     printf 'expected fake QEMU exit %d, got %d\n' \

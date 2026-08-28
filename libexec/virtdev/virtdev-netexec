@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # imported readonly result constants
 #
-# virtdev-netexec --socket <path> --phase-file <path> [--forward <port>] [--allow-host-loopback] -- <qemu-command...>
+# virtdev-netexec --runtime-dir <path> [--forward <port>]
+#                 [--allow-host-loopback] -- <qemu-command...>
 #
 # Internal passt/QEMU exec shim. It publishes launch ownership before reserved
 # shim failures and again before exec, so QEMU's numeric exit is never confused
@@ -21,9 +23,9 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../lib/virtdev/import
 import error arguments passt port runtime
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([socket]=required [phase-file]=required [forward]=value [allow-host-loopback]=bool)
+declare -A spec=([runtime-dir]=required [forward]=value [allow-host-loopback]=bool)
 # shellcheck disable=SC2034
-declare -A spec_placeholders=([socket]=path [phase-file]=path [forward]=port)
+declare -A spec_placeholders=([runtime-dir]=path [forward]=port)
 # shellcheck disable=SC2034
 declare -a spec_positionals=("qemu-command+")
 # shellcheck disable=SC2034
@@ -32,8 +34,7 @@ declare -a positional=()
 arguments_parse spec flags positional "$@"
 set -- "${positional[@]}"
 
-socket="${flags[socket]:-}"
-phase_file="${flags[phase-file]:-}"
+runtime_dir="${flags[runtime-dir]:-}"
 forward_port="${flags[forward]:-}"
 # CROSS-REF: the firewall exit-100 guard (firewall_guard_running_hostmap) string-matches
 # this exact flag name in each machine's ExecStart to detect an open host map. Renaming
@@ -43,9 +44,40 @@ if [[ -n "${flags[allow-host-loopback]:-}" && "${flags[allow-host-loopback]}" !=
   allow_host_loopback=1
 fi
 
-if [[ $# -lt 1 || -z "${socket}" || -z "${phase_file}" ]]; then
+if [[ $# -lt 1 || -z "${runtime_dir}" ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
+
+if [[ ! -d "${runtime_dir}" || -L "${runtime_dir}" ]]; then
+  error 64 <<<"Invalid runtime directory: '${runtime_dir}'"
+fi
+runtime_dir="$(readlink -f -- "${runtime_dir}")" \
+  || error 64 <<<"Could not resolve runtime directory"
+runtime_owner="$(stat -c '%u' -- "${runtime_dir}")" \
+  || error 64 <<<"Could not inspect runtime directory: '${runtime_dir}'"
+runtime_mode="$(stat -c '%a' -- "${runtime_dir}")" \
+  || error 64 <<<"Could not inspect runtime directory: '${runtime_dir}'"
+if [[ "${runtime_owner}" != "${EUID}" || "${runtime_mode}" != 700 ]]; then
+  error 64 <<<"Runtime directory must be owned by uid ${EUID} with mode 0700: '${runtime_dir}'"
+fi
+if ! runtime_socket_paths_fit "${runtime_dir}"; then
+  error 64 <<<"Runtime directory produces an overlong Unix socket path: '${runtime_dir}'"
+fi
+
+socket="$(runtime_network_sock "${runtime_dir}")"
+phase_file="$(runtime_launch_phase_file "${runtime_dir}")"
+phase_tmp="${phase_file}.tmp"
+if [[ ( -e "${socket}" || -L "${socket}" ) \
+      && ( ! -S "${socket}" || -L "${socket}" ) ]]; then
+  error 1 <<<"Refusing non-socket network artifact: '${socket}'"
+fi
+for phase_artifact in "${phase_file}" "${phase_tmp}"; do
+  if [[ ( -e "${phase_artifact}" || -L "${phase_artifact}" ) \
+        && ( ! -f "${phase_artifact}" || -L "${phase_artifact}" ) ]]; then
+    error 1 <<<"Refusing unsafe launch-phase artifact: '${phase_artifact}'"
+  fi
+done
+unset phase_artifact
 
 if ! runtime_launch_phase_publish \
     "${phase_file}" "${runtime_launch_phase_shim}"; then

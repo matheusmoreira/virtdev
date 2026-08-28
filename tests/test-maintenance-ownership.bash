@@ -196,7 +196,7 @@ if (( ! virtfs_found )); then
   printf '\n' >&2
   exit 1
 fi
-for control in monitor.sock console.sock passt.sock qmp.sock port; do
+for control in monitor.sock console.sock network.sock passt.sock qmp.sock port; do
   if [[ -e "${terminal_home}/projects/maintenance/${control}" ]]; then
     printf 'terminal maintenance control survived cleanup: %s\n' \
       "${control}" >&2
@@ -244,7 +244,7 @@ if [[ ! -e "${unknown_home}/systemd-run.called" \
   printf 'manager-loss path did not attempt ownership recovery\n' >&2
   exit 1
 fi
-for control in monitor.sock console.sock passt.sock qmp.sock; do
+for control in monitor.sock console.sock network.sock passt.sock qmp.sock; do
   if [[ ! -e "${unknown_home}/projects/maintenance/${control}" ]]; then
     printf 'indeterminate unit control was removed without terminal proof: %s\n' \
       "${control}" >&2

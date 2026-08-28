@@ -47,7 +47,7 @@ if [[ "${MAINTENANCE_MALFORMED_CONTROL:-0}" == 1 ]]; then
 else
   : > "${MAINTENANCE_RUNTIME_DIRECTORY}/monitor.sock"
 fi
-for control in console.sock passt.sock; do
+for control in console.sock network.sock passt.sock; do
   : > "${MAINTENANCE_RUNTIME_DIRECTORY}/${control}"
 done
 

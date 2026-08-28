@@ -256,10 +256,8 @@ fi
 
 # The disk/nvram paths are derived inside qemu_command from
 # project_directory; the socket set (cleanup trap, stale-socket sweep) is
-# owned by lib/virtdev/runtime. passt_sock (netexec --socket) and qmp_sock
-# (the post-launch liveness probe) are spelled out here from the same
-# runtime source, so they cannot drift from the qemu_command / cleanup set.
-passt_sock="$(runtime_passt_sock "${project_directory}")"
+# owned by lib/virtdev/runtime. The shim derives its endpoints from this one
+# validated runtime directory; start needs only the QMP probe path here.
 qmp_sock="$(runtime_qmp_sock "${project_directory}")"
 launch_phase_file="$(runtime_launch_phase_file "${project_directory}")"
 
@@ -350,8 +348,7 @@ qemu_command qemu_argv \
 # enforced by the nft rules, not passt, whose host map is all-or-nothing — so the
 # map is opened only when nft is actually enforcing it.
 declare -a netexec_opts=(
-  --socket "${passt_sock}"
-  --phase-file "${launch_phase_file}"
+  --runtime-dir "${project_directory}"
   --forward "${port}"
 )
 if (( open_host_map )); then

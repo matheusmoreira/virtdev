@@ -37,7 +37,7 @@ declare -a expected=(
   -drive 'if=pflash,format=raw,file=disk,,a,,,,b=c d\e/nvram'
   -drive 'file=disk,,a,,,,b=c d\e/system.qcow2,if=virtio,format=qcow2'
   -drive 'file=disk,,a,,,,b=c d\e/home.qcow2,if=virtio,format=qcow2'
-  -netdev 'stream,id=net0,server=off,addr.type=unix,addr.path=sock,,a,,,,b=c d\e/passt.sock'
+  -netdev 'stream,id=net0,server=off,addr.type=unix,addr.path=sock,,a,,,,b=c d\e/network.sock'
   -device virtio-net-pci,netdev=net0
   -device virtio-rng-pci
   -display none
