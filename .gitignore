@@ -3,5 +3,5 @@ pkg/
 /src/
 *.pkg.tar*
 virtdev-git/
-bin/virtdev-exchange
+libexec/virtdev/virtdev-exchange
 man/*.[1-8]

@@ -14,7 +14,8 @@ LDFLAGS := $(LDFLAGS)
 SCDOC ?= scdoc
 SCDOC := $(SCDOC)
 
-scripts := $(filter-out bin/virtdev-exchange,$(wildcard bin/virtdev bin/virtdev-*))
+scripts := $(wildcard bin/virtdev bin/virtdev-*)
+private_scripts := $(filter-out libexec/virtdev/virtdev-exchange,$(wildcard libexec/virtdev/*))
 libraries := $(wildcard lib/virtdev/*)
 iso_scripts := iso/profiledef.sh \
 	iso/airootfs/root/virtdev/install.sh \
@@ -22,20 +23,20 @@ iso_scripts := iso/profiledef.sh \
 test_scripts := $(wildcard tests/run tests/test-*.bash tests/fixtures/*)
 manpages := $(patsubst %.scd,%,$(wildcard man/*.scd))
 
-all: bin/virtdev-exchange $(manpages)
+all: libexec/virtdev/virtdev-exchange $(manpages)
 
-bin/virtdev-exchange: source/virtdev/exchange.c
+libexec/virtdev/virtdev-exchange: source/virtdev/exchange.c
 	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 man/%: man/%.scd
 	$(SCDOC) < $< > $@
 
 clean:
-	rm -f bin/virtdev-exchange $(manpages)
+	rm -f bin/virtdev-exchange libexec/virtdev/virtdev-exchange $(manpages)
 
-check: bin/virtdev-exchange
-	bash -n $(scripts) $(libraries) $(iso_scripts) $(test_scripts)
-	shellcheck $(scripts) $(libraries) $(iso_scripts) $(test_scripts)
+check: libexec/virtdev/virtdev-exchange
+	bash -n $(scripts) $(private_scripts) $(libraries) $(iso_scripts) $(test_scripts)
+	shellcheck $(scripts) $(private_scripts) $(libraries) $(iso_scripts) $(test_scripts)
 	bash tests/run
 	cargo fmt --manifest-path network/Cargo.toml --all -- --check
 	cargo build --manifest-path network/Cargo.toml --workspace --locked --offline

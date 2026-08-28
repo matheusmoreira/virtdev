@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
 # virtdev-netexec --socket <path> --phase-file <path> [--forward <port>] [--allow-host-loopback] -- <qemu-command...>
 #
@@ -17,7 +16,7 @@
 set -euo pipefail
 
 # shellcheck disable=SC1090,SC1091
-source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../lib/virtdev/import"
 
 import error arguments passt port runtime
 

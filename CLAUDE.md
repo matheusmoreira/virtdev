@@ -77,10 +77,9 @@ Same error → same code, everywhere:
 | 80 | trigger aborted the command | `trigger_fire` |
 | 81 | corrupt port file | `port_require` |
 | 82 | corrupt generation file | `generation_read` |
-| 83 | passt binary not found | `virtdev-netexec` shim |
-| 84 | passt failed to initialise | `virtdev-netexec` shim |
-| 85 | passt forward-port bind race | `virtdev-netexec` shim |
-| 86 | QEMU command not found (pre-flight before exec) | `virtdev-netexec` shim |
+| 83 | passt binary not found | private `virtdev-netexec` shim |
+| 84 | passt failed to initialise | private `virtdev-netexec` shim |
+| 86 | QEMU command not found (pre-flight before exec) | private `virtdev-netexec` shim |
 | 87 | no port assigned (virtual machine not running) | `port_require` |
 | 88 | host egress lockdown not active / stale baseline / wrong user | `firewall_require` |
 | 89 | invalid zone-definition file (apply, via `firewall_zone_parse`) | `bin/virtdev-firewall` |
@@ -357,7 +356,7 @@ Install layout:
 dependency added to `depends` in `build/aur/PKGBUILD`. `.gitignore`
 excludes the `build/` tree from `makepkg`.
 
-**Note:** `bin/virtdev-netexec` is a bash shim (not compiled C), so no
+**Note:** `libexec/virtdev/virtdev-netexec` is a bash shim (not compiled C), so no
 `GNUmakefile` change is needed — the `find bin/ ! -name '*.c'` install
 glob in `PKGBUILD` picks it up automatically.
 
@@ -411,7 +410,7 @@ glob in `PKGBUILD` picks it up automatically.
   maintenance-specific message instead of the generic one.
 - **passt network backend.** `virtdev-start` and `virtdev-maintain` use
   passt instead of QEMU SLIRP (`-netdev user`). The exec-shim
-  `bin/virtdev-netexec` starts passt (with `--map-host-loopback none` and
+  the private `virtdev-netexec` helper starts passt (with `--map-host-loopback none` and
   `--map-guest-addr none` to block guest→host translations), then `exec`s
   QEMU. QEMU uses `-netdev stream,addr.type=unix,addr.path=<passt.sock>`
   to connect. The keystone invariant: passt creates the socket *before*

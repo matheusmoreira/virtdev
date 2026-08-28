@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// virtdev-exchange — atomically exchange two paths
+// Private virtdev helper: atomically exchange two paths.
 //
 // Wraps renameat2(2) with RENAME_EXCHANGE: a single syscall that
 // atomically swaps the names of two filesystem entries.  Both paths

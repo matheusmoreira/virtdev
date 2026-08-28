@@ -47,7 +47,7 @@ yay -S virtdev-git
 ```
 
 From source — scripts auto-detect the layout, and `make` builds the
-small C helper `virtdev-exchange` that `virtdev-maintain` requires
+small private C helper `libexec/virtdev/virtdev-exchange` that `virtdev-maintain` requires
 (needs a C toolchain, e.g. `base-devel`):
 
 ```

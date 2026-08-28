@@ -17,6 +17,7 @@
 #
 #   virtdev_library_directory   lib/virtdev/ resolved path (used by import)
 #   virtdev_bin_directory       bin/ resolved path (for subprocess invocation)
+#   virtdev_libexec_directory   libexec/virtdev/ resolved private helpers
 #   virtdev_loaded_libraries    associative array tracking loaded libraries
 #   import()                    source libraries by name, idempotent
 #
@@ -30,6 +31,8 @@ set -euo pipefail
 virtdev_library_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck disable=SC2034  # used by consumers (virtdev-recreate, virtdev-upgrade)
 virtdev_bin_directory="$(readlink -f "${virtdev_library_directory}/../../bin")"
+# shellcheck disable=SC2034  # used by start and maintain
+virtdev_libexec_directory="$(readlink -f "${virtdev_library_directory}/../../libexec/virtdev")"
 
 declare -A virtdev_loaded_libraries=([import]=1)
 

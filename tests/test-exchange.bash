@@ -12,7 +12,7 @@ mkdir "${left}" "${right}"
 printf 'old\n' > "${left}/identity"
 printf 'new\n' > "${right}/identity"
 
-"${repository}/bin/virtdev-exchange" "${left}" "${right}"
+"${repository}/libexec/virtdev/virtdev-exchange" "${left}" "${right}"
 
 if [[ "$(< "${left}/identity")" != new ]]; then
   printf 'system did not receive staged content\n' >&2

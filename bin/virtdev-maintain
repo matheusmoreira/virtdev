@@ -293,7 +293,7 @@ maintenance_boot() {
       --slice="${maintenance_slice}" \
       --description='virtdev base system maintenance virtual machine' \
       -- \
-      "${virtdev_bin_directory}/virtdev-netexec" \
+      "${virtdev_libexec_directory}/virtdev-netexec" \
           --socket "${passt_sock}" \
           --phase-file "${maintenance_launch_phase_file}" \
           --forward "${maintenance_port}" \
@@ -477,9 +477,9 @@ system_directory="${VIRTDEV_HOME}/system"
 maintenance_directory="${VIRTDEV_HOME}/maintenance"
 maintenance_project="${VIRTDEV_HOME}/projects/maintenance"
 
-# shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
-if [[ ! -x "${virtdev_bin_directory}/virtdev-exchange" ]]; then
-  error 17 <<<"virtdev-exchange not found: '${virtdev_bin_directory}/virtdev-exchange'. Run 'make' to compile it."
+# shellcheck disable=SC2154  # provided by lib/virtdev/import
+if [[ ! -x "${virtdev_libexec_directory}/virtdev-exchange" ]]; then
+  error 17 <<<"virtdev-exchange not found: '${virtdev_libexec_directory}/virtdev-exchange'. Run 'make' to compile it."
 fi
 
 if [[ ! -d "${system_directory}" ]]; then
@@ -1086,7 +1086,7 @@ chmod 444 "${maintenance_directory}"/*
 
 printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
 exchange_status=0
-"${virtdev_bin_directory}/virtdev-exchange" \
+"${virtdev_libexec_directory}/virtdev-exchange" \
   "${system_directory}" "${maintenance_directory}" || exchange_status=$?
 case "${exchange_status}" in
   0)

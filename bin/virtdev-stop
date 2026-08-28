@@ -6,16 +6,6 @@
 # Falls back to systemctl stop (SIGTERM) if the monitor is unavailable
 # or the guest does not respond within a timeout.
 #
-# --acpi-only is the systemd ExecStop-hook mode. systemd runs ExecStop
-# while the unit is already 'deactivating', so the normal is-active
-# guard would wrongly bail. This mode takes NO lock (a concurrent
-# foreground virtdev-stop may hold it, and the hook only nudges a guest
-# systemd is already tearing down), sends one best-effort ACPI
-# powerdown, and exits 0 — letting systemd's TimeoutStopSec wait for
-# the guest to halt and escalate to SIGTERM. Exiting non-zero would
-# flip the unit to 'failed'; cleanup of the port/socket files is left
-# to the next virtdev-start's stale sweep or a foreground virtdev-stop.
-#
 # The QEMU monitor socket is used to send 'system_powerdown',
 # which triggers a clean ACPI shutdown in the guest.
 # It should halt gracefully since systemd sees it as a power button press.
@@ -40,7 +30,7 @@ if ! integer_is_bounded_positive "${VIRTDEV_STOP_TIMEOUT}" 86400; then
 fi
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([acpi-only]=bool)
+declare -A spec=()
 # shellcheck disable=SC2034
 declare -a spec_positionals=(project)
 # shellcheck disable=SC2034
@@ -56,19 +46,6 @@ fi
 project="${1}"
 
 validate_project_name "${project}"
-
-# ExecStop-hook mode: no lock, no is-active guard (the unit is
-# 'deactivating' when systemd runs ExecStop). Send one best-effort ACPI
-# powerdown and exit 0; systemd's TimeoutStopSec waits and escalates.
-if (( flags[acpi-only] )); then
-  acpi_monitor_sock="$(runtime_monitor_sock "${VIRTDEV_HOME}/projects/${project}")"
-  if [[ -S "${acpi_monitor_sock}" ]] && command -v socat &>/dev/null; then
-    printf >&2 'Sending ACPI powerdown to: %s\n' "${project}"
-    echo 'system_powerdown' \
-      | socat -u - UNIX-CONNECT:"${acpi_monitor_sock}" &>/dev/null || true
-  fi
-  exit 0
-fi
 
 # Maintenance skips the lock so ACPI shutdown can reach the unit while maintain
 # owns it. Concurrent runtime cleanup is idempotent; maintain owns unit reset.

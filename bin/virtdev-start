@@ -364,10 +364,10 @@ systemd-run \
     --unit="${unit}" \
     --slice="${slice}" \
     --description="virtdev project virtual machine: ${project}" \
-    --property="ExecStop=${virtdev_bin_directory}/virtdev-stop --acpi-only ${project}" \
+    --property="ExecStop=${virtdev_libexec_directory}/virtdev-stop-acpi ${project}" \
     --property="TimeoutStopSec=${VIRTDEV_STOP_TIMEOUT}" \
     -- \
-    "${virtdev_bin_directory}/virtdev-netexec" \
+    "${virtdev_libexec_directory}/virtdev-netexec" \
         "${netexec_opts[@]}" \
         -- \
         "${qemu_argv[@]}"

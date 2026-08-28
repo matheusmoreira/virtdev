@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# shellcheck disable=SC1090,SC1091
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../lib/virtdev/import"
+
+import validate runtime
+
+(( $# == 1 )) || exit 64
+project="${1}"
+validate_project_name "${project}"
+
+# This helper is only the transient unit's ExecStop hook. A direct invocation
+# while the unit is not deactivating must not bypass virtdev-stop's contract.
+state="$(systemctl --user show "virtdev-${project}.service" \
+  --property=ActiveState --value 2>/dev/null || true)"
+[[ "${state}" == deactivating ]] || exit 0
+
+monitor_sock="$(runtime_monitor_sock "${VIRTDEV_HOME}/projects/${project}")"
+if [[ -S "${monitor_sock}" ]] && command -v socat &>/dev/null; then
+  printf >&2 'Sending ACPI powerdown to: %s\n' "${project}"
+  printf 'system_powerdown\n' \
+    | socat -u - UNIX-CONNECT:"${monitor_sock}" &>/dev/null || true
+fi

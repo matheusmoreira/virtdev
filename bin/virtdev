@@ -2,8 +2,7 @@
 #
 # virtdev <command> [<args>]
 #
-# Dispatches to virtdev-<command>.
-# Resolution order: adjacent sibling scripts first, then PATH.
+# Dispatches explicit built-ins, then optional virtdev-* PATH extensions.
 #
 #     virtdev start myproject  ->  exec virtdev-start myproject
 #     virtdev help start       ->  exec virtdev-start --help
@@ -22,26 +21,76 @@ import error
 
 self_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 
-reject_path_traversal() {
-  if [[ "${1}" == "." || "${1}" == ".." || "${1}" == */* ]]; then
-    error 64 <<<"virtdev: '${1}' is not a virtdev command"
-  fi
+readonly -a public_commands=(
+  backup console create destroy detach disk firewall generation install iso key
+  list log maintain monitor move nuke path pid port recreate restore seal ssh
+  stale start status stop transfer upgrade wait
+)
+readonly -a private_commands=(exchange netexec stop-acpi)
+
+command_in() {
+  local -r needle="${1}"
+  shift
+  local candidate
+  for candidate in "$@"; do
+    [[ "${candidate}" == "${needle}" ]] && return 0
+  done
+  return 1
+}
+
+command_name_valid() {
+  local LC_ALL=C
+  [[ "${1}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]
+}
+
+command_require_valid() {
+  command_name_valid "${1}" \
+    || error 64 <<<"virtdev: '${1}' is not a virtdev command"
+}
+
+command_is_public() {
+  command_in "${1}" "${public_commands[@]}"
+}
+
+command_is_private() {
+  command_in "${1}" "${private_commands[@]}"
 }
 
 list_commands() {
-  local f name
-  for f in "${self_dir}"/virtdev-*; do
-    [[ -x "${f}" ]] || continue
-    name="${f##*/virtdev-}"
+  local name
+  for name in "${public_commands[@]}"; do
     printf '  %s\n' "${name}"
-  done | sort
+  done
+}
+
+list_external_commands() {
+  local path_dir file name
+  local -A seen=()
+  while IFS= read -r path_dir; do
+    [[ -n "${path_dir}" ]] || path_dir=.
+    for file in "${path_dir}"/virtdev-*; do
+      [[ -f "${file}" && -x "${file}" ]] || continue
+      name="${file##*/virtdev-}"
+      command_name_valid "${name}" || continue
+      command_is_public "${name}" && continue
+      command_is_private "${name}" && continue
+      [[ -v seen[$name] ]] && continue
+      seen["${name}"]=1
+      printf '  %s\n' "${name}"
+    done
+  done < <(tr ':' '\n' <<<"${PATH}")
 }
 
 usage() {
+  local external
   printf 'usage: virtdev <command> [<args>]\n'
   printf '       virtdev help <command>\n\n'
   printf 'Available commands:\n'
   list_commands
+  external="$(list_external_commands | sort)"
+  if [[ -n "${external}" ]]; then
+    printf '\nExternal commands on PATH:\n%s\n' "${external}"
+  fi
 }
 
 case "${1:-}" in
@@ -69,7 +118,7 @@ fi
 cmd="${1}"
 shift
 
-reject_path_traversal "${cmd}"
+command_require_valid "${cmd}"
 
 if [[ "${cmd}" == "help" ]]; then
   if [[ $# -ne 1 ]]; then
@@ -77,11 +126,18 @@ if [[ "${cmd}" == "help" ]]; then
     exit 64
   fi
   cmd="${1}"
-  reject_path_traversal "${cmd}"
+  command_require_valid "${cmd}"
   set -- --help
 fi
 
-if [[ -x "${self_dir}/virtdev-${cmd}" ]]; then
+if command_is_private "${cmd}"; then
+  error 64 <<<"virtdev: '${cmd}' is an internal helper, not a public command"
+fi
+
+if command_is_public "${cmd}"; then
+  if [[ ! -x "${self_dir}/virtdev-${cmd}" ]]; then
+    error 64 <<<"virtdev: built-in command '${cmd}' is not installed"
+  fi
   exec "${self_dir}/virtdev-${cmd}" "$@"
 fi
 

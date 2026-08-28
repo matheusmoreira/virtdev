@@ -27,7 +27,7 @@ output="${test_tmp}/output"
 
 status=0
 PATH="${fixture_bin}:${PATH}" \
-  "${repository}/bin/virtdev-netexec" \
+  "${repository}/libexec/virtdev/virtdev-netexec" \
     --socket "${runtime_directory}/passt.sock" \
     --phase-file "${phase_file}" \
     -- does-not-exist-virtdev-qemu >"${output}" 2>&1 || status=$?
@@ -67,7 +67,7 @@ fi
 
 status=0
 PASST_EXIT_STATUS=42 PATH="${fixture_bin}:${PATH}" \
-  "${repository}/bin/virtdev-netexec" \
+  "${repository}/libexec/virtdev/virtdev-netexec" \
     --socket "${runtime_directory}/passt.sock" \
     --phase-file "${phase_file}" \
     --forward "${occupied_port}" \
@@ -84,7 +84,7 @@ fi
 for qemu_status in 83 84 85 86; do
   status=0
   PATH="${fixture_bin}:${PATH}" QEMU_EXIT_STATUS="${qemu_status}" \
-    "${repository}/bin/virtdev-netexec" \
+    "${repository}/libexec/virtdev/virtdev-netexec" \
       --socket "${runtime_directory}/passt.sock" \
       --phase-file "${phase_file}" \
       -- qemu-test >"${output}" 2>&1 || status=$?

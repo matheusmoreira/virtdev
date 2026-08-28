@@ -463,7 +463,7 @@ QEMU flags of note:
 - `-machine q35` — modern PCIe machine type
 - `-drive if=pflash ...` — OVMF firmware; OVMF_CODE read-only, per-project NVRAM copy writable
 - `-netdev stream,id=net0,server=off,addr.type=unix,addr.path=<passt.sock>` — connects QEMU to the
-  passt network backend via a UNIX socket. passt is started by `virtdev-netexec` (the exec-shim)
+  passt network backend via a UNIX socket. passt is started by the private `virtdev-netexec` exec shim
   before QEMU, with host-translation paths disabled (`--map-host-loopback none`,
   `--map-guest-addr none`) and a loopback-only SSH forward (`-t 127.0.0.1/<port>:22`).
   `virtdev-install` keeps the original `-netdev user` (SLIRP) backend.
@@ -503,8 +503,8 @@ always reachable.
 The paragraph above is the foreground `virtdev-stop` path. A virtual machine
 can also stop without a foreground `virtdev-stop` — a guest-initiated
 `poweroff`, or an external `systemctl --user stop virtdev-<project>`. In that
-case systemd runs the unit's `ExecStop` hook, which is
-`virtdev-stop --acpi-only <project>`: a lock-free, guard-free mode that sends
+case systemd runs the unit's private `virtdev-stop-acpi <project>` hook: a
+lock-free, context-checked helper that sends
 one best-effort ACPI `system_powerdown` and exits 0 without touching the port
 file or sockets. It runs lock-free because the hook may fire while a foreground
 `virtdev-stop` already holds the lock, and guard-free because systemd runs
@@ -947,7 +947,7 @@ from a launch that failed after the unit went active. A foreground
 unit reaches a terminal state, and `virtdev-start`'s cleanup-on-failure trap
 removes it on failed activation. A guest-initiated `poweroff` or an external
 `systemctl --user stop`, however, stops the unit through the `ExecStop`
-`--acpi-only` hook, which deliberately skips that cleanup (see Stopping a VM),
+private ACPI hook, which deliberately skips that cleanup (see Stopping a VM),
 so the port file can linger past an inactive unit until it is swept.
 
 The port file is therefore the running signal only *while the unit is
