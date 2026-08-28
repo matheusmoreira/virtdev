@@ -10,7 +10,7 @@ ExecStartPost=/usr/bin/systemctl poweroff
 StandardOutput=journal+console
 StandardError=journal+console
 SyslogIdentifier=virtdev-install
-TimeoutStartSec=900
+TimeoutStartSec=infinity
 
 [Install]
 WantedBy=multi-user.target

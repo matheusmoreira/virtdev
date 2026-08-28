@@ -111,4 +111,10 @@ if [[ -e "${success_home}/installation/install.sock" \
   exit 1
 fi
 
-printf 'ok - installer owns children and requires clean QEMU termination\n'
+if ! grep -Fxq 'TimeoutStartSec=infinity' \
+  "${repository}/iso/airootfs/etc/systemd/system/virtdev-install.service"; then
+  printf 'guest installer retains a fixed wall-clock timeout\n' >&2
+  exit 1
+fi
+
+printf 'ok - installer owns children, permits progress, and requires clean termination\n'
