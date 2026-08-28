@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # generated fixture
 
 set -euo pipefail
 
@@ -13,7 +14,18 @@ mkdir -p "${fixture_bin}" "${restore_bin}" "${test_tmp}/guest/data/sub"
 mkdir "${sync_bin}"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
-chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'for argument in "$@"; do' \
+  '  if [[ "${argument}" == --extract && -n "${BACKUP_EXTRACT_STARTED_FILE:-}" ]]; then' \
+  '    : > "${BACKUP_EXTRACT_STARTED_FILE}"' \
+  '  fi' \
+  'done' \
+  'exec /usr/bin/tar "$@"' \
+  > "${fixture_bin}/tar"
+chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl" \
+  "${fixture_bin}/tar"
 cp "${repository}/tests/fixtures/ssh-restore" "${restore_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${restore_bin}/systemctl"
 chmod +x "${restore_bin}/ssh" "${restore_bin}/systemctl"
@@ -27,6 +39,8 @@ truncate -s 2097152 "${test_tmp}/guest/sparse"
 tar --sparse -C "${test_tmp}/guest" -cf "${test_tmp}/sparse.tar" sparse
 tar -C "${test_tmp}/guest/data" -cf "${test_tmp}/escape.tar" \
   --transform='s|^other$|../escaped|' other
+tar -C "${test_tmp}/guest/data" -cf "${test_tmp}/deep.tar" \
+  --transform='s|^other$|a/b/c/other|' other
 
 ssh_key="${test_tmp}/id"
 printf 'test private key\n' > "${ssh_key}"
@@ -157,6 +171,22 @@ if (( status != 19 )) \
     || find "${entries_home}/backups" -name '*.partial' -print -quit \
       | grep -q .; then
   printf 'archive entry overflow was not rejected and cleaned (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
+parents_home="${test_tmp}/parents-home"
+parents_extract_started="${test_tmp}/parents-extract-started"
+prepare_home "${parents_home}"
+status=0
+run_backup "${parents_home}" 1048576 3 10 \
+  env BACKUP_TAR_STREAM="${test_tmp}/deep.tar" \
+    BACKUP_EXTRACT_STARTED_FILE="${parents_extract_started}" \
+  >"${test_tmp}/output" 2>&1 || status=$?
+if (( status != 19 )) || [[ -e "${parents_extract_started}" ]] \
+    || find "${parents_home}/backups" -name '*.partial' -print -quit \
+      | grep -q .; then
+  printf 'implicit archive parents escaped the entry budget (status %d)\n' \
     "${status}" >&2
   exit 1
 fi

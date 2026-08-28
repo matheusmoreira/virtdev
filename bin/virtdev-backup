@@ -54,7 +54,7 @@
 #   VIRTDEV_HOME                Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
 #   VIRTDEV_SSH_KEY             Default: ${VIRTDEV_HOME}/ssh/id
 #   VIRTDEV_BACKUP_MAX_BYTES    Default: 8589934592 (8 GiB archive and data)
-#   VIRTDEV_BACKUP_MAX_ENTRIES  Default: 200000
+#   VIRTDEV_BACKUP_MAX_ENTRIES  Default: 200000 extracted paths
 #   VIRTDEV_BACKUP_TIMEOUT      Default: 3600 seconds total
 #   VIRTDEV_BACKUP_KILL_AFTER   Default: 5 seconds from TERM to KILL
 #   XDG_CONFIG_HOME             Default: ~/.config
@@ -394,6 +394,76 @@ esac
 
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Backup deadline expired before validation'
+archive_paths_summary_file="${partial}/archive-paths-summary"
+set +e
+# shellcheck disable=SC2016  # awk program is passed through timeout
+LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+    "${remaining}" tar --quoting-style=escape --list --file="${archive}" \
+  | LC_ALL=C timeout --signal=TERM \
+      --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" "${remaining}" \
+      awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" '
+        function add_path(path) {
+          if (!(path in seen_path)) {
+            seen_path[path] = 1
+            extracted_entries++
+            if (extracted_entries > maximum_entries) {
+              entries_over = 1
+              exit
+            }
+          }
+        }
+        {
+          members++
+          if (members > maximum_entries) { entries_over = 1; exit }
+          path = $0
+          sub(/\/$/, "", path)
+          if (substr(path, 1, 1) == "/") {
+            invalid_path = 1
+            exit
+          }
+          while (substr(path, 1, 2) == "./") path = substr(path, 3)
+          if (path == "" || path == ".") next
+          count = split(path, component, "/")
+          prefix = ""
+          for (i = 1; i <= count; i++) {
+            if (component[i] == "" || component[i] == ".") continue
+            if (component[i] == "..") {
+              invalid_path = 1
+              exit
+            }
+            prefix = (prefix == "" ? component[i] : prefix "/" component[i])
+            add_path(prefix)
+          }
+        }
+        END {
+          if (entries_over) exit 42
+          if (invalid_path) exit 43
+          printf("%d %d\n", members, extracted_entries)
+        }
+      ' > "${archive_paths_summary_file}"
+path_validation_status=("${PIPESTATUS[@]}")
+set -e
+case "${path_validation_status[1]}" in
+  0) ;;
+  42) error 19 <<<"Backup exceeded its ${VIRTDEV_BACKUP_MAX_ENTRIES}-entry extracted-tree budget" ;;
+  43) error 18 <<<'Backup archive contains an unsafe member path' ;;
+  124|137) error 20 <<<'Backup path validation exceeded its wall-clock deadline' ;;
+  *) error 18 <<<'Could not validate backup archive paths' ;;
+esac
+case "${path_validation_status[0]}" in
+  0) ;;
+  124|137) error 20 <<<'Backup path validation exceeded its wall-clock deadline' ;;
+  *) error 18 <<<'Guest produced an invalid backup archive' ;;
+esac
+read -r members_listed extracted_entries extra_summary \
+  < "${archive_paths_summary_file}"
+[[ "${members_listed}" =~ ^[0-9]+$ \
+    && "${extracted_entries}" =~ ^[0-9]+$ \
+    && -z "${extra_summary}" ]] \
+  || error 18 <<<'Could not summarize backup archive paths'
+
+remaining=$(( backup_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) || error 20 <<<'Backup deadline expired before validation'
 set +e
 archive_summary="$({
   LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
@@ -447,6 +517,8 @@ read -r entries_captured logical_bytes_captured extra_summary \
     && "${logical_bytes_captured}" =~ ^[0-9]+$ \
     && -z "${extra_summary}" ]] \
   || error 18 <<<'Could not summarize backup archive entries'
+(( entries_captured == members_listed )) \
+  || error 18 <<<'Backup archive listings disagreed'
 
 available_extract_bytes="$(df -B1 --output=avail -- "${partial}" 2>/dev/null \
   | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
@@ -454,7 +526,7 @@ available_extract_bytes="$(df -B1 --output=avail -- "${partial}" 2>/dev/null \
 available_inodes="$(df --output=iavail -- "${partial}" 2>/dev/null \
   | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
   || available_inodes=''
-metadata_budget=$(( entries_captured * 4096 ))
+metadata_budget=$(( extracted_entries * 4096 ))
 extract_budget=$(( archive_size + metadata_budget + backup_free_space_reserve ))
 if [[ ! "${available_extract_bytes}" =~ ^[0-9]+$ \
       || ${#available_extract_bytes} -gt 18 \
@@ -462,7 +534,7 @@ if [[ ! "${available_extract_bytes}" =~ ^[0-9]+$ \
   error 19 <<<'Not enough host free space to extract the bounded backup archive'
 fi
 if [[ "${available_inodes}" =~ ^[0-9]+$ ]] \
-    && (( available_inodes < entries_captured + backup_inode_reserve )); then
+    && (( available_inodes < extracted_entries + backup_inode_reserve )); then
   error 19 <<<'Not enough host inodes to extract the bounded backup archive'
 fi
 
@@ -482,7 +554,7 @@ if (( extraction_status != 0 )); then
   esac
 fi
 
-rm -f "${archive}" "${files_from}"
+rm -f "${archive}" "${archive_paths_summary_file}" "${files_from}"
 
 if (( entries_captured == 0 )); then
   error 11 <<MESSAGE
