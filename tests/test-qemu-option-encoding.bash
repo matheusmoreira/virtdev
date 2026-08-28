@@ -20,6 +20,14 @@ sock_dir='sock,a,,b=c d\e'
 project='project,a,,b=c d\e'
 ovmf_code='firmware,a,,b=c d\e'
 standalone='standalone,a,,b=c d\e'
+network_device='virtio-net-pci,netdev=net0,host_mtu=1500'
+network_device+=',csum=off,gso=off,host_tso4=off,host_tso6=off'
+network_device+=',host_ecn=off,host_ufo=off,host_uso=off'
+network_device+=',host_tunnel=off,host_tunnel_csum=off'
+network_device+=',guest_csum=off,guest_tso4=off,guest_tso6=off'
+network_device+=',guest_ecn=off,guest_ufo=off,guest_uso4=off,guest_uso6=off'
+network_device+=',guest_tunnel=off,guest_tunnel_csum=off'
+network_device+=',ctrl_guest_offloads=off'
 
 declare -a actual=()
 qemu_command actual "${disk_dir}" "${sock_dir}" "${project}" \
@@ -38,7 +46,7 @@ declare -a expected=(
   -drive 'file=disk,,a,,,,b=c d\e/system.qcow2,if=virtio,format=qcow2'
   -drive 'file=disk,,a,,,,b=c d\e/home.qcow2,if=virtio,format=qcow2'
   -netdev 'stream,id=net0,server=off,addr.type=unix,addr.path=sock,,a,,,,b=c d\e/network.sock'
-  -device virtio-net-pci,netdev=net0
+  -device "${network_device}"
   -device virtio-rng-pci
   -display none
   -chardev 'socket,id=monitor,path=sock,,a,,,,b=c d\e/monitor.sock,server=on,wait=off'

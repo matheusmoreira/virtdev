@@ -33,8 +33,10 @@ is implied yet.
 
 ## Transport and lifecycle
 
-- QEMU framing, maximum frame size, and negotiated offloads are explicit and
-  tested. Incomplete reads and writes never publish or discard a partial frame.
+- QEMU carries one four-byte-length-prefixed Ethernet frame at a time, capped
+  at 1514 bytes. The launcher advertises MTU 1500 and disables checksum,
+  segmentation, UDP/tunnel, and dynamic guest offloads in both directions.
+  Incomplete reads and writes never publish or discard a partial frame.
 - Backend readiness is proven before the SSH port or launch success is
   published.
 - If a ready backend later dies, the VM continues running offline. Network
