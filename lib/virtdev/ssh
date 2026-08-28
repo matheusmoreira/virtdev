@@ -344,7 +344,7 @@ ssh_transport_argv() {
 
 ssh_client_option_valid() {
   (( $# == 1 && ${#1} > 1 && ${#1} <= 4096 )) || return 1
-  [[ "${1}" =~ ^-[46AaCfgKkNnqTtVvXxYy]+$ \
+  [[ "${1}" =~ ^-[46AaCgKkNnqTtvXxYy]+$ \
       || "${1}" =~ ^-[DELR].+ ]]
 }
 

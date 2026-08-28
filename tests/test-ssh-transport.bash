@@ -71,8 +71,8 @@ declare -a expected_poll=(
 ssh_transport_argv actual poll alpha "${VIRTDEV_SSH_KEY}" 2222 /dev/null 3
 assert_argv actual expected_poll
 
-for invalid in '' -- -o -L target -Zvalue -F/dev/null -i/tmp/key -p22 \
-    -oStrictHostKeyChecking=no -S/tmp/socket -M; do
+for invalid in '' -- -o -L target -f -G -V -vvf -Zvalue -F/dev/null \
+    -i/tmp/key -p22 -oStrictHostKeyChecking=no -S/tmp/socket -M; do
   if ssh_client_option_valid "${invalid}"; then
     printf 'unsafe client option token accepted: %q\n' "${invalid}" >&2
     exit 1
@@ -176,6 +176,9 @@ for invalid_cli in \
     'alpha --client-option=-F/dev/null --' \
     'alpha --client-option=-i/tmp/key --' \
     'alpha --client-option=-p22 --' \
+    'alpha --client-option=-f --' \
+    'alpha --client-option=-G --' \
+    'alpha --client-option=-V --' \
     'alpha --client-option=-oStrictHostKeyChecking=no --'; do
   read -r -a invalid_argv <<< "${invalid_cli}"
   status=0
