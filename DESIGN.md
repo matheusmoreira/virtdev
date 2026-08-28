@@ -407,32 +407,41 @@ The installed system runs a hardened `sshd`:
 - Passes ssh-audit with all green (verified 2026-04-02; re-verify after
   adding `AcceptEnv` and `StreamLocalBindUnlink`)
 
-The same `sshd_config` is used in both the live ISO environment and the
-installed system. The installer scrubs host keys after all customization, so
-the sealed base starts keyless. Ordinary projects generate keys in their
-writable system delta and keep their identity across restarts. Before
-maintenance sshd starts, `virtdev-ssh-hostkeys` scrubs persistent keys, syncs
-the deletion, creates an ephemeral ed25519 key under `/run`, and makes
-`sshdgenkeys` skip persistent generation. Resealing cannot clone that identity
-into future projects, even if the guest later powers off without a finalizer.
+The installer scrubs persistent host keys after customization. On the host,
+each project has a private ed25519 key and an exact `virtdev-<project>`
+known-host entry under `projects/<name>/ssh-host/`. QEMU injects that key with
+fw_cfg; `virtdev-ssh-hostkeys` validates it, installs it under `/run`, scrubs
+any persistent keys, and blocks `sshdgenkeys` from recreating them. A project
+keeps its identity across restarts. Move rebinds only the alias inside its
+journaled rename; recreate gets a new identity. Maintenance creates and removes
+a fresh host-side identity around each proven-terminal boot.
 
-Client-side, `virtdev-ssh` assembles an SSH config from up to four
-sources (per-project trigger output, system trigger output, per-project
-static config, system static config) and passes it via `ssh -F`. The
-user's `~/.ssh/config` is intentionally excluded — virtdev connects to
-untrusted virtual machines, and dangerous global settings
-(`ForwardAgent`, `ControlMaster`) should not leak into the connection.
+This binding matters even on loopback: ports are reused, so a listener at the
+right numeric endpoint is not proof that it is the intended VM. Every SSH path
+uses the shared `ssh_transport_argv` policy: strict checking, project-local
+known-host state, exact alias, ed25519 host algorithms, fixed client key and
+port, disabled agent/GSSAPI credential forwarding, and no global known hosts,
+host-IP lookup, DNS lookup, update, or control socket. Command-line policy takes
+precedence over the assembled config.
 
-Other host-to-VM SSH invocations (`virtdev-wait`, `virtdev-maintain`,
-`virtdev-transfer`, `virtdev-backup`, `virtdev-restore`) pass SSH
-options directly via command-line flags.
+`virtdev-ssh` still assembles per-project trigger output, system trigger output,
+per-project config, and system config through `ssh -F`; `~/.ssh/config` is
+excluded. Explicit client options use a bounded, one-token
+`--client-option=<option>` channel before the destination. Only selected
+forwarding/session options are accepted. Remote argv follows `--` unchanged;
+policy overrides, backgrounding, and modes that bypass the connection are
+rejected. Polling, rsync, backup, restore, transfer, and maintenance use the
+same transport builder.
 
-All host-to-VM connections pass
-`-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`. A project key is
-stable until recreation; maintenance uses a new ephemeral key per boot. The SSH
-forward is bound to loopback only (passt `-t 127.0.0.1/<port>:22`), so the
-man-in-the-middle attacks that `StrictHostKeyChecking` defends against do not
-apply.
+Host and guest helpers are a matched transport contract. The installer emits
+`capability:ssh-host-identity=1` before `complete`; the host records an exact
+`guest-contract` marker, seal promotes it, and create copies it into each
+project. Start requires the project marker (including detached projects), while
+maintain, recreate, and upgrade preflight the base marker. Older helpers ignore
+the injected key—and old maintenance chooses a random key—so no authenticated
+automatic bootstrap exists. Migration uses the previous host version for
+backup, then a current ISO/base and project recreation or restoration; insecure
+host-key fallback is never attempted.
 
 **Serial console autologin:** the serial console (`console.sock`)
 auto-logs in as `dev` via a systemd drop-in on `serial-getty@ttyS0`.
@@ -831,7 +840,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `validate` | input validation (`validate_project_name`) | 2 |
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`); universal `--help` and `--color` handling | 64 |
 | `lock` | canonical store/cache `flock(2)` domains, inherited composition, bounded diagnostics | 75, 76 |
-| `ssh` | SSH key validation and connection helpers (`ssh_key_validate`, `ssh_rsync_command`, `ssh_poll_until_ready`) | 77, 78 |
+| `ssh` | Guest-contract checks, project host identities, strict shared transport argv, rsync wrapper, and bounded polling | 77, 78, 103, 104 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at explicit lifecycle points (`trigger_fire`); bounds execution and stdout before returning text through namerefs | 80 |
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
@@ -919,7 +928,7 @@ during a maintenance session.
 | `virtdev-create`   | Derive a project VM from the sealed base                     |
 | `virtdev-start`    | Start a project VM as a transient systemd user service; assigns SSH port |
 | `virtdev-stop`     | Clean ACPI shutdown; SIGTERM fallback                        |
-| `virtdev-ssh`      | SSH into a running project VM as dev; fires pre/post-ssh triggers, assembles hierarchical SSH config |
+| `virtdev-ssh`      | SSH with strict project identity; separates bounded client options from remote argv |
 | `virtdev-transfer` | Copy files between host and VM via rsync over SSH            |
 | `virtdev-console`  | Attach to the serial console via socat                       |
 | `virtdev-wait`     | Poll until SSH is accepting connections post-start            |
@@ -993,14 +1002,17 @@ ${VIRTDEV_HOME}/
     home.qcow2
     nvram
     generation          monotonic counter, incremented by each reseal
+    guest-contract      proven guest/host transport version
   installation/         transient; present between virtdev-install and virtdev-seal
     system.qcow2
     home.qcow2
     nvram
+    guest-contract      written only after the installer capability and clean exit
   maintenance/          transient; present while virtdev-maintain is active
     system.qcow2
     home.qcow2
     nvram
+    guest-contract      copy of the sealed-base marker
   projects/maintenance/  transient maintenance virtual machine runtime directory (mode 0700)
     port                 hardcoded port 2222
     monitor.sock         QEMU HMP monitor socket (present while maintenance virtual machine is running)
@@ -1013,6 +1025,8 @@ ${VIRTDEV_HOME}/
       home.qcow2        delta over system/home.qcow2
       nvram             per-project UEFI variable store
       generation        copy of system/generation at create time
+      guest-contract    copied at create time; independent after detach
+      ssh-host/         private host key, public key, exact-alias known_hosts
       port              SSH forwarding port (present while running)
       monitor.sock      QEMU HMP monitor socket (present while running)
       qmp.sock          QEMU QMP control socket (present while running)

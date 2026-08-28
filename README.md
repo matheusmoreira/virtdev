@@ -258,6 +258,14 @@ virtdev upgrade
 Flags: `--only=a,b`, `--except=c,d`, `--skip-outdated`, `--yes`/`-y`,
 `--verbose`/`-v`.
 
+The host tools and guest control helpers are a matched contract. A base made by
+an older installer lacks the strict SSH host-identity marker, so current
+`start`, `maintain`, `recreate`, and `upgrade` refuse before launching or
+changing data. There is no insecure bootstrap for this transition: make needed
+backups with the previous virtdev version, then build the current ISO, install
+and seal a new base, and recreate/restore projects. Detached projects carry
+their own marker and must be migrated independently.
+
 Because every coupled qcow2 delta depends on the exact current base bytes, a
 reseal cannot safely leave a coupled project behind. Filtering options may
 exclude detached projects only; otherwise `virtdev upgrade` fails before it
@@ -315,7 +323,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 
 | Command | Description |
 |---------|-------------|
-| `virtdev-ssh <project> [args...]` | SSH into a running virtual machine (fires pre/post-ssh triggers) |
+| `virtdev-ssh <project> [--client-option=<option>]... [-- [command...]]` | SSH into a running VM; client options and remote argv are separate |
 | `virtdev-console <machine>` | Serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is available |
 | `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
@@ -426,6 +434,27 @@ The assembled config is written to a temporary file and passed via
 connects to untrusted virtual machines and dangerous global settings
 (`ForwardAgent`, `ControlMaster`) should not leak in.
 
+Every VM receives a host-generated, project-specific ed25519 host key through
+QEMU fw_cfg. The guest uses it only from `/run`; disks retain no host private
+key. The client pins the key to the exact alias `virtdev-<project>` in
+project-local known-host state. Strict checking, alias, key algorithm, client
+identity, port, and disabled connection sharing are fixed command-line policy
+shared by interactive ssh, polling, rsync, backup, restore, and maintenance.
+Agent and GSSAPI credential forwarding are disabled. User config cannot weaken
+those settings.
+
+Repeatable client options use `--client-option=<one-token-option>` before the
+remote delimiter. Remote command arguments follow `--` unchanged:
+
+```bash
+virtdev ssh myproject --client-option=-L3000:localhost:3000 --client-option=-N
+virtdev ssh myproject -- printf '%s\n' '--literal-remote-argument'
+```
+
+Only bounded, self-contained forwarding/session options are accepted. Policy
+options (`-F`, `-i`, `-p`, `-o`), credential forwarding (`-A`, `-K`),
+backgrounding (`-f`), and connection-bypassing modes (`-G`, `-V`) are rejected.
+
 ## Architecture
 
 See `DESIGN.md` for the full architecture, threat model, locking model,
@@ -439,12 +468,15 @@ system/                    sealed base (mode 444)
   home.qcow2               /home/dev template
   nvram                    UEFI variable store
   generation               monotonic counter, bumped on reseal
+  guest-contract           proven guest/host transport version
 
 projects/<name>/           per-project (writable deltas)
   system.qcow2  --backs--> system/system.qcow2
   home.qcow2    --backs--> system/home.qcow2
   nvram                    copy of system/nvram
   generation               must match system/generation to boot
+  guest-contract           retained when a project is detached
+  ssh-host/                host key and exact-alias known-host state
 ```
 
 Project VMs are thin deltas. Only divergent writes consume disk space.
@@ -494,6 +526,8 @@ ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
   projects/<name>/
     system.qcow2, home.qcow2       delta disks
     nvram, generation               UEFI state, base generation
+    guest-contract                  guest/host SSH compatibility marker
+    ssh-host/                        host-owned key and known-host state
     port, monitor.sock, qmp.sock, console.sock, network.sock  runtime (while running)
     manifest                     optional project-local manifest
   backups/<project>/<date>/<time>/

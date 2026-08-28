@@ -36,13 +36,10 @@ how it's structured. Don't duplicate their content here — point to them.
   that mutates virtdev state. See `DESIGN.md`'s "Concurrency and Locking"
   section for which scripts lock and why.
 - Defaults `VIRTDEV_HOME` via `: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"`.
-- Calls `arguments_parse` to parse argv and `arguments_usage` to
-  generate usage lines from the spec. `arguments_parse` intercepts
-  `--help` and `-h` automatically (anywhere in argv before the `--`
-  terminator) and prints the usage line; consumers don't need a
-  manual help intercept. `--color=yes|no|auto` is also universal —
-  the parsed value is stored in `_virtdev_color_mode` for the
-  terminal library.
+- Calls `arguments_parse` and `arguments_usage` for typed argv. The narrow
+  exception is `virtdev-ssh`, whose repeatable one-token client options and
+  separate remote argv need a bounded manual grammar. It still handles
+  `--help`/`-h` and `--color=yes|no|auto` before the remote `--` delimiter.
 - Sends all user-facing messages (progress, banners, warnings, success)
   to stderr. Only machine-readable output (paths, port numbers, PIDs,
   table data) goes to stdout.
@@ -155,8 +152,8 @@ non-empty validation must do it after parsing.
 
 Parsing is **GNU-style**: flags and positionals may be interleaved.
 `virtdev-destroy myproject --yes` works. Use `--` to force all
-remaining arguments into positional regardless of prefix — required
-for scripts like `virtdev-ssh` that pass flag-like args through.
+remaining arguments into positional regardless of prefix. `virtdev-ssh`
+instead reserves `--` for the exact remote-command argv.
 
 **Positional suffixes** (for `spec_positionals`, used only by
 `arguments_usage`): bare name = required, `?` = optional, `+` =
@@ -218,6 +215,24 @@ ssh reads it. A temp file with EXIT trap cleanup is required.
 The user's `~/.ssh/config` is intentionally excluded. This prevents
 dangerous global settings (`ForwardAgent`, `ControlMaster`) from
 leaking into untrusted VM connections.
+
+`ssh_transport_argv` is the only transport-policy builder. It pins the
+project-local known-host file and exact `virtdev-<project>` alias, strict
+ed25519 host checking, client key, port, and disabled control sockets. These
+command-line values win over all assembled config. Poll, rsync, backup,
+restore, transfer, and maintenance call the same builder.
+
+The interactive grammar is:
+
+```
+virtdev-ssh <project> [--client-option=<option>]... [-- [command...]]
+```
+
+Client options are bounded, self-contained tokens from a small forwarding and
+session whitelist; they cannot set transport policy or destination. Agent and
+GSSAPI credential forwarding (`-A`, `-K`), backgrounding (`-f`), and
+connection-bypassing `-G`/`-V` are rejected. Arguments after `--` are remote
+argv, including literal help/color tokens.
 
 **Trap composition in `virtdev-ssh`:** ssh runs in the foreground. The EXIT
 trap unlinks the config before optional post hooks. During cleanup, signal
@@ -371,6 +386,12 @@ glob in `PKGBUILD` picks it up automatically.
   in `virtdev-seal` and `virtdev-maintain`. Adding new files to `system/`
   means they get swept by the chmod too — fine today, but relevant for
   any future in-place update to a sealed file.
+- **Guest SSH contract.** The installer must report
+  `capability:ssh-host-identity=1` before `complete`. The host writes
+  `guest-contract`; seal preserves it, create copies it into each project,
+  start checks the project copy, and maintain/recreate/upgrade check the base.
+  Detached projects keep their copy. Never add an insecure compatibility
+  fallback: migrate an older image with its matching host tools, then rebuild.
 - **Backup and restore over SSH.** Both run rsync to/from the running
   guest's filesystem; the host does not touch `projects/<name>/*.qcow2`.
   Neither acquires the virtdev lock (see `DESIGN.md`'s "Concurrency and
