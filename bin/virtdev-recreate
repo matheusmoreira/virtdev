@@ -130,7 +130,7 @@ unit="virtdev-${project}"
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 backups_project_dir="$(snapshot_directory "${project}")"
 
-project_require "${project}"
+project_require_ordinary "${project}"
 
 if [[ -n "${pinned_snapshot}" && ! -d "${backups_project_dir}/${pinned_snapshot}" ]]; then
   error 9 <<<"Pinned restore snapshot not found: ${backups_project_dir}/${pinned_snapshot}"

@@ -38,7 +38,7 @@ validate_project_name "${project}"
 
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
-project_require "${project}"
+project_require_ordinary "${project}"
 
 if ! command -v qemu-img &>/dev/null; then
   error 5 <<MESSAGE

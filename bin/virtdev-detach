@@ -88,7 +88,7 @@ validate_project_name "${project}"
 
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
-project_require "${project}"
+project_require_ordinary "${project}"
 
 system_disk="${project_directory}/system.qcow2"
 home_disk="${project_directory}/home.qcow2"

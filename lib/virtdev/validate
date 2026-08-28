@@ -2,6 +2,7 @@
 #
 # validate library: input validation helpers.
 # Public:
+#   project_name_is_valid <name>             pure charset + length predicate
 #   validate_project_name <name>           charset + length (every consumer)
 #   validate_project_name_reserved <name>  reserved as a project name? (minters only)
 # Exit codes:
@@ -10,6 +11,12 @@
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 import error
+
+project_name_is_valid() {
+  local LC_ALL=C
+  local -r name="${1:-}"
+  [[ "${name}" =~ ^[a-zA-Z0-9_-]+$ ]] && (( ${#name} <= 64 ))
+}
 
 validate_project_name() {
   local -r name="${1}"

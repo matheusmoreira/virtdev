@@ -57,7 +57,7 @@ validate_project_name "${project}"
 
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
-project_require "${project}"
+project_require_ordinary "${project}"
 
 generation_file="${project_directory}/generation"
 if [[ ! -f "${generation_file}" ]]; then

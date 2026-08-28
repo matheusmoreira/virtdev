@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # descriptor/status constants and globals are public
+# Machine targets are ordinary projects or the maintenance VM. Resolution is
+# nonterminating and separates the data root from ephemeral runtime controls.
+#
+# Public:
+#   machine_target_resolve <name>
+#   machine_target_require <name>
+#   machine_active_state|machine_state <name>
+#   machine_is_running|machine_is_stopped|machine_is_unreachable <name>
+#   machine_state_from_active <ActiveState>
+#
+# On successful resolution, VIRTDEV_MACHINE_{NAME,KIND,UNIT,DATA_DIR,RUNTIME_DIR}
+# describe the target. Functions return 2 for an invalid/reserved target and
+# machine_target_require returns 3 when an ordinary project's root is absent;
+# maintenance remains a stable target between sessions.
+
+set -euo pipefail
+
+import validate
+
+: "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
+
+readonly machine_kind_project=project
+readonly machine_kind_maintenance=maintenance
+readonly machine_target_invalid=2
+readonly machine_target_missing=3
+
+VIRTDEV_MACHINE_NAME=''
+VIRTDEV_MACHINE_KIND=''
+VIRTDEV_MACHINE_UNIT=''
+VIRTDEV_MACHINE_DATA_DIR=''
+VIRTDEV_MACHINE_RUNTIME_DIR=''
+VIRTDEV_MACHINE_ERROR=''
+
+machine_target_resolve() {
+  VIRTDEV_MACHINE_NAME=''
+  VIRTDEV_MACHINE_KIND=''
+  VIRTDEV_MACHINE_UNIT=''
+  VIRTDEV_MACHINE_DATA_DIR=''
+  VIRTDEV_MACHINE_RUNTIME_DIR=''
+  VIRTDEV_MACHINE_ERROR=''
+
+  if (( $# != 1 )) || ! project_name_is_valid "${1:-}"; then
+    VIRTDEV_MACHINE_ERROR=invalid-name
+    return "${machine_target_invalid}"
+  fi
+
+  local -r name="${1}"
+  case "${name}" in
+    maintenance)
+      VIRTDEV_MACHINE_KIND="${machine_kind_maintenance}"
+      VIRTDEV_MACHINE_DATA_DIR="${VIRTDEV_HOME}/maintenance"
+      VIRTDEV_MACHINE_RUNTIME_DIR="${VIRTDEV_HOME}/projects/maintenance"
+      ;;
+    base|firewall)
+      VIRTDEV_MACHINE_ERROR=reserved-target
+      return "${machine_target_invalid}"
+      ;;
+    *)
+      VIRTDEV_MACHINE_KIND="${machine_kind_project}"
+      VIRTDEV_MACHINE_DATA_DIR="${VIRTDEV_HOME}/projects/${name}"
+      VIRTDEV_MACHINE_RUNTIME_DIR="${VIRTDEV_MACHINE_DATA_DIR}"
+      ;;
+  esac
+  VIRTDEV_MACHINE_NAME="${name}"
+  VIRTDEV_MACHINE_UNIT="virtdev-${name}"
+}
+
+machine_target_require() {
+  machine_target_resolve "$@" || return $?
+  # Maintenance is a stable machine identity even between sessions. Commands
+  # that need staging or runtime artifacts validate their concrete paths.
+  if [[ "${VIRTDEV_MACHINE_KIND}" == "${machine_kind_maintenance}" ]]; then
+    return 0
+  elif [[ -d "${VIRTDEV_MACHINE_DATA_DIR}" ]]; then
+    return 0
+  fi
+  VIRTDEV_MACHINE_ERROR=missing
+  return "${machine_target_missing}"
+}
+
+machine_active_state() {
+  machine_target_resolve "${1}" || return $?
+  systemctl --user show "${VIRTDEV_MACHINE_UNIT}" \
+    --property=ActiveState --value 2>/dev/null || true
+}
+
+machine_state_from_active() {
+  case "${1}" in
+    active)          printf 'running\n' ;;
+    inactive|failed) printf 'stopped\n' ;;
+    activating)      printf 'starting\n' ;;
+    deactivating)    printf 'stopping\n' ;;
+    *)               printf 'unknown\n' ;;
+  esac
+}
+
+machine_state() {
+  local active_state
+  active_state="$(machine_active_state "${1}")" || {
+    printf 'unknown\n'
+    return "${machine_target_invalid}"
+  }
+  machine_state_from_active "${active_state}"
+}
+
+machine_is_running() {
+  [[ "$(machine_state "${1}")" == running ]]
+}
+
+machine_is_stopped() {
+  [[ "$(machine_state "${1}")" == stopped ]]
+}
+
+machine_is_unreachable() {
+  local active_state
+  active_state="$(machine_active_state "${1}")" || return 1
+  [[ -z "${active_state}" ]]
+}

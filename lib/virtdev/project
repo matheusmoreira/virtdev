@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # machine constants are provided by import
 # lib/virtdev/project
 #
 # Project enumeration and state queries.
@@ -83,7 +84,7 @@
 
 set -euo pipefail
 
-import error
+import error machine
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -107,23 +108,12 @@ project_list() {
   done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' | sort -z)
 }
 
-# Empty output means the user manager was unreachable, not inactive.
-_project_active_state() {
-  systemctl --user show "virtdev-${1}" -p ActiveState --value 2>/dev/null || true
-}
-
-_project_state_from_active() {
-  case "${1}" in
-    active)          printf 'running\n' ;;
-    inactive|failed) printf 'stopped\n' ;;
-    activating)      printf 'starting\n' ;;
-    deactivating)    printf 'stopping\n' ;;
-    *)               printf 'unknown\n' ;;
-  esac
-}
-
 project_state() {
-  _project_state_from_active "$(_project_active_state "${1}")"
+  if ! machine_target_resolve "${1}"; then
+    printf 'unknown\n'
+    return 0
+  fi
+  machine_state "${1}"
 }
 
 # These predicates are intentionally not complements: transitional or unknown
@@ -137,7 +127,7 @@ project_is_stopped() {
 }
 
 project_is_unreachable() {
-  [[ -z "$(_project_active_state "${1}")" ]]
+  machine_target_resolve "${1}" && machine_is_unreachable "${1}"
 }
 
 _project_load_state_impl() {
@@ -166,7 +156,7 @@ _project_load_state_impl() {
       if [[ -v _project_state_unit_projects["${_project_state_id}"] ]]; then
         _project_state_project="${_project_state_unit_projects[${_project_state_id}]}"
         _project_state_result["${_project_state_project}"]="$(
-          _project_state_from_active "${_project_state_active}"
+          machine_state_from_active "${_project_state_active}"
         )"
       fi
       _project_state_id=''
@@ -181,7 +171,7 @@ _project_load_state_impl() {
   if [[ -v _project_state_unit_projects["${_project_state_id}"] ]]; then
     _project_state_project="${_project_state_unit_projects[${_project_state_id}]}"
     _project_state_result["${_project_state_project}"]="$(
-      _project_state_from_active "${_project_state_active}"
+      machine_state_from_active "${_project_state_active}"
     )"
   fi
 }
@@ -270,6 +260,15 @@ project_require() {
   if [[ ! -d "${project_directory}" ]]; then
     error 3 <<<"Project not found: ${project}"
   fi
+}
+
+project_require_ordinary() {
+  local -r project="${1}"
+  if ! machine_target_resolve "${project}" \
+      || [[ "${VIRTDEV_MACHINE_KIND}" != "${machine_kind_project}" ]]; then
+    error 3 <<<"Not an ordinary project target: ${project}"
+  fi
+  project_require "${project}"
 }
 
 _generation_error() {

@@ -45,7 +45,7 @@ lock_acquire
 
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
-project_require "${project}"
+project_require_ordinary "${project}"
 
 # Fail CLOSED: only a PROVABLY stopped machine may be destroyed. project_is_stopped
 # is false for an unreachable manager too, so a lost session bus cannot read a live

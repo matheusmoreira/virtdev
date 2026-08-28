@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # machine descriptor constants provided by import
 #
-# virtdev-path <project> [resource]
+# virtdev-path <machine> [resource]
 #
 # Prints the absolute path to a project resource.
 # Machine-readable: stdout contains only the path.
@@ -8,6 +9,7 @@
 # Resources (default: data):
 #
 #   data        project directory (disks, nvram, port, generation)
+#   runtime     ephemeral runtime directory (same as data for projects)
 #   backups     backup snapshots directory
 #   manifest    resolved manifest file path
 #   system-image project's system disk image
@@ -31,7 +33,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project
+import error validate arguments manifest machine
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -53,8 +55,8 @@ project="${1}"
 resource="${2:-data}"
 
 case "${project}" in
-  base|maintenance)
-    dir="${project/base/system}"
+  base)
+    dir=system
     case "${resource}" in
       data)
         path="${VIRTDEV_HOME}/${dir}"
@@ -79,13 +81,35 @@ esac
 
 validate_project_name "${project}"
 
-project_directory="${VIRTDEV_HOME}/projects/${project}"
+target_status=0
+machine_target_require "${project}" || target_status=$?
+case "${target_status}" in
+  "${machine_target_invalid}") error 2 <<<"Not a machine target: ${project}" ;;
+  "${machine_target_missing}") error 3 <<<"Machine target not found: ${project}" ;;
+esac
+project_directory="${VIRTDEV_MACHINE_DATA_DIR}"
 
-project_require "${project}"
+if [[ "${VIRTDEV_MACHINE_KIND}" == "${machine_kind_maintenance}" ]]; then
+  case "${resource}" in
+    data) path="${VIRTDEV_MACHINE_DATA_DIR}" ;;
+    runtime) path="${VIRTDEV_MACHINE_RUNTIME_DIR}" ;;
+    system-image) path="${VIRTDEV_MACHINE_DATA_DIR}/system.qcow2" ;;
+    home-image) path="${VIRTDEV_MACHINE_DATA_DIR}/home.qcow2" ;;
+    *)
+      error 5 <<<"Unknown resource for maintenance: '${resource}' (valid: data, runtime, system-image, home-image)"
+      ;;
+  esac
+  [[ -e "${path}" ]] || error 4 <<<"Path does not exist: '${path}'"
+  printf '%s\n' "${path}"
+  exit 0
+fi
 
 case "${resource}" in
   data)
     printf '%s\n' "${project_directory}"
+    ;;
+  runtime)
+    printf '%s\n' "${VIRTDEV_MACHINE_RUNTIME_DIR}"
     ;;
   backups)
     printf '%s\n' "${VIRTDEV_HOME}/backups/${project}"
@@ -107,6 +131,6 @@ MESSAGE
     printf '%s\n' "${project_directory}/home.qcow2"
     ;;
   *)
-    error 5 <<<"Unknown resource: '${resource}' (valid: data, backups, manifest, system-image, home-image)"
+    error 5 <<<"Unknown resource: '${resource}' (valid: data, runtime, backups, manifest, system-image, home-image)"
     ;;
 esac

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # machine descriptor constants provided by import
 #
 # virtdev-log [--follow] <project>
 #
@@ -18,7 +19,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments terminal project
+import error validate arguments terminal machine
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -42,14 +43,18 @@ project="${1}"
 validate_project_name "${project}"
 
 
-project_require "${project}"
-
-unit="virtdev-${project}"
+target_status=0
+machine_target_require "${project}" || target_status=$?
+case "${target_status}" in
+  "${machine_target_invalid}") error 2 <<<"Not a machine target: ${project}" ;;
+  "${machine_target_missing}") error 3 <<<"Machine target not found: ${project}" ;;
+esac
+unit="${VIRTDEV_MACHINE_UNIT}"
 
 journalctl_opts=(--user -u "${unit}" --no-hostname)
 
 if (( flags[follow] )); then
-  if ! project_is_running "${project}"; then
+  if ! machine_is_running "${project}"; then
     printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: ${project} is not running; --follow will wait for new entries" reset)"
   fi
   journalctl_opts+=(--follow)
