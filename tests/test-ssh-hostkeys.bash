@@ -15,7 +15,8 @@ all_marker="${test_tmp}/keygen-all"
 
 host_store="${test_tmp}/host-store"
 mkdir -p "${host_store}/projects/project-a" \
-  "${host_store}/projects/project-b"
+  "${host_store}/projects/project-b" \
+  "${host_store}/projects/project-retry"
 (
   export VIRTDEV_HOME="${host_store}"
   # shellcheck disable=SC1090
@@ -39,6 +40,24 @@ mkdir -p "${host_store}/projects/project-a" \
     printf 'project-a host state accepted project-b alias\n' >&2
     exit 1
   fi
+
+  create_bin="${test_tmp}/create-bin"
+  create_sync_count="${test_tmp}/create-sync-count"
+  mkdir "${create_bin}"
+  ln -s "${repository}/tests/fixtures/sync-counted" "${create_bin}/sync"
+  for fail_call in 3 4; do
+    status=0
+    (
+      SYNC_COUNT_FILE="${create_sync_count}" SYNC_FAIL_CALL="${fail_call}" \
+        PATH="${create_bin}:${PATH}" ssh_host_identity_ensure project-retry
+    ) 2>/dev/null || status=$?
+    (( status == 103 ))
+    [[ "$(< "${create_sync_count}")" == "${fail_call}" ]]
+  done
+  SYNC_COUNT_FILE="${create_sync_count}" PATH="${create_bin}:${PATH}" \
+    ssh_host_identity_ensure project-retry
+  [[ "$(< "${create_sync_count}")" == 5 ]]
+  ssh_host_identity_require project-retry
 
   printf 'corrupt\n' > "$(ssh_host_identity_known_hosts project-a)"
   status=0

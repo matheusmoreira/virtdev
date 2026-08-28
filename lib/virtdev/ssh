@@ -228,7 +228,7 @@ _ssh_host_identity_create() {
 
 ssh_host_identity_ensure() {
   local -r project="${1}"
-  local root
+  local root project_directory="${VIRTDEV_HOME}/projects/${project}"
   root="$(ssh_host_identity_root "${project}")" || {
     error "${ssh_host_identity_exit_code}" <<<'Invalid SSH host-identity project name'
   }
@@ -236,6 +236,9 @@ ssh_host_identity_ensure() {
     _ssh_host_identity_validate "${project}" || error "${ssh_host_identity_exit_code}" <<MESSAGE
 Guest SSH host identity is corrupt: '${root}'
 Refusing to replace existing identity state automatically.
+MESSAGE
+    sync -f "${project_directory}" || error "${ssh_host_identity_exit_code}" <<MESSAGE
+Could not durably confirm SSH host identity for project: ${project}
 MESSAGE
     return 0
   fi
