@@ -1,25 +1,50 @@
 #!/usr/bin/env bash
+# Synchronous ExecStop hook. The transient unit supplies its project, $MAINPID,
+# and launch-time monitor path; systemd owns the timeout and escalation.
 
 set -euo pipefail
 
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../lib/virtdev/import"
 
-import validate runtime
+import validate
 
-(( $# == 1 )) || exit 64
+(( $# >= 1 && $# <= 2 )) || exit 64
 project="${1}"
+main_pid="${2:-}"
 validate_project_name "${project}"
 
-# This helper is only the transient unit's ExecStop hook. A direct invocation
-# while the unit is not deactivating must not bypass virtdev-stop's contract.
-state="$(systemctl --user show "virtdev-${project}.service" \
+unit="virtdev-${project}.service"
+state="$(systemctl --user show "${unit}" \
   --property=ActiveState --value 2>/dev/null || true)"
 [[ "${state}" == deactivating ]] || exit 0
 
-monitor_sock="$(runtime_monitor_sock "${VIRTDEV_HOME}/projects/${project}")"
+manager_pid="$(systemctl --user show "${unit}" \
+  --property=MainPID --value 2>/dev/null || true)"
+[[ "${main_pid}" =~ ^[1-9][0-9]*$ && "${manager_pid}" == "${main_pid}" ]] \
+  || exit 0
+
+process_start_time() {
+  local -r pid="${1}"
+  local process_stat
+  local -a fields=()
+
+  IFS= read -r process_stat < "/proc/${pid}/stat" 2>/dev/null || return 1
+  read -r -a fields <<< "${process_stat##*) }"
+  (( ${#fields[@]} >= 20 )) && [[ "${fields[19]}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "${fields[19]}"
+}
+
+start_time="$(process_start_time "${main_pid}" 2>/dev/null || true)"
+[[ -n "${start_time}" ]] || exit 0
+
+monitor_sock="${VIRTDEV_STOP_MONITOR_SOCK:-}"
 if [[ -S "${monitor_sock}" ]] && command -v socat &>/dev/null; then
   printf >&2 'Sending ACPI powerdown to: %s\n' "${project}"
   printf 'system_powerdown\n' \
     | socat -u - UNIX-CONNECT:"${monitor_sock}" &>/dev/null || true
 fi
+
+while [[ "$(process_start_time "${main_pid}" 2>/dev/null || true)" == "${start_time}" ]]; do
+  sleep 0.1
+done

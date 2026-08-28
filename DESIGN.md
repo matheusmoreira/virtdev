@@ -513,15 +513,12 @@ always reachable.
 
 The paragraph above is the foreground `virtdev-stop` path. A virtual machine
 can also stop without a foreground `virtdev-stop` — a guest-initiated
-`poweroff`, or an external `systemctl --user stop virtdev-<project>`. In that
-case systemd runs the unit's private `virtdev-stop-acpi <project>` hook: a
-lock-free, context-checked helper that sends
-one best-effort ACPI `system_powerdown` and exits 0 without touching the port
-file or sockets. It runs lock-free because the hook may fire while a foreground
-`virtdev-stop` already holds the lock, and guard-free because systemd runs
-`ExecStop` once the unit is already `deactivating`, where an is-active guard
-would always fail. Escalation on this path is driven by systemd's own
-`TimeoutStopSec`, which `virtdev-start` pins to `VIRTDEV_STOP_TIMEOUT` on the
+`poweroff`, or an external `systemctl --user stop virtdev-<project>`. Systemd
+passes its authoritative `$MAINPID` and the launch-time monitor path to the
+private hook. The lock-free helper requires the unit to be `deactivating`,
+sends one best-effort ACPI `system_powerdown`, and waits for that same process
+to exit without touching runtime controls. Escalation is driven by systemd's
+own `TimeoutStopSec`, which `virtdev-start` pins to `VIRTDEV_STOP_TIMEOUT` on the
 transient unit (`--property=TimeoutStopSec=`) so the hook path and the
 foreground path escalate on the same bound. Port and socket cleanup is
 deferred to the next
@@ -901,8 +898,9 @@ active*: every consumer (`virtdev-ssh`, `virtdev-port`, `virtdev-list`) gates
 on the systemd unit's active state before it uses the port to reach the
 guest, so a port file that outlives its unit is never acted on. A port file
 left behind by the deferred-cleanup path is harmless stale state — the next
-`virtdev-start` clears it (and stale sockets) at its pre-launch sweep, before
-it launches, so a stale wrong port never survives into the launch window; it
+`virtdev-start` clears it (and stale sockets) only after observing `inactive` or
+`failed`, then rechecks that terminal state at submission. A stale wrong port
+therefore never survives into the launch window; it
 then writes the correct port only after confirming liveness, and a failed
 start removes it via the cleanup trap. A foreground `virtdev-stop` removes it
 too. Auto-assignment finds the lowest port >= 2222 not currently bound

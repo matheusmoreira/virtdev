@@ -4,6 +4,7 @@ set -euo pipefail
 
 systemctl_wants_active_state=0
 systemctl_wants_exec_main_status=0
+systemctl_wants_main_pid=0
 systemctl_wants_id=0
 systemctl_next_property=0
 for systemctl_arg in "$@"; do
@@ -20,6 +21,7 @@ for systemctl_arg in "$@"; do
   case "${systemctl_property}" in
     ActiveState)    systemctl_wants_active_state=1 ;;
     ExecMainStatus) systemctl_wants_exec_main_status=1 ;;
+    MainPID)        systemctl_wants_main_pid=1 ;;
     Id)             systemctl_wants_id=1 ;;
   esac
 done
@@ -66,6 +68,8 @@ fi
 if [[ " $* " == *" show "* ]]; then
   if (( systemctl_wants_exec_main_status )); then
     printf '%s\n' "${SYSTEMCTL_EXEC_MAIN_STATUS:-0}"
+  elif (( systemctl_wants_main_pid )); then
+    printf '%s\n' "${SYSTEMCTL_MAIN_PID:-0}"
   elif (( systemctl_wants_id && systemctl_wants_active_state )); then
     for systemctl_arg in "$@"; do
       [[ "${systemctl_arg}" == virtdev-* ]] || continue

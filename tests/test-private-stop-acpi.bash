@@ -5,7 +5,17 @@ set -euo pipefail
 repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
 listener_pid=''
+guest_pid=''
+hook_pid=''
 cleanup() {
+  if [[ -n "${hook_pid}" ]]; then
+    kill "${hook_pid}" 2>/dev/null || true
+    wait "${hook_pid}" 2>/dev/null || true
+  fi
+  if [[ -n "${guest_pid}" ]]; then
+    kill "${guest_pid}" 2>/dev/null || true
+    wait "${guest_pid}" 2>/dev/null || true
+  fi
   if [[ -n "${listener_pid}" ]]; then
     kill "${listener_pid}" 2>/dev/null || true
     wait "${listener_pid}" 2>/dev/null || true
@@ -29,21 +39,52 @@ for _ in {1..50}; do
 done
 [[ -S "${monitor_sock}" ]]
 
-SYSTEMCTL_ACTIVE_STATE=active VIRTDEV_HOME="${test_tmp}/home" \
+SYSTEMCTL_ACTIVE_STATE=active SYSTEMCTL_MAIN_PID="${BASHPID}" \
+  VIRTDEV_STOP_MONITOR_SOCK="${monitor_sock}" \
   PATH="${fixture_bin}:${PATH}" \
-  "${repository}/libexec/virtdev/virtdev-stop-acpi" probe
+  "${repository}/libexec/virtdev/virtdev-stop-acpi" probe "${BASHPID}"
 [[ ! -e "${capture}" ]]
 
-SYSTEMCTL_ACTIVE_STATE=deactivating VIRTDEV_HOME="${test_tmp}/home" \
+sleep 30 &
+guest_pid=$!
+SYSTEMCTL_ACTIVE_STATE=deactivating SYSTEMCTL_MAIN_PID="${guest_pid}" \
+  VIRTDEV_HOME="${test_tmp}/wrong-home" \
+  VIRTDEV_STOP_MONITOR_SOCK="${monitor_sock}" \
   PATH="${fixture_bin}:${PATH}" \
-  "${repository}/libexec/virtdev/virtdev-stop-acpi" probe
+  "${repository}/libexec/virtdev/virtdev-stop-acpi" probe "${guest_pid}" &
+hook_pid=$!
+for _ in {1..50}; do
+  [[ -e "${capture}" ]] && break
+  sleep 0.02
+done
+[[ -e "${capture}" ]]
+sleep 0.2
+kill -0 "${guest_pid}"
+kill -0 "${hook_pid}"
+
+kill "${guest_pid}"
+wait "${guest_pid}" 2>/dev/null || true
+guest_pid=''
+wait "${hook_pid}"
+hook_pid=''
 wait "${listener_pid}"
 listener_pid=''
 [[ "$(< "${capture}")" == system_powerdown ]]
 
-rm -f -- "${monitor_sock}"
-SYSTEMCTL_ACTIVE_STATE=deactivating VIRTDEV_HOME="${test_tmp}/home" \
+sleep 30 &
+guest_pid=$!
+SYSTEMCTL_ACTIVE_STATE=deactivating SYSTEMCTL_MAIN_PID="${guest_pid}" \
+  VIRTDEV_STOP_MONITOR_SOCK="${test_tmp}/missing/monitor.sock" \
   PATH="${fixture_bin}:${PATH}" \
-  "${repository}/libexec/virtdev/virtdev-stop-acpi" probe
+  "${repository}/libexec/virtdev/virtdev-stop-acpi" probe "${guest_pid}" &
+hook_pid=$!
+sleep 0.2
+kill -0 "${guest_pid}"
+kill -0 "${hook_pid}"
+kill "${guest_pid}"
+wait "${guest_pid}" 2>/dev/null || true
+guest_pid=''
+wait "${hook_pid}"
+hook_pid=''
 
-printf 'ok - private ACPI hook requires deactivating context and is best effort\n'
+printf 'ok - private ACPI hook uses the bound monitor and waits for QEMU exit\n'

@@ -230,9 +230,32 @@ fi # ! project_is_detached
 
 unit=virtdev-"${project}"
 
-if systemctl --user --quiet is-active "${unit}" 2>/dev/null; then
-  error 6 <<<"Project virtual machine is already running: ${project}"
-fi
+require_terminal_unit() {
+  local active_state status=0
+
+  active_state="$(systemctl --user show "${unit}" \
+    --property=ActiveState --value 2>/dev/null)" || status=$?
+  if (( status != 0 )) || [[ -z "${active_state}" ]]; then
+    error 6 <<MESSAGE
+Cannot determine whether the project unit is stopped: ${unit}
+Runtime controls were preserved. Restore the user systemd manager and retry.
+MESSAGE
+  fi
+  case "${active_state}" in
+    inactive|failed) ;;
+    active)
+      error 6 <<<"Project virtual machine is already running: ${project}"
+      ;;
+    *)
+      error 6 <<MESSAGE
+Project unit is not in a terminal state: ${unit} (${active_state})
+Wait for the transition to finish; runtime controls were preserved.
+MESSAGE
+      ;;
+  esac
+}
+
+require_terminal_unit
 
 ssh_host_identity_ensure "${project}"
 ssh_host_key="$(ssh_host_identity_key "${project}")"
@@ -267,6 +290,7 @@ fi
 # state is unknown, recovery paths stay intact.
 vm_started=0
 unit_submission_attempted=0
+unsubmitted_cleanup_safe=1
 cleanup_failed_start() {
   (( vm_started )) && return 0
   if (( unit_submission_attempted )); then
@@ -294,13 +318,14 @@ cleanup_failed_start() {
         ;;
     esac
   else
-    # Submission never began, so no process can own these pre-launch paths.
-    lifecycle_clean_unowned "${project_directory}" || true
+    if (( unsubmitted_cleanup_safe )); then
+      lifecycle_clean_unowned "${project_directory}" || true
+    fi
   fi
 }
 trap cleanup_failed_start EXIT
 
-# The inactive-unit check above proves these controls unowned.
+# The terminal-state check above proves these controls unowned.
 if ! lifecycle_clean_unowned "${project_directory}"; then
   error 17 <<<"Could not clear stale runtime controls: '${project_directory}'"
 fi
@@ -346,13 +371,18 @@ if (( open_host_map )); then
   netexec_opts+=(--allow-host-loopback)
 fi
 
+# External unit operations are outside the store lock; close that window before
+# submitting a new owner for the same runtime paths.
+unsubmitted_cleanup_safe=0
+require_terminal_unit
 unit_submission_attempted=1
 systemd-run \
     --user \
     --unit="${unit}" \
     --slice="${slice}" \
     --description="virtdev project virtual machine: ${project}" \
-    --property="ExecStop=${virtdev_libexec_directory}/virtdev-stop-acpi ${project}" \
+    --setenv="VIRTDEV_STOP_MONITOR_SOCK=$(runtime_monitor_sock "${project_directory}")" \
+    --property="ExecStop=${virtdev_libexec_directory}/virtdev-stop-acpi ${project} \${MAINPID}" \
     --property="TimeoutStopSec=${VIRTDEV_STOP_TIMEOUT}" \
     -- \
     "${virtdev_libexec_directory}/virtdev-netexec" \
