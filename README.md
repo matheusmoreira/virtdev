@@ -448,7 +448,9 @@ project-local known-host state. Strict checking, alias, key algorithm,
 public-key-only authentication, client identity, port, and disabled connection
 sharing are fixed command-line policy shared by interactive ssh, polling,
 rsync, backup, restore, and maintenance. Agent and GSSAPI credential forwarding
-are disabled. User config cannot weaken those settings.
+are disabled. OpenSSH's implicit adjacent `<key>-cert.pub` lookup is disabled,
+so only the configured private key can authenticate. User config cannot weaken
+those settings.
 
 Use `virtdev ssh` for SSH connections. `virtdev-port` exposes the forwarded
 number for integrations, but raw `ssh -p ...` omits project identity unless the

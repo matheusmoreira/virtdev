@@ -93,6 +93,7 @@ Same error → same code, everywhere:
 | 102 | apply: could not enumerate running machines (manager unreachable) — fail closed | `bin/virtdev-firewall` |
 | 103 | guest SSH host identity missing, corrupt, or unpublished | `ssh_host_identity_*` |
 | 104 | guest SSH transport marker missing or incompatible | `ssh_guest_contract_require` |
+| 105 | SSH config contains a forbidden client-identity directive | `ssh_config_require_safe` |
 
 Per-script exit codes are still numbered locally for things that aren't
 factored into a library (e.g., "project not found", "VM not running").

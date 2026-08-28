@@ -66,6 +66,8 @@
 #   81  corrupt port file
 #   82  corrupt generation file
 #   87  no port assigned (virtual machine not running)
+#   103 guest SSH host identity missing or corrupt
+#   104 guest SSH transport marker missing or incompatible
 #
 
 set -euo pipefail

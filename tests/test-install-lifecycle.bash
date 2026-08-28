@@ -22,9 +22,7 @@ cp "${repository}/tests/fixtures/qemu-system-x86_64-install" \
 chmod +x "${fixture_bin}/qemu-img" "${fixture_bin}/qemu-system-x86_64"
 
 ssh_key="${test_tmp}/id"
-printf 'test private key\n' > "${ssh_key}"
-printf 'test public key\n' > "${ssh_key}.pub"
-chmod 600 "${ssh_key}"
+ssh-keygen -q -t ed25519 -N '' -C '' -f "${ssh_key}"
 
 iso="${test_tmp}/virtdev.iso"
 ovmf_code="${test_tmp}/OVMF_CODE.fd"
@@ -174,7 +172,8 @@ if [[ ! -d "${success_home}/installation" \
   exit 1
 fi
 if [[ -e "${success_home}/installation/install.sock" \
-      || -e "${success_home}/installation/progress.fifo" ]]; then
+      || -e "${success_home}/installation/progress.fifo" \
+      || -e "${success_home}/installation/ssh_key.pub" ]]; then
   printf 'successful installation retained progress controls\n' >&2
   exit 1
 fi
@@ -203,9 +202,7 @@ for input in "${special_iso}" "${special_ovmf_code}" "${special_ovmf_vars}" \
              "${special_packages}" "${special_script}" "${special_inventory}"; do
   : > "${input}"
 done
-printf 'test private key\n' > "${special_ssh_key}"
-printf 'test public key\n' > "${special_ssh_key}.pub"
-chmod 600 "${special_ssh_key}"
+ssh-keygen -q -t ed25519 -N '' -C '' -f "${special_ssh_key}"
 
 status=0
 PATH="${fixture_bin}:${PATH}" \
@@ -273,7 +270,7 @@ assert_install_pair -chardev \
 assert_install_pair -virtfs \
   "local,path=${encoded_cache}/pacman,mount_tag=pacman_cache,security_model=mapped-xattr"
 assert_install_pair -fw_cfg \
-  "name=opt/virtdev/ssh_key,file=${special_encoded_root}/id.pub"
+  "name=opt/virtdev/ssh_key,file=${encoded_home}/installation/ssh_key.pub"
 assert_install_pair -fw_cfg 'name=opt/virtdev/timezone,string=tz,,a,,,,b=c d\e'
 assert_install_pair -fw_cfg 'name=opt/virtdev/locale,string=locale,,a,,,,b=c d\e'
 assert_install_pair -fw_cfg 'name=opt/virtdev/keymap,string=keymap,,a,,,,b=c d\e'

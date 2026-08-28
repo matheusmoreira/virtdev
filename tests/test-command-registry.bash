@@ -43,4 +43,21 @@ status=0
   >"${test_tmp}/output" 2>&1 || status=$?
 (( status == 64 ))
 
+grep -Fq '| 105 | SSH config contains a forbidden client-identity directive |' \
+  "${repository}/CLAUDE.md"
+grep -Fq "| \`ssh\` | Guest-contract checks, project host identities, strict shared transport argv, rsync wrapper, and bounded polling | 77, 78, 103, 104, 105 |" \
+  "${repository}/DESIGN.md"
+
+for script in virtdev-backup virtdev-restore virtdev-wait virtdev-transfer \
+              virtdev-ssh; do
+  header="$(sed -n '1,/^set -euo pipefail$/p' "${repository}/bin/${script}")"
+  for code in 103 104; do
+    if ! grep -Eq "^# +${code} " <<< "${header}"; then
+      printf '%s does not document propagated exit %s\n' "${script}" "${code}" >&2
+      exit 1
+    fi
+  done
+done
+
 printf 'ok - public commands and private helpers have explicit boundaries\n'
+printf 'ok - shared SSH exit contracts are registered and documented\n'

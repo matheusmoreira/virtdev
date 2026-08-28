@@ -839,7 +839,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `validate` | input validation (`validate_project_name`) | 2 |
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`); universal `--help` and `--color` handling | 64 |
 | `lock` | canonical store/cache `flock(2)` domains, inherited composition, bounded diagnostics | 75, 76 |
-| `ssh` | Guest-contract checks, project host identities, strict shared transport argv, rsync wrapper, and bounded polling | 77, 78, 103, 104 |
+| `ssh` | Guest-contract checks, project host identities, strict shared transport argv, rsync wrapper, and bounded polling | 77, 78, 103, 104, 105 |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at explicit lifecycle points (`trigger_fire`); bounds execution and stdout before returning text through namerefs | 80 |
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |

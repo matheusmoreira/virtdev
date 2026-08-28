@@ -29,7 +29,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments lock
+import error arguments lock ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -83,29 +83,14 @@ if [[ ! -f "${VIRTDEV_SSH_KEY}" || -L "${VIRTDEV_SSH_KEY}" ]]; then
 fi
 chmod 600 "${VIRTDEV_SSH_KEY}"
 
-# -P '' prevents an encrypted/foreign key from prompting on the terminal. The
-# private key is authoritative; derive the exact public type/blob from it and
-# require the ed25519 algorithm promised by this command.
-derived_line=''
-if ! derived_line="$(ssh-keygen -y -P '' -f "${VIRTDEV_SSH_KEY}" 2>/dev/null)"; then
+derived_public=''
+if ! derived_public="$(ssh_client_public_from_private "${VIRTDEV_SSH_KEY}")"; then
   error 3 <<MESSAGE
 Existing SSH private key is invalid, encrypted, or not ed25519:
     '${VIRTDEV_SSH_KEY}'
 The file was preserved. Move it aside or select another VIRTDEV_SSH_KEY.
 MESSAGE
 fi
-derived_type=''
-derived_blob=''
-read -r derived_type derived_blob _ <<< "${derived_line}"
-if [[ "${derived_type}" != ssh-ed25519 \
-      || ! "${derived_blob}" =~ ^[A-Za-z0-9+/=]+$ ]]; then
-  error 3 <<MESSAGE
-Existing SSH private key is valid but is not an ed25519 key:
-    '${VIRTDEV_SSH_KEY}'
-The file was preserved. Move it aside or select another VIRTDEV_SSH_KEY.
-MESSAGE
-fi
-derived_public="${derived_type} ${derived_blob}"
 
 if [[ ( -e "${public_key}" || -L "${public_key}" ) \
       && ( ! -f "${public_key}" || -L "${public_key}" ) ]]; then
@@ -114,8 +99,7 @@ fi
 
 existing_public=''
 if [[ -f "${public_key}" ]]; then
-  existing_public="$(LC_ALL=C awk 'NR == 1 && NF >= 2 { print $1 " " $2; exit }' \
-    "${public_key}" 2>/dev/null || true)"
+  existing_public="$(ssh_client_public_read "${public_key}" 2>/dev/null || true)"
 fi
 
 if [[ "${existing_public}" != "${derived_public}" ]]; then

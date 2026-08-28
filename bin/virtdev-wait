@@ -28,6 +28,8 @@
 #   78  SSH key permissions too open
 #   81  corrupt port file
 #   87  project has no port assigned (virtual machine not running)
+#   103 guest SSH host identity missing or corrupt
+#   104 guest SSH transport marker missing or incompatible
 
 set -euo pipefail
 

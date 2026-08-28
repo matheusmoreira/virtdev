@@ -47,6 +47,10 @@
 #
 #   ssh_key_validate <key-path>
 #       Require a regular key with mode 600 or 400.
+#   ssh_client_public_from_private <key-path>
+#       Print the canonical ed25519 public key derived from a private key.
+#   ssh_client_public_read <public-key-path>
+#       Validate and print a canonical ed25519 public key.
 #
 # Exit codes:
 #   77  SSH key not found
@@ -380,6 +384,7 @@ ssh_transport_argv() {
     ssh
     -F "${__ssh_transport_config}"
     -i "${__ssh_transport_key}"
+    -o CertificateFile=none
     -p "${__ssh_transport_port}"
     -o HostName=127.0.0.1
     -o AddressFamily=inet
@@ -514,6 +519,47 @@ ssh_poll_until_ready() {
     sleep "${sleep_timeout}"
   done
   return 1
+}
+
+_ssh_client_public_valid() {
+  (( $# == 2 )) || return 2
+  [[ "${1}" == ssh-ed25519 \
+      && "${2}" =~ ^AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}$ ]]
+}
+
+ssh_client_public_from_private() {
+  (( $# == 1 )) || return 2
+  local LC_ALL=C
+  local -r key="${1}"
+  local size derived type blob comment
+
+  [[ -f "${key}" && ! -L "${key}" ]] || return 1
+  size="$(stat -c '%s' -- "${key}" 2>/dev/null)" || return 1
+  [[ "${size}" =~ ^[0-9]+$ ]] \
+    && (( size > 0 && size <= 16384 )) || return 1
+  command -v ssh-keygen &>/dev/null || return 1
+  derived="$(ssh-keygen -y -P '' -f "${key}" 2>/dev/null)" || return 1
+  [[ -n "${derived}" && "${derived}" != *$'\n'* ]] || return 1
+  read -r type blob comment <<< "${derived}"
+  _ssh_client_public_valid "${type}" "${blob}" || return 1
+  printf '%s %s\n' "${type}" "${blob}"
+}
+
+ssh_client_public_read() {
+  (( $# == 1 )) || return 2
+  local LC_ALL=C
+  local -r public_key="${1}"
+  local size line type blob comment
+
+  [[ -f "${public_key}" && ! -L "${public_key}" ]] || return 1
+  size="$(stat -c '%s' -- "${public_key}" 2>/dev/null)" || return 1
+  [[ "${size}" =~ ^[0-9]+$ ]] \
+    && (( size > 0 && size <= 16384 )) || return 1
+  IFS= read -r line < "${public_key}" || return 1
+  (( size == ${#line} + 1 )) || return 1
+  read -r type blob comment <<< "${line}"
+  _ssh_client_public_valid "${type}" "${blob}" || return 1
+  printf '%s %s\n' "${type}" "${blob}"
 }
 
 ssh_key_validate() {

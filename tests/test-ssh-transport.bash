@@ -14,6 +14,11 @@ mkdir -p "${VIRTDEV_HOME}/projects/alpha" \
 printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/alpha/guest-contract"
 printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/beta/guest-contract"
 /usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' -f "${VIRTDEV_SSH_KEY}"
+certificate_authority="${test_tmp}/certificate-authority"
+/usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' -f "${certificate_authority}"
+/usr/bin/ssh-keygen -q -s "${certificate_authority}" -I adjacent-test \
+  -n dev -V +5m "${VIRTDEV_SSH_KEY}.pub"
+[[ -f "${VIRTDEV_SSH_KEY}-cert.pub" ]]
 
 # shellcheck disable=SC1090
 source "${repository}/lib/virtdev/import"
@@ -41,7 +46,7 @@ assert_argv() {
 alpha_known="$(ssh_host_identity_known_hosts alpha)"
 alpha_alias="$(ssh_host_identity_alias alpha)"
 declare -a expected_base=(
-  ssh -F /dev/null -i "${VIRTDEV_SSH_KEY}" -p 2222
+  ssh -F /dev/null -i "${VIRTDEV_SSH_KEY}" -o CertificateFile=none -p 2222
   -o HostName=127.0.0.1
   -o AddressFamily=inet
   -o CanonicalizeHostname=no
@@ -122,9 +127,13 @@ grep -Fqx 'identityagent none' <<< "${effective}"
 grep -Fqx 'securitykeyprovider internal' <<< "${effective}"
 mapfile -t effective_identities \
   < <(sed -n 's/^identityfile //p' <<< "${effective}")
+mapfile -t effective_certificates \
+  < <(sed -n 's/^certificatefile //p' <<< "${effective}")
 if (( ${#effective_identities[@]} != 1 )) \
     || [[ "${effective_identities[0]}" != "${VIRTDEV_SSH_KEY}" ]] \
-    || grep -Eq '^(certificatefile|pkcs11provider) ' <<< "${effective}"; then
+    || (( ${#effective_certificates[@]} != 1 )) \
+    || [[ "${effective_certificates[0]}" != none ]] \
+    || grep -Eq '^pkcs11provider ' <<< "${effective}"; then
   printf 'effective SSH policy exposed an extra credential source\n' >&2
   exit 1
 fi

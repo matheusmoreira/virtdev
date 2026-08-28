@@ -33,6 +33,7 @@
 #  13   explicit inventory script missing or unreadable
 #  14   invalid installer lifecycle timeout
 #  15   invalid DNS address
+#  16   SSH key pair is invalid or mismatched
 #
 # Configuration via environment variables:
 #
@@ -164,8 +165,23 @@ fi
 
 ssh_key_validate "${VIRTDEV_SSH_KEY}"
 
-if [[ ! -f "${VIRTDEV_SSH_KEY}.pub" ]]; then
-  error 8 <<<"SSH public key not found: '${VIRTDEV_SSH_KEY}.pub'"
+public_key="${VIRTDEV_SSH_KEY}.pub"
+if [[ ! -e "${public_key}" && ! -L "${public_key}" ]]; then
+  error 8 <<<"SSH public key not found: '${public_key}'"
+fi
+if ! command -v ssh-keygen &>/dev/null; then
+  error 16 <<<'ssh-keygen not found; install OpenSSH to validate the SSH key pair'
+fi
+private_public=''
+if ! private_public="$(ssh_client_public_from_private "${VIRTDEV_SSH_KEY}")"; then
+  error 16 <<<"SSH private key is invalid, encrypted, or not ed25519: '${VIRTDEV_SSH_KEY}'"
+fi
+supplied_public=''
+if ! supplied_public="$(ssh_client_public_read "${public_key}")"; then
+  error 16 <<<"SSH public key is invalid or unsafe: '${public_key}'"
+fi
+if [[ "${supplied_public}" != "${private_public}" ]]; then
+  error 16 <<<"SSH public key does not match its private key: '${public_key}'"
 fi
 
 if [[ ! -f "${VIRTDEV_ISO}" ]]; then
@@ -203,6 +219,7 @@ mkdir -p "${installation_directory}"
 install_sock="${installation_directory}"/install.sock
 console_sock="${installation_directory}"/console.sock
 install_progress="${installation_directory}"/progress.log
+install_ssh_key="${installation_directory}"/ssh_key.pub
 
 pacman_cache="${VIRTDEV_CACHE}/pacman"
 mkdir -p "${pacman_cache}"
@@ -315,7 +332,7 @@ cleanup_partial_installation() {
       rm -rf -- "${installation_directory}"
     else
       rm -f -- "${install_sock:-}" "${console_sock:-}" \
-        "${install_progress:-}" "${progress_fifo:-}"
+        "${install_progress:-}" "${progress_fifo:-}" "${install_ssh_key:-}"
     fi
   else
     printf >&2 'warning: preserving installation state because child termination is indeterminate: %s\n' \
@@ -332,6 +349,11 @@ trap cleanup_partial_installation EXIT
 trap 'install_cleanup_signal 129' HUP
 trap 'install_cleanup_signal 130' INT
 trap 'install_cleanup_signal 143' TERM
+
+if ! (umask 077; printf '%s\n' "${private_public}" > "${install_ssh_key}") \
+    || ! chmod 0444 "${install_ssh_key}"; then
+  error 10 <<<'Could not stage the validated SSH public key for installation.'
+fi
 
 system_disk="${installation_directory}"/system.qcow2
 printf >&2 "Creating %s system disk image: '%s'\n" \
@@ -354,7 +376,7 @@ qemu_home_disk="${home_disk}"
 qemu_console_sock="${console_sock}"
 qemu_install_sock="${install_sock}"
 qemu_pacman_cache="${pacman_cache}"
-qemu_ssh_key="${VIRTDEV_SSH_KEY}.pub"
+qemu_ssh_key="${install_ssh_key}"
 qemu_timezone="${VIRTDEV_TIMEZONE}"
 qemu_locale="${VIRTDEV_LOCALE}"
 qemu_keymap="${VIRTDEV_KEYMAP}"
@@ -600,4 +622,5 @@ else
   exit 10
 fi
 
-rm -f -- "${install_progress}" "${install_sock}" "${console_sock}" "${progress_fifo}"
+rm -f -- "${install_progress}" "${install_sock}" "${console_sock}" \
+  "${progress_fifo}" "${install_ssh_key}"
