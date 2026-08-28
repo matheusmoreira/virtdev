@@ -177,7 +177,7 @@ mod tests {
         );
 
         let syn = craft_syn(guest_mac, guest_ip, server_ip, 49152, 80);
-        stack.device_mut().load_inbound(&syn);
+        stack.device_mut().load_inbound(&syn).unwrap();
         stack.poll(Instant::ZERO, &mut sockets);
 
         assert_eq!(
@@ -197,7 +197,7 @@ mod tests {
 
         stack.device_mut().clear_outbound();
         let arp_reply = craft_arp_reply(guest_mac, guest_ip);
-        stack.device_mut().load_inbound(&arp_reply);
+        stack.device_mut().load_inbound(&arp_reply).unwrap();
         stack.poll(Instant::from_millis(250), &mut sockets);
 
         let out = stack
