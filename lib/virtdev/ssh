@@ -33,7 +33,7 @@
 #   78  SSH key permissions too open
 #
 set -euo pipefail
-import error
+import error integer
 
 readonly ssh_key_not_found_exit_code=77
 readonly ssh_key_permissions_exit_code=78
@@ -81,6 +81,7 @@ WRAPPER_EOF
 
 ssh_poll_until_ready() {
   local -r key="${1}" port="${2}" unit="${3}" timeout="${4}"
+  integer_is_bounded_positive "${timeout}" 86400 || return 1
   local -r attempt_timeout=10
   local deadline unit_state remaining probe_timeout connect_timeout sleep_timeout
   deadline=$(( BASH_MONOSECONDS + timeout ))

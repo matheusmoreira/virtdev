@@ -63,7 +63,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments terminal ssh ip
+import error lock arguments terminal ssh ip integer
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -101,11 +101,7 @@ for timeout_name in VIRTDEV_INSTALL_SOCKET_TIMEOUT \
                     VIRTDEV_INSTALL_PROGRESS_TIMEOUT \
                     VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT; do
   timeout_value="${!timeout_name}"
-  if [[ ! "${timeout_value}" =~ ^[1-9][0-9]*$ \
-        || ${#timeout_value} -gt 5 ]]; then
-    error 14 <<<"Invalid ${timeout_name}: must be an integer from 1 through 86400"
-  fi
-  if (( 10#${timeout_value} > 86400 )); then
+  if ! integer_is_bounded_positive "${timeout_value}" 86400; then
     error 14 <<<"Invalid ${timeout_name}: must be an integer from 1 through 86400"
   fi
 done

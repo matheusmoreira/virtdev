@@ -34,14 +34,14 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh port project
+import error validate arguments ssh port project integer
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_WAIT_TIMEOUT:=120}"
 
-if [[ ! "${VIRTDEV_WAIT_TIMEOUT}" =~ ^[1-9][0-9]*$ ]]; then
-  error 64 <<<"Invalid VIRTDEV_WAIT_TIMEOUT: must be a positive integer"
+if ! integer_is_bounded_positive "${VIRTDEV_WAIT_TIMEOUT}" 86400; then
+  error 64 <<<"Invalid VIRTDEV_WAIT_TIMEOUT: must be an integer from 1 through 86400"
 fi
 
 # shellcheck disable=SC2034  # spec/companions read via nameref

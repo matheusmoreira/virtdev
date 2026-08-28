@@ -101,7 +101,7 @@
 #
 set -euo pipefail
 
-import passt runtime
+import passt runtime integer
 
 readonly qemu_active=0
 readonly qemu_crashed=90
@@ -170,6 +170,7 @@ qemu_command() {
 
 qemu_stop_unit_then_clean_runtime() {
   local -r unit="${1}" runtime_directory="${2}" deadline_seconds="${3}"
+  integer_is_bounded_positive "${deadline_seconds}" 86400 || return 1
   local -r deadline=$(( SECONDS + deadline_seconds ))
   local state
 
@@ -202,6 +203,8 @@ qemu_activation_classify() {
   local -r unit="${1}"
   local -r deadline_seconds="${2}"
   local -r launch_phase_file="${3:-}"
+  integer_is_bounded_positive "${deadline_seconds}" 86400 \
+    || return "${qemu_still_activating}"
   local -r deadline=$(( SECONDS + deadline_seconds ))
 
   # Reset the detail globals so a previous call's values never leak into

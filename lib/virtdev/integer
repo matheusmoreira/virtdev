@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Return success for a canonical positive decimal no greater than `maximum`.
+# Length comparison keeps oversized input out of Bash arithmetic.
+integer_is_bounded_positive() {
+  local LC_ALL=C
+  local -r value="${1}" maximum="${2}"
+  [[ "${maximum}" =~ ^[1-9][0-9]*$ ]] || return 2
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] || return 1
+  (( ${#value} < ${#maximum} )) && return 0
+  (( ${#value} == ${#maximum} )) || return 1
+  [[ "${value}" == "${maximum}" || "${value}" < "${maximum}" ]]
+}

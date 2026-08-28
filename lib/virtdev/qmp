@@ -17,6 +17,7 @@
 # coprocess write end stays open so SHUT_WR cannot truncate a delayed response.
 #
 set -euo pipefail
+import integer
 
 # Per-read stall, chunk, and total captured-reply bounds.
 readonly _qmp_reply_read_timeout=0.1
@@ -48,6 +49,7 @@ _qmp_response_for_id() {
 _qmp_exchange() {
   local -r sock="${1}" timeout_seconds="${2}" response_id="${3}"
   shift 3
+  integer_is_bounded_positive "${timeout_seconds}" 86400 || return 1
   [[ -S "${sock}" ]] || return 1
 
   # QMP capabilities negotiation must precede commands.
@@ -120,6 +122,7 @@ _qmp_exchange() {
 # Return 0 iff QEMU reports the VM running before the deadline; else 1.
 qmp_query_running() {
   local -r qmp_sock="${1}" deadline_seconds="${2}" unit="${3:-}"
+  integer_is_bounded_positive "${deadline_seconds}" 86400 || return 1
   local -r query_id="virtdev-query-running"
   local deadline reply response unit_state remaining exchange_timeout
   deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
@@ -183,6 +186,9 @@ _qmp_query_shutdown_once() {
 # qmp_wait_shutdown <qmp_sock> <deadline_seconds> <unit>
 qmp_wait_shutdown() {
   local -r qmp_sock="${1}" deadline_seconds="${2}" unit="${3}"
+  if [[ "${deadline_seconds}" != 0 ]]; then
+    integer_is_bounded_positive "${deadline_seconds}" 86400 || return 1
+  fi
   local deadline=0 unit_state exchange_timeout remaining
   if (( deadline_seconds > 0 )); then
     deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
@@ -238,6 +244,7 @@ qmp_wait_shutdown() {
 # qmp_quit <qmp_sock> <timeout_seconds>
 qmp_quit() {
   local -r qmp_sock="${1}" timeout_seconds="${2}" quit_id="virtdev-quit"
+  integer_is_bounded_positive "${timeout_seconds}" 86400 || return 1
   local reply response
   reply="$(_qmp_exchange "${qmp_sock}" "${timeout_seconds}" "${quit_id}" \
     "{\"execute\":\"quit\",\"id\":\"${quit_id}\"}")" || return 1
