@@ -48,6 +48,12 @@ declare -a expected_base=(
   -o ProxyCommand=none
   -o ProxyJump=none
   -o IdentitiesOnly=yes
+  -o PubkeyAuthentication=yes
+  -o PreferredAuthentications=publickey
+  -o PasswordAuthentication=no
+  -o KbdInteractiveAuthentication=no
+  -o GSSAPIAuthentication=no
+  -o HostbasedAuthentication=no
   -o ForwardAgent=no
   -o GSSAPIDelegateCredentials=no
   -o StrictHostKeyChecking=yes
@@ -103,6 +109,12 @@ grep -Fqx "hostkeyalias ${alpha_alias}" <<< "${effective}"
 grep -Fqx "userknownhostsfile ${alpha_known}" <<< "${effective}"
 grep -Fqx 'globalknownhostsfile /dev/null' <<< "${effective}"
 grep -Fqx 'hostkeyalgorithms ssh-ed25519' <<< "${effective}"
+grep -Fqx 'pubkeyauthentication true' <<< "${effective}"
+grep -Fqx 'preferredauthentications publickey' <<< "${effective}"
+grep -Fqx 'passwordauthentication no' <<< "${effective}"
+grep -Fqx 'kbdinteractiveauthentication no' <<< "${effective}"
+grep -Fqx 'gssapiauthentication no' <<< "${effective}"
+grep -Fqx 'hostbasedauthentication no' <<< "${effective}"
 grep -Fqx 'controlmaster false' <<< "${effective}"
 grep -Fqx 'controlpersist no' <<< "${effective}"
 
@@ -120,6 +132,12 @@ printf '%s\n' \
   '  CanonicalizeHostname always' \
   '  ProxyCommand /usr/bin/false' \
   '  ProxyJump attacker.example' \
+  '  PubkeyAuthentication no' \
+  '  PreferredAuthentications password,keyboard-interactive,gssapi-with-mic,hostbased' \
+  '  PasswordAuthentication yes' \
+  '  KbdInteractiveAuthentication yes' \
+  '  GSSAPIAuthentication yes' \
+  '  HostbasedAuthentication yes' \
   '  ControlMaster yes' > "${weak_config}"
 ssh_transport_argv actual interactive alpha "${VIRTDEV_SSH_KEY}" 2222 \
   "${weak_config}"
@@ -134,6 +152,12 @@ grep -Fqx 'controlmaster false' <<< "${effective}"
 grep -Fqx 'hostname 127.0.0.1' <<< "${effective}"
 grep -Fqx 'addressfamily inet' <<< "${effective}"
 grep -Fqx 'canonicalizehostname false' <<< "${effective}"
+grep -Fqx 'pubkeyauthentication true' <<< "${effective}"
+grep -Fqx 'preferredauthentications publickey' <<< "${effective}"
+grep -Fqx 'passwordauthentication no' <<< "${effective}"
+grep -Fqx 'kbdinteractiveauthentication no' <<< "${effective}"
+grep -Fqx 'gssapiauthentication no' <<< "${effective}"
+grep -Fqx 'hostbasedauthentication no' <<< "${effective}"
 if grep -Eq '^proxy(command|jump) ' <<< "${effective}"; then
   printf 'configured proxy escaped the fixed loopback transport\n' >&2
   exit 1

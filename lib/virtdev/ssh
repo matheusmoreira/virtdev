@@ -361,6 +361,12 @@ ssh_transport_argv() {
     -o ProxyCommand=none
     -o ProxyJump=none
     -o IdentitiesOnly=yes
+    -o PubkeyAuthentication=yes
+    -o PreferredAuthentications=publickey
+    -o PasswordAuthentication=no
+    -o KbdInteractiveAuthentication=no
+    -o GSSAPIAuthentication=no
+    -o HostbasedAuthentication=no
     -o ForwardAgent=no
     -o GSSAPIDelegateCredentials=no
     -o StrictHostKeyChecking=yes
