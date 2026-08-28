@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+while (( $# > 0 )); do
+  if [[ "${1}" == dev@127.0.0.1 || "${1}" == 127.0.0.1 ]]; then
+    shift
+    break
+  fi
+  shift
+done
+
+if (( $# <= 1 )) || [[ "${1}" != rsync ]]; then
+  printf 'unexpected restore SSH command:' >&2
+  printf ' %q' "$@" >&2
+  printf '\n' >&2
+  exit 98
+fi
+
+if [[ -n "${RESTORE_SSH_DELAY:-}" ]]; then
+  [[ -z "${RESTORE_SSH_PID_FILE:-}" ]] \
+    || printf '%d\n' "$$" > "${RESTORE_SSH_PID_FILE}"
+  sleep "${RESTORE_SSH_DELAY}"
+fi
+
+remote_argv=("$@")
+last=$(( ${#remote_argv[@]} - 1 ))
+if [[ "${remote_argv[last]}" != /home/dev/ ]]; then
+  printf 'unexpected restore destination: %q\n' \
+    "${remote_argv[last]}" >&2
+  exit 96
+fi
+remote_argv[last]="${RESTORE_GUEST_ROOT:?}/"
+exec "${remote_argv[@]}"
