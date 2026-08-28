@@ -18,6 +18,13 @@ pub struct TcpFlowKey {
     pub dst_port: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum IngressInspection {
+    Other,
+    InvalidSource,
+    TcpSyn(TcpFlowKey),
+}
+
 fn is_unicast(addr: Ipv4Address, link_cidr: Ipv4Cidr) -> bool {
     !(addr.is_broadcast()
         || addr.is_multicast()
@@ -25,44 +32,62 @@ fn is_unicast(addr: Ipv4Address, link_cidr: Ipv4Cidr) -> bool {
         || link_cidr.broadcast() == Some(addr))
 }
 
-/// Return the four-tuple for a valid pure SYN accepted by this link.
-pub(super) fn peek_tcp_syn(
+fn is_guest_source(addr: Ipv4Address, link_cidr: Ipv4Cidr) -> bool {
+    is_unicast(addr, link_cidr)
+        && link_cidr.contains_addr(&addr)
+        && addr != link_cidr.network().address()
+        && addr != link_cidr.address()
+}
+
+pub(super) fn inspect_ingress(
     frame: &[u8],
     gateway_mac: EthernetAddress,
     link_cidr: Ipv4Cidr,
-) -> Option<TcpFlowKey> {
+) -> IngressInspection {
     let caps = ChecksumCapabilities::default();
 
-    let eth = EthernetFrame::new_checked(frame).ok()?;
+    let Ok(eth) = EthernetFrame::new_checked(frame) else {
+        return IngressInspection::Other;
+    };
     if eth.dst_addr() != gateway_mac {
-        return None;
+        return IngressInspection::Other;
     }
     if eth.ethertype() != EthernetProtocol::Ipv4 {
-        return None;
+        return IngressInspection::Other;
     }
 
-    let ipv4 = Ipv4Packet::new_checked(eth.payload()).ok()?;
-    let ip = Ipv4Repr::parse(&ipv4, &caps).ok()?;
+    let Ok(ipv4) = Ipv4Packet::new_checked(eth.payload()) else {
+        return IngressInspection::Other;
+    };
+    let Ok(ip) = Ipv4Repr::parse(&ipv4, &caps) else {
+        return IngressInspection::Other;
+    };
+    if !is_guest_source(ip.src_addr, link_cidr) {
+        return IngressInspection::InvalidSource;
+    }
     if ip.next_header != IpProtocol::Tcp {
-        return None;
+        return IngressInspection::Other;
     }
-    if !is_unicast(ip.src_addr, link_cidr) || !is_unicast(ip.dst_addr, link_cidr) {
-        return None;
+    if !is_unicast(ip.dst_addr, link_cidr) {
+        return IngressInspection::Other;
     }
 
-    let tcp = TcpPacket::new_checked(ipv4.payload()).ok()?;
-    let seg = TcpRepr::parse(
+    let Ok(tcp) = TcpPacket::new_checked(ipv4.payload()) else {
+        return IngressInspection::Other;
+    };
+    let Ok(seg) = TcpRepr::parse(
         &tcp,
         &IpAddress::Ipv4(ip.src_addr),
         &IpAddress::Ipv4(ip.dst_addr),
         &caps,
-    )
-    .ok()?;
+    ) else {
+        return IngressInspection::Other;
+    };
     if seg.control != TcpControl::Syn || seg.ack_number.is_some() || seg.dst_port == 0 {
-        return None;
+        return IngressInspection::Other;
     }
 
-    Some(TcpFlowKey {
+    IngressInspection::TcpSyn(TcpFlowKey {
         src_addr: ip.src_addr,
         src_port: seg.src_port,
         dst_addr: ip.dst_addr,
@@ -71,8 +96,20 @@ pub(super) fn peek_tcp_syn(
 }
 
 #[cfg(test)]
+fn peek_tcp_syn(
+    frame: &[u8],
+    gateway_mac: EthernetAddress,
+    link_cidr: Ipv4Cidr,
+) -> Option<TcpFlowKey> {
+    match inspect_ingress(frame, gateway_mac, link_cidr) {
+        IngressInspection::TcpSyn(flow) => Some(flow),
+        IngressInspection::Other | IngressInspection::InvalidSource => None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
-    use super::{is_unicast, peek_tcp_syn, TcpFlowKey};
+    use super::{is_guest_source, is_unicast, peek_tcp_syn, TcpFlowKey};
     use smoltcp::phy::ChecksumCapabilities;
     use smoltcp::wire::{
         EthernetAddress, EthernetFrame, EthernetProtocol, EthernetRepr, IpAddress, IpProtocol,
@@ -155,6 +192,15 @@ mod tests {
         assert!(!is_unicast(Ipv4Address::new(255, 255, 255, 255), LINK_CIDR));
         assert!(!is_unicast(Ipv4Address::UNSPECIFIED, LINK_CIDR));
         assert!(!is_unicast(Ipv4Address::new(10, 0, 0, 255), LINK_CIDR));
+    }
+
+    #[test]
+    fn guest_source_is_a_host_on_the_configured_link() {
+        assert!(is_guest_source(GUEST_IP, LINK_CIDR));
+        assert!(!is_guest_source(Ipv4Address::new(192, 0, 2, 1), LINK_CIDR));
+        assert!(!is_guest_source(Ipv4Address::new(10, 0, 0, 0), LINK_CIDR));
+        assert!(!is_guest_source(LINK_CIDR.address(), LINK_CIDR));
+        assert!(!is_guest_source(Ipv4Address::new(10, 0, 0, 255), LINK_CIDR));
     }
 
     #[test]
@@ -290,6 +336,18 @@ mod tests {
     fn ignores_link_directed_broadcast_source() {
         let frame = craft(Ipv4Address::new(10, 0, 0, 255), SERVER_IP, &syn());
         assert_eq!(peek_tcp_syn(&frame, GW_MAC, LINK_CIDR), None);
+    }
+
+    #[test]
+    fn ignores_sources_outside_the_guest_host_range() {
+        for source in [
+            Ipv4Address::new(192, 0, 2, 1),
+            Ipv4Address::new(10, 0, 0, 0),
+            LINK_CIDR.address(),
+        ] {
+            let frame = craft(source, SERVER_IP, &syn());
+            assert_eq!(peek_tcp_syn(&frame, GW_MAC, LINK_CIDR), None);
+        }
     }
 
     #[test]

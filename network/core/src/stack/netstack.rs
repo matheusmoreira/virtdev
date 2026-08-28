@@ -7,7 +7,7 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4Cidr};
 
 use super::device::{LoadError, QemuDevice};
-use super::inspect::{peek_tcp_syn, TcpFlowKey};
+use super::inspect::{inspect_ingress, IngressInspection, TcpFlowKey};
 
 /// Gateway address on the guest's `10.0.0.0/24` link.
 const GATEWAY_IP: Ipv4Address = Ipv4Address::new(10, 0, 0, 1);
@@ -22,6 +22,7 @@ const GATEWAY_MAC: EthernetAddress = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IngestOutcome {
     Queued,
+    DroppedInvalidSource,
     Denied(TcpFlowKey),
 }
 
@@ -51,15 +52,18 @@ impl NetStack {
     }
 
     /// Inspect a decoded frame, request admission for a new SYN, and queue it.
-    /// Rejected SYNs are dropped without consuming the inbound slot.
+    /// Invalid sources and denied SYNs do not consume the inbound slot.
     pub fn ingest<F>(&mut self, frame: &[u8], admit_new_flow: F) -> Result<IngestOutcome, LoadError>
     where
         F: FnOnce(&TcpFlowKey) -> bool,
     {
-        let flow = peek_tcp_syn(frame, GATEWAY_MAC, LINK_CIDR);
+        let inspection = inspect_ingress(frame, GATEWAY_MAC, LINK_CIDR);
+        if inspection == IngressInspection::InvalidSource {
+            return Ok(IngestOutcome::DroppedInvalidSource);
+        }
         self.device.load_inbound(frame)?;
 
-        if let Some(flow) = flow {
+        if let IngressInspection::TcpSyn(flow) = inspection {
             if !admit_new_flow(&flow) {
                 self.device.clear_inbound();
                 return Ok(IngestOutcome::Denied(flow));
@@ -306,42 +310,60 @@ mod tests {
     }
 
     #[test]
-    fn directed_broadcast_source_is_neither_admitted_nor_polled() {
+    fn only_guest_link_hosts_reach_flow_admission() {
         let guest_mac = EthernetAddress([0x02, 0, 0, 0, 0, 2]);
-        let broadcast = Ipv4Address::new(10, 0, 0, 255);
         let server_ip = Ipv4Address::new(93, 184, 216, 34);
+
+        for source in [
+            Ipv4Address::new(192, 0, 2, 1),
+            Ipv4Address::new(10, 0, 0, 0),
+            GATEWAY_IP,
+            Ipv4Address::new(10, 0, 0, 255),
+        ] {
+            let syn = craft_syn(guest_mac, source, server_ip, 49152, 80);
+            let mut stack = NetStack::new(Instant::ZERO);
+            let mut storage = [SocketStorage::EMPTY; 1];
+            let mut sockets = SocketSet::new(&mut storage[..]);
+            let mut rx = [0u8; 1500];
+            let mut tx = [0u8; 1500];
+            let socket = tcp::Socket::new(
+                tcp::SocketBuffer::new(&mut rx[..]),
+                tcp::SocketBuffer::new(&mut tx[..]),
+            );
+            let handle = sockets.add(socket);
+            sockets
+                .get_mut::<tcp::Socket>(handle)
+                .listen((server_ip, 80))
+                .unwrap();
+            let mut called = false;
+            assert_eq!(
+                stack.ingest(&syn, |_| {
+                    called = true;
+                    true
+                }),
+                Ok(IngestOutcome::DroppedInvalidSource)
+            );
+            assert!(!called, "admission called for source {source}");
+            stack.poll(Instant::ZERO, &mut sockets);
+            assert_eq!(
+                sockets.get::<tcp::Socket>(handle).state(),
+                tcp::State::Listen,
+                "datapath accepted source {source}"
+            );
+            assert_eq!(stack.outbound(), None);
+        }
+
+        let guest_ip = Ipv4Address::new(10, 0, 0, 2);
+        let syn = craft_syn(guest_mac, guest_ip, server_ip, 49152, 80);
         let mut stack = NetStack::new(Instant::ZERO);
-
-        let mut storage = [SocketStorage::EMPTY; 1];
-        let mut sockets = SocketSet::new(&mut storage[..]);
-        let mut rx = [0u8; 1500];
-        let mut tx = [0u8; 1500];
-        let socket = tcp::Socket::new(
-            tcp::SocketBuffer::new(&mut rx[..]),
-            tcp::SocketBuffer::new(&mut tx[..]),
-        );
-        let handle = sockets.add(socket);
-        sockets
-            .get_mut::<tcp::Socket>(handle)
-            .listen((server_ip, 80))
-            .unwrap();
-
-        let syn = craft_syn(guest_mac, broadcast, server_ip, 49152, 80);
-        let mut admission_called = false;
+        let mut called = false;
         assert_eq!(
             stack.ingest(&syn, |_| {
-                admission_called = true;
+                called = true;
                 true
             }),
             Ok(IngestOutcome::Queued)
         );
-        assert!(!admission_called);
-
-        stack.poll(Instant::ZERO, &mut sockets);
-        assert_eq!(
-            sockets.get::<tcp::Socket>(handle).state(),
-            tcp::State::Listen
-        );
-        assert_eq!(stack.outbound(), None);
+        assert!(called);
     }
 }
