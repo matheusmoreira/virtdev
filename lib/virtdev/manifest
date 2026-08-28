@@ -3,6 +3,7 @@
 #
 #   manifest_resolve <project>                 print first existing manifest
 #   manifest_has_entries <path>                test for an active entry
+#   manifest_parent_entries <path>             print active entries containing ..
 #   manifest_write_rsync_files_from <src> <dst>
 #
 # Resolution prefers the project-local file, then XDG config. The rsync writer
@@ -29,6 +30,22 @@ manifest_resolve() {
 
 manifest_has_entries() {
   grep -Eq '^[^#[:space:]]' "${1}" 2>/dev/null
+}
+
+manifest_parent_entries() {
+  awk '
+    /^[[:space:]]*$/ { next }
+    /^[[:space:]]*#/ { next }
+    {
+      count = split($0, component, "/")
+      for (i = 1; i <= count; i++) {
+        if (component[i] == "..") {
+          printf("%d: %s\n", NR, $0)
+          break
+        }
+      }
+    }
+  ' "${1}"
 }
 
 manifest_write_rsync_files_from() {

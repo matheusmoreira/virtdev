@@ -26,6 +26,20 @@ if [[ "$(sed -n '1p' "${test_tmp}/files-from")" != real ||
   exit 1
 fi
 
+for unsafe_path in '..' '../x' 'x/../y'; do
+  printf '%s\n' "${unsafe_path}" > "${test_tmp}/parent-manifest"
+  if [[ -z "$(manifest_parent_entries "${test_tmp}/parent-manifest")" ]]; then
+    printf 'parent manifest entry was accepted: %s\n' "${unsafe_path}" >&2
+    exit 1
+  fi
+done
+printf '%s\n' 'x..y' 'x/.hidden' '# ../ignored' \
+  > "${test_tmp}/local-manifest"
+if [[ -n "$(manifest_parent_entries "${test_tmp}/local-manifest")" ]]; then
+  printf 'ordinary dotted manifest entry was rejected\n' >&2
+  exit 1
+fi
+
 rsync -a -r --safe-links --files-from="${test_tmp}/files-from" \
   "${source_tree}/" "${destination}/"
 
@@ -53,3 +67,4 @@ if grep -Eq -- '--link-dest|--copy-links' "${repository}/bin/virtdev-backup"; th
 fi
 
 printf 'ok - backup roots stay local and snapshots own independent inodes\n'
+printf 'ok - manifest roots cannot escape through parent components\n'
