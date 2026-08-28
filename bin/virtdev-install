@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # SSH contract constants are imported
 #
 # virtdev-install [--timezone tz] [--locale locale] [--keymap keymap]
 #                 [--dns ip] [--packages path] [--script path]
@@ -442,8 +443,8 @@ MESSAGE
 done
 
 # Read progress tokens from the virtio-serial channel via a FIFO.
-# The guest install script sends either 'complete' (success) or
-# 'failed' (EXIT trap on non-zero exit) as its terminal token.
+# Success requires the SSH capability token followed by `complete`; `failed`
+# is the installer's non-zero EXIT token.
 # Both unblock the reader naturally — no watchdog or polling needed.
 # If QEMU dies before the guest sends a terminal token (crash, bad
 # firmware, etc.), socat gets EOF and the reader exits with no match.
@@ -461,6 +462,7 @@ done
 # retaining the global lock forever by dribbling or flooding status lines.
 progress_fifo="${installation_directory}/progress.fifo"
 progress_failure=''
+guest_contract_seen=0
 if [[ -S "${install_sock}" ]]; then
   mkfifo "${progress_fifo}"
   socat -u UNIX-CONNECT:"${install_sock}" - > "${progress_fifo}" 2>/dev/null &
@@ -508,7 +510,15 @@ if [[ -S "${install_sock}" ]]; then
 
     printf '%s\n' "${token}" >> "${install_progress}"
     install_display_progress "${token}"
-    case "${token}" in complete|failed) break ;; esac
+    case "${token}" in
+      "${ssh_guest_contract_progress}") guest_contract_seen=1 ;;
+      complete)
+        (( guest_contract_seen )) \
+          || progress_failure="installer did not advertise ${ssh_guest_contract_value}"
+        break
+        ;;
+      failed) break ;;
+    esac
   done < "${progress_fifo}"
 
   if ! child_terminate_and_reap "${socat_pid}" socat; then
@@ -538,6 +548,23 @@ MESSAGE
     error 10 <<MESSAGE
 Installer reported completion, but QEMU exited with status ${qemu_status}.
 The installation is not accepted as cleanly terminated and will be discarded.
+MESSAGE
+  fi
+
+  guest_contract="${installation_directory}/${ssh_guest_contract_name}"
+  guest_contract_temporary="${guest_contract}.tmp"
+  if [[ -e "${guest_contract}" || -L "${guest_contract}" \
+        || -e "${guest_contract_temporary}" || -L "${guest_contract_temporary}" ]] \
+      || ! (umask 077; printf '%s\n' "${ssh_guest_contract_value}" \
+        > "${guest_contract_temporary}") \
+      || ! chmod 0444 "${guest_contract_temporary}" \
+      || ! sync -f "${guest_contract_temporary}" \
+      || ! mv -T -- "${guest_contract_temporary}" "${guest_contract}" \
+      || ! sync -f "${installation_directory}" \
+      || ! ssh_guest_contract_valid "${installation_directory}"; then
+    error 10 <<MESSAGE
+Could not durably record the guest SSH transport contract.
+The installation will be discarded rather than sealed without compatibility proof.
 MESSAGE
   fi
   install_succeeded=1

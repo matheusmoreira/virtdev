@@ -31,6 +31,7 @@ for image in system.qcow2 home.qcow2 nvram; do
   : > "${system_directory}/${image}"
 done
 printf '0\n' > "${system_directory}/generation"
+printf 'ssh-host-identity=1\n' > "${system_directory}/guest-contract"
 printf 'test key\n' > "${virtdev_home}/ssh/id"
 chmod 600 "${virtdev_home}/ssh/id"
 : > "${test_tmp}/OVMF_CODE.fd"
@@ -112,6 +113,7 @@ for image in system.qcow2 home.qcow2 nvram; do
   : > "${reject_system}/${image}"
 done
 printf '0\n' > "${reject_system}/generation"
+printf 'ssh-host-identity=1\n' > "${reject_system}/guest-contract"
 printf 'test key\n' > "${reject_home}/ssh/id"
 chmod 600 "${reject_home}/ssh/id"
 printf 'inactive\n' > "${reject_state}"

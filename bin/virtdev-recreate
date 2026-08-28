@@ -37,7 +37,7 @@
 # provision, and restore. Lock-aware child commands reuse its descriptors.
 #
 # Failure semantics: fail-fast at any non-zero subcommand exit. The
-# exit code identifies which step failed (20 backup, 21 stop, 22
+# exit code identifies which step failed (10 incompatible base, 20 backup, 21 stop, 22
 # destroy, 23 create, 24 start, 25 wait, 27 restore; 28 = the resolved
 # zone was removed before the destroy step); the message names the
 # recovery command for that boundary.
@@ -57,7 +57,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest confirm terminal project firewall recreate-result lock
+import error validate arguments snapshot manifest confirm terminal project firewall recreate-result lock ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -131,6 +131,15 @@ project_directory="${VIRTDEV_HOME}/projects/${project}"
 backups_project_dir="$(snapshot_directory "${project}")"
 
 project_require_ordinary "${project}"
+
+system_directory="${VIRTDEV_HOME}/system"
+if ! ssh_guest_contract_valid "${system_directory}"; then
+  error 10 <<MESSAGE
+Sealed-base SSH contract marker is missing or incompatible.
+No project data was changed. If the base predates strict host identity, use the
+previous virtdev version for backup, then install and seal the current ISO.
+MESSAGE
+fi
 
 if [[ -n "${pinned_snapshot}" && ! -d "${backups_project_dir}/${pinned_snapshot}" ]]; then
   error 9 <<<"Pinned restore snapshot not found: ${backups_project_dir}/${pinned_snapshot}"

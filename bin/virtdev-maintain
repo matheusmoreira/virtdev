@@ -95,6 +95,7 @@
 #   30  terminal maintenance unit left malformed/unremovable runtime controls
 #   31  Boot 1 QEMU exited zero without positive guest-shutdown evidence
 #   32  socat or jq is unavailable, so QMP evidence cannot be validated
+#   33  sealed-base SSH transport marker is missing or incompatible
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -488,6 +489,15 @@ for file in system.qcow2 home.qcow2 nvram; do
   fi
 done
 
+if ! ssh_guest_contract_valid "${system_directory}"; then
+  error 33 <<MESSAGE
+Sealed-base SSH contract marker is missing or incompatible.
+No maintenance VM was launched. If the base predates strict host identity, use
+the previous virtdev version for needed backups, then build, install, and seal
+the current ISO. virtdev-upgrade cannot cross that one-time boundary.
+MESSAGE
+fi
+
 if [[ ! -f "${system_directory}/generation" ]]; then
   error 15 <<<"Base system generation file missing: '${system_directory}/generation'"
 fi
@@ -609,6 +619,8 @@ printf >&2 "Copying sealed base images to: '%s'\n" "${maintenance_directory}"
 cp --reflink=auto "${system_directory}/system.qcow2" "${system_disk}"
 cp --reflink=auto "${system_directory}/home.qcow2"   "${home_disk}"
 cp --reflink=auto "${system_directory}/nvram"        "${nvram}"
+cp -- "${system_directory}/${ssh_guest_contract_name}" \
+  "${maintenance_directory}/${ssh_guest_contract_name}"
 
 printf >&2 'Making maintenance images writable...\n'
 chmod 644 "${system_disk}" "${home_disk}" "${nvram}"

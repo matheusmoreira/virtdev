@@ -162,6 +162,8 @@ Create project virtual machine first: virtdev-create '${project}'
 MESSAGE
 fi
 
+ssh_guest_contract_require "${project}"
+
 # Harden the per-project directory so that socket files (monitor, console,
 # passt) are not reachable by other local users. Pre-existing directories
 # (created before this hardening) are updated on every start.

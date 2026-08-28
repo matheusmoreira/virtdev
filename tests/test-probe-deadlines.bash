@@ -25,6 +25,7 @@ client_key="${test_tmp}/client-key"
 printf 'test key\n' > "${client_key}"
 chmod 600 "${client_key}"
 mkdir -p "${VIRTDEV_HOME}/projects/probe"
+printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/probe/guest-contract"
 ssh_host_identity_ensure probe
 
 systemctl() {

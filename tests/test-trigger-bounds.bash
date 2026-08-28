@@ -826,6 +826,7 @@ export SYSTEMCTL_ACTIVE_STATE=active
 export SSH_TEST_STATUS=42
 mkdir -p "${VIRTDEV_HOME}/projects/probe"
 printf '2222\n' > "${VIRTDEV_HOME}/projects/probe/port"
+printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/probe/guest-contract"
 printf 'test key\n' > "${VIRTDEV_SSH_KEY}"
 chmod 600 "${VIRTDEV_SSH_KEY}"
 (

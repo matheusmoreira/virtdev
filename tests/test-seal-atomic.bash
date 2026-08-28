@@ -17,6 +17,7 @@ mkdir -p "${installation}"
 printf 'system\n' > "${installation}/system.qcow2"
 printf 'home\n' > "${installation}/home.qcow2"
 printf 'nvram\n' > "${installation}/nvram"
+printf 'ssh-host-identity=1\n' > "${installation}/guest-contract"
 printf 'preserve me\n' > "${installation}/unexpected"
 
 output="${test_tmp}/output"
@@ -49,11 +50,16 @@ if [[ "$(cat "${virtdev_home}/system/generation")" != 1 ]]; then
   printf 'seal did not publish generation 1\n' >&2
   exit 1
 fi
-for file in system.qcow2 home.qcow2 nvram generation; do
+for file in system.qcow2 home.qcow2 nvram generation guest-contract; do
   if [[ "$(stat -c '%a' "${virtdev_home}/system/${file}")" != 444 ]]; then
     printf 'sealed file is not read-only: %s\n' "${file}" >&2
     exit 1
   fi
 done
+if [[ "$(< "${virtdev_home}/system/guest-contract")" \
+      != ssh-host-identity=1 ]]; then
+  printf 'seal changed the guest transport contract\n' >&2
+  exit 1
+fi
 
 printf 'ok - seal validates staging then publishes it with one rename\n'

@@ -33,6 +33,7 @@ for image in system.qcow2 home.qcow2 nvram; do
   : > "${system_directory}/${image}"
 done
 printf '0\n' > "${system_directory}/generation"
+printf 'ssh-host-identity=1\n' > "${system_directory}/guest-contract"
 printf 'preserve interrupted staging\n' > "${maintenance_directory}/sentinel"
 
 run_maintain() {
@@ -99,6 +100,7 @@ prepare_launch_home() {
     : > "${launch_home}/system/${image}"
   done
   printf '0\n' > "${launch_home}/system/generation"
+  printf 'ssh-host-identity=1\n' > "${launch_home}/system/guest-contract"
   printf 'test key\n' > "${launch_home}/ssh/id"
   chmod 600 "${launch_home}/ssh/id"
   : > "${launch_home}/OVMF_CODE.fd"

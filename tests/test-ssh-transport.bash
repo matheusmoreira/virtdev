@@ -11,6 +11,8 @@ export VIRTDEV_HOME="${test_tmp}/store with spaces"
 export VIRTDEV_SSH_KEY="${test_tmp}/client key"
 mkdir -p "${VIRTDEV_HOME}/projects/alpha" \
   "${VIRTDEV_HOME}/projects/beta"
+printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/alpha/guest-contract"
+printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/beta/guest-contract"
 /usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' -f "${VIRTDEV_SSH_KEY}"
 
 # shellcheck disable=SC1090

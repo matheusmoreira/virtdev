@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2154  # virtdev_library_directory is provided by import
+# shellcheck disable=SC2034,SC2154  # public constants; import provides library path
 #
 # ssh library: host identity and client transport helpers.
 #
@@ -16,6 +16,11 @@
 #   ssh_host_identity_known_hosts <project>
 #   ssh_host_identity_alias <project>
 #       Print an identity path or lookup alias.
+#
+#   ssh_guest_contract_valid <directory>
+#       Return success only for the exact current guest transport marker.
+#   ssh_guest_contract_require <project>
+#       Require the project marker, or the sealed-base marker for maintenance.
 #
 #   ssh_transport_argv <array> <mode> <project> <client-key> <port> \
 #                      <config> [connect-timeout]
@@ -44,6 +49,7 @@
 #   77  SSH key not found
 #   78  SSH key permissions too open
 #   103 guest host identity is missing, corrupt, or could not be created
+#   104 guest SSH transport marker is missing or incompatible
 #
 set -euo pipefail
 import error integer port
@@ -51,11 +57,15 @@ import error integer port
 readonly ssh_key_not_found_exit_code=77
 readonly ssh_key_permissions_exit_code=78
 readonly ssh_host_identity_exit_code=103
+readonly ssh_guest_contract_exit_code=104
 readonly ssh_host_identity_directory_name=ssh-host
 readonly ssh_host_private_key_name=host_key
 readonly ssh_host_public_key_name=host_key.pub
 readonly ssh_known_hosts_name=known_hosts
 readonly ssh_known_hosts_temporary_name=known_hosts.tmp
+readonly ssh_guest_contract_name=guest-contract
+readonly ssh_guest_contract_value='ssh-host-identity=1'
+readonly ssh_guest_contract_progress="capability:${ssh_guest_contract_value}"
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -84,6 +94,32 @@ ssh_host_identity_known_hosts() {
 ssh_host_identity_alias() {
   _ssh_project_name_valid "${1}" || return 1
   printf 'virtdev-%s' "${1}"
+}
+
+ssh_guest_contract_valid() {
+  (( $# == 1 )) || return 2
+  local -r directory="${1}"
+  local -r marker="${directory}/${ssh_guest_contract_name}"
+  [[ -d "${directory}" && ! -L "${directory}" \
+      && -f "${marker}" && ! -L "${marker}" ]] || return 1
+  [[ "$(stat -c '%s' -- "${marker}" 2>/dev/null)" \
+        == "$(( ${#ssh_guest_contract_value} + 1 ))" ]] || return 1
+  grep -Fqx -- "${ssh_guest_contract_value}" "${marker}"
+}
+
+ssh_guest_contract_require() {
+  (( $# == 1 )) || return 2
+  local -r project="${1}"
+  _ssh_project_name_valid "${project}" || return 2
+  local directory="${VIRTDEV_HOME}/projects/${project}"
+  [[ "${project}" != maintenance ]] || directory="${VIRTDEV_HOME}/system"
+  ssh_guest_contract_valid "${directory}" \
+    || error "${ssh_guest_contract_exit_code}" <<MESSAGE
+Guest SSH contract marker is missing or incompatible: '${directory}/${ssh_guest_contract_name}'
+No insecure fallback was attempted. If this image predates strict host identity,
+use the previous virtdev version to back it up, then install and seal the current
+ISO and recreate or restore it. virtdev-upgrade cannot cross that boundary.
+MESSAGE
 }
 
 _ssh_host_identity_remove_directory() {
@@ -300,6 +336,7 @@ ssh_transport_argv() {
     *) return 2 ;;
   esac
 
+  ssh_guest_contract_require "${__ssh_transport_project}"
   ssh_key_validate "${__ssh_transport_key}"
   ssh_host_identity_require "${__ssh_transport_project}"
 

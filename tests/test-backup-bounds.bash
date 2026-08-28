@@ -28,6 +28,7 @@ prepare_home() {
   mkdir -p "${home}/projects/probe" "${home}/system"
   printf 'data\n' > "${home}/projects/probe/manifest"
   printf '2222\n' > "${home}/projects/probe/port"
+  printf 'ssh-host-identity=1\n' > "${home}/projects/probe/guest-contract"
   printf '1\n' > "${home}/system/generation"
   (
     export VIRTDEV_HOME="${home}"

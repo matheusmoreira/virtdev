@@ -42,6 +42,7 @@
 #   11  no projects to upgrade after filtering
 #   12  a coupled project would be excluded from the reseal/rebuild set
 #   13  an excluded detached project is not provably stopped
+#   14  sealed-base SSH transport marker is missing or incompatible
 #   20  backup phase failure
 #   30  maintain phase failure
 #   40  one or more project rebuilds failed
@@ -57,7 +58,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project snapshot confirm terminal firewall recreate-result lock
+import error validate arguments manifest project snapshot confirm terminal firewall recreate-result lock ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -148,6 +149,15 @@ if [[ ! -d "${system_directory}" ]]; then
   error 3 <<MESSAGE
 Sealed base system not found: '${system_directory}'
 Create it with virtdev-iso, virtdev-install and virtdev-seal.
+MESSAGE
+fi
+
+if ! ssh_guest_contract_valid "${system_directory}"; then
+  error 14 <<MESSAGE
+Sealed-base SSH contract marker is missing or incompatible.
+No backup or maintenance phase was started. If the base predates strict host
+identity, use the previous virtdev version to back up projects, then build,
+install, and seal the current ISO. virtdev-upgrade cannot cross that boundary.
 MESSAGE
 fi
 

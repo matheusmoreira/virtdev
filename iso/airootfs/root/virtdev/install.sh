@@ -495,6 +495,7 @@ fi
 
 # Hooks may generate distro host keys; scrub after all target customization.
 arch-chroot "${target}" /usr/local/lib/virtdev/ssh-hostkeys scrub
+progress_report capability:ssh-host-identity=1
 
 # shellcheck disable=SC2034  # read inside the EXIT trap
 install_failed=0

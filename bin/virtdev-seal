@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # SSH contract constants are imported
 #
 # virtdev-seal
 #
@@ -29,7 +30,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments terminal
+import error lock arguments terminal ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -66,12 +67,20 @@ fi
 system_disk="${installation_directory}/system.qcow2"
 home_disk="${installation_directory}/home.qcow2"
 nvram="${installation_directory}/nvram"
+guest_contract="${installation_directory}/${ssh_guest_contract_name}"
 
-for f in "${system_disk}" "${home_disk}" "${nvram}"; do
+for f in "${system_disk}" "${home_disk}" "${nvram}" "${guest_contract}"; do
   if [[ ! -f "${f}" || -L "${f}" ]]; then
     error 5 <<<"Installation file not found: '${f}'"
   fi
 done
+
+if ! ssh_guest_contract_valid "${installation_directory}"; then
+  error 5 <<MESSAGE
+Installation lacks the current guest SSH transport contract: '${guest_contract}'
+Re-run virtdev-iso and virtdev-install with the current virtdev version.
+MESSAGE
+fi
 
 # installation/ is the unpublished staging tree. Refuse extras before making
 # any changes: renaming the whole directory is the atomic commit, so no file
@@ -81,7 +90,7 @@ while IFS= read -r -d '' entry; do
   unexpected_entries+=("${entry}")
 done < <(find "${installation_directory}" -mindepth 1 -maxdepth 1 \
   ! -name system.qcow2 ! -name home.qcow2 ! -name nvram \
-  ! -name generation -print0)
+  ! -name generation ! -name "${ssh_guest_contract_name}" -print0)
 
 if (( ${#unexpected_entries[@]} )); then
   unexpected_list=''
@@ -116,7 +125,8 @@ rm -f -- "${generation}"
 printf '1\n' > "${generation}"
 
 printf >&2 'Marking base system images read-only...\n'
-chmod 444 "${system_disk}" "${home_disk}" "${nvram}" "${generation}"
+chmod 444 "${system_disk}" "${home_disk}" "${nvram}" "${generation}" \
+  "${guest_contract}"
 
 # Commit the fully prepared sibling tree with one rename. Flush staged bytes
 # and metadata before publication and the parent namespace afterward so a

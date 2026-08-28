@@ -74,7 +74,21 @@ if [[ -e "${stuck_home}/installation" ]]; then
   exit 1
 fi
 
-printf 'complete\n' > "${test_tmp}/complete.progress"
+printf 'complete\n' > "${test_tmp}/legacy.progress"
+legacy_home="${test_tmp}/legacy-home"
+status=0
+run_installer "${legacy_home}" progress "${test_tmp}/legacy.progress" 0 \
+  "${test_tmp}/legacy.pid" "${test_tmp}/legacy.term" "${output}" || status=$?
+if (( status != 10 )) \
+    || ! grep -Fq 'installer did not advertise ssh-host-identity=1' "${output}" \
+    || [[ -e "${legacy_home}/installation" ]]; then
+  printf 'installer accepted a guest without the current SSH contract\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+printf 'capability:ssh-host-identity=1\ncomplete\n' \
+  > "${test_tmp}/complete.progress"
 failed_home="${test_tmp}/failed-home"
 status=0
 run_installer "${failed_home}" progress "${test_tmp}/complete.progress" 42 \
@@ -108,6 +122,13 @@ fi
 if [[ -e "${success_home}/installation/install.sock" \
       || -e "${success_home}/installation/progress.fifo" ]]; then
   printf 'successful installation retained progress controls\n' >&2
+  exit 1
+fi
+if [[ "$(< "${success_home}/installation/guest-contract")" \
+      != ssh-host-identity=1 \
+      || "$(stat -c '%a' "${success_home}/installation/guest-contract")" \
+        != 444 ]]; then
+  printf 'successful installation did not preserve its proven guest contract\n' >&2
   exit 1
 fi
 
@@ -217,4 +238,5 @@ if ! grep -Fxq 'TimeoutStartSec=infinity' \
 fi
 
 printf 'ok - installer owns children, permits progress, and requires clean termination\n'
+printf 'ok - installer requires and records the guest SSH transport contract\n'
 printf 'ok - installer comma-encodes structured QEMU values and preserves standalone argv\n'

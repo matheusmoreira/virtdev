@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # SSH contract constants are imported
 #
 # virtdev-create <project>
 #
@@ -17,6 +18,7 @@
 #         system.qcow2    (delta over system/system.qcow2)
 #         home.qcow2      (delta over system/home.qcow2)
 #         nvram           (UEFI variable store copy)
+#         guest-contract  (guest/host transport compatibility)
 #
 
 set -euo pipefail
@@ -24,7 +26,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal project runtime
+import error validate lock arguments terminal project runtime ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -81,6 +83,14 @@ if [[ ! -f "${system_directory}/generation" ]]; then
 fi
 base_generation="$(generation_read_base "${system_directory}/generation")"
 
+if ! ssh_guest_contract_valid "${system_directory}"; then
+  error 8 <<MESSAGE
+Sealed-base SSH contract marker is missing or incompatible.
+If the base predates strict host identity, build and install the current ISO,
+then seal a new base before creating projects.
+MESSAGE
+fi
+
 if [[ -d "${project_directory}" ]]; then
   error 6 <<<"Project already exists: '${project_directory}'"
 fi
@@ -122,6 +132,11 @@ chmod 644 "${nvram}"
 
 printf '%s\n' "${base_generation}" > "${project_directory}/generation"
 chmod 644 "${project_directory}/generation"
+cp -- "${system_directory}/${ssh_guest_contract_name}" \
+  "${project_directory}/${ssh_guest_contract_name}"
+chmod 0444 "${project_directory}/${ssh_guest_contract_name}"
+ssh_guest_contract_valid "${project_directory}" \
+  || error 8 <<<'Could not copy the guest SSH transport contract into the project.'
 
 create_succeeded=1
 

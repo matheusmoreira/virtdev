@@ -11,6 +11,7 @@ config_home="${test_tmp}/config"
 mkdir -p "${virtdev_home}/system" "${virtdev_home}/projects/keep" \
   "${virtdev_home}/projects/omitted" "${config_home}"
 printf '7\n' > "${virtdev_home}/system/generation"
+printf 'ssh-host-identity=1\n' > "${virtdev_home}/system/guest-contract"
 printf '7\n' > "${virtdev_home}/projects/keep/generation"
 printf '7\n' > "${virtdev_home}/projects/omitted/generation"
 printf '/etc/hostname\n' > "${virtdev_home}/projects/keep/manifest"
