@@ -15,7 +15,7 @@
 #   project            the source project name; virtdev-restore uses
 #                      this to refuse cross-project restoration
 #   manifest        copy of projects/<project>/manifest at backup time
-#   generation         integer from ${VIRTDEV_HOME}/system/generation (or empty)
+#   generation         canonical integer from ${VIRTDEV_HOME}/system/generation
 #   tree/              user-content subtree, rsync-preserved
 #
 # The manifest is user-curated and required. Lookup order:

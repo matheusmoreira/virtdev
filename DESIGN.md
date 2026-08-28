@@ -213,18 +213,19 @@ projects/<name>/
   passt.sock     (passt network backend socket, present while running)
 ```
 
-### System Disk Modes
+### System Disk Mode
 
-The system disk can be operated in two modes, chosen per-VM at start time:
-
-**Delta mode (default)**
+Virtdev currently implements delta mode only.
 
 The project's `system.qcow2` is a writable delta over the sealed base. The
 guest can install packages, modify system files, and generally treat the system
 disk as writable. Updates to the base image do not propagate to existing
 project VMs automatically.
 
-**Shared read-only mode**
+### Proposed Shared Read-Only Mode
+
+Shared read-only mode is not implemented or selectable. The intended design is
+recorded here so future CLI, guest-image, and QEMU work has one contract.
 
 The project VM opens the sealed `system/system.qcow2` directly, without a
 writable delta layer. The guest mounts `/` read-only. Mutable system paths
@@ -239,8 +240,7 @@ In this mode:
   all software provisioning must happen via the home disk or be baked into
   the base image
 
-The base image is designed to support both modes without modification.
-Shared read-only mode is opt-in; delta mode is the default.
+The base image is intended to support this mode without modification.
 
 **Note on `/etc/machine-id`:** in shared read-only mode, all VMs sharing the
 same base will present the same machine ID. This is acceptable for development
@@ -326,10 +326,8 @@ Two optional hooks live in `${XDG_CONFIG_HOME}/virtdev/maintenance/`:
 Both hooks can be suppressed per-invocation: `--no-provision`,
 `--no-inventory`.
 
-After resealing:
-- Project VMs in shared read-only mode pick up changes on next boot automatically
-- Project VMs in delta mode do not pick up changes; they can be rebuilt via
-  `virtdev-destroy` + `virtdev-create` + provision script
+After resealing, current project VMs do not pick up changes. Rebuild them with
+`virtdev-destroy` + `virtdev-create` followed by the provision script.
 
 **Warning:** after a reseal, existing delta-mode project VMs hold deltas
 created against the old base content. qcow2 does not validate backing file
@@ -1068,7 +1066,7 @@ ${VIRTDEV_HOME}/
     passt.sock           passt network backend socket (present while maintenance virtual machine is running)
   projects/
     <name>/
-      system.qcow2      delta over system/system.qcow2 (or absent in ro mode)
+      system.qcow2      delta over system/system.qcow2
       home.qcow2        delta over system/home.qcow2
       nvram             per-project UEFI variable store
       generation        copy of system/generation at create time
@@ -1088,7 +1086,7 @@ ${VIRTDEV_HOME}/
           project       source project name; virtdev-restore refuses
                         to apply a snapshot to a different project
           manifest   copy of projects/<project>/manifest at backup time
-          generation    base generation at backup time (may be empty)
+          generation    mandatory canonical base generation at backup time
           tree/         user content, rsync-preserved
         <HH-MM-SS>.partial/  transient; present during an in-flight backup
 
