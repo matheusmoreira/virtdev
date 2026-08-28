@@ -3,6 +3,19 @@
 set -euo pipefail
 
 test_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+test_lock_directory=""
+
+if [[ -z "${VIRTDEV_LOCK_DIRECTORY:-}" ]]; then
+  test_lock_directory="$(mktemp -d --tmpdir virtdev-tests.XXXXXXXXXX)"
+  export VIRTDEV_LOCK_DIRECTORY="${test_lock_directory}"
+fi
+
+# shellcheck disable=SC2329  # invoked by the EXIT trap
+cleanup() {
+  [[ -z "${test_lock_directory}" ]] \
+    || rm -rf -- "${test_lock_directory}"
+}
+trap cleanup EXIT
 
 status=0
 while IFS= read -r test_file; do
