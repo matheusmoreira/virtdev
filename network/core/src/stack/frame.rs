@@ -197,6 +197,102 @@ pub fn encode(frame: &[u8]) -> [u8; PREFIX_LEN] {
     (frame.len() as u32).to_be_bytes()
 }
 
+/// Result of a nonblocking write attempt, translated by the reactor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteEvent {
+    /// Bytes accepted from the slices returned by PendingFrameWrite::parts.
+    Written(usize),
+    /// EAGAIN or EWOULDBLOCK; retain the cursor and wait for writability.
+    WouldBlock,
+    /// EINTR; retain the cursor and retry immediately.
+    Interrupted,
+}
+
+/// What the reactor should do after applying a write event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteAction {
+    /// More prefix or payload bytes remain.
+    Pending,
+    /// The complete prefix and payload have been accepted.
+    Complete,
+    /// Wait for another readiness notification.
+    Wait,
+    /// Retry the interrupted write.
+    Retry,
+    /// A successful zero-byte write made no progress; stop the write loop.
+    Stalled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameWriteError {
+    /// The payload exceeds MAX_FRAME_LEN.
+    Oversized,
+    /// The reported write count exceeds the remaining prefix and payload.
+    ExceedsRemaining,
+}
+
+/// Cursor over one borrowed frame and its length prefix.
+///
+/// The frame owner cannot mutably clear the payload while this cursor is live.
+/// Clear it only after Complete and after dropping the cursor.
+pub struct PendingFrameWrite<'a> {
+    prefix: [u8; PREFIX_LEN],
+    frame: &'a [u8],
+    written: usize,
+}
+
+impl<'a> PendingFrameWrite<'a> {
+    pub fn new(frame: &'a [u8]) -> Result<Self, FrameWriteError> {
+        if frame.len() > MAX_FRAME_LEN {
+            return Err(FrameWriteError::Oversized);
+        }
+        Ok(Self {
+            prefix: encode(frame),
+            frame,
+            written: 0,
+        })
+    }
+
+    pub fn remaining(&self) -> usize {
+        PREFIX_LEN + self.frame.len() - self.written
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.remaining() == 0
+    }
+
+    /// Remaining prefix and payload slices for a vectored write.
+    pub fn parts(&self) -> (&[u8], &[u8]) {
+        if self.written < PREFIX_LEN {
+            (&self.prefix[self.written..], self.frame)
+        } else {
+            (
+                &self.prefix[PREFIX_LEN..],
+                &self.frame[self.written - PREFIX_LEN..],
+            )
+        }
+    }
+
+    pub fn apply_write(&mut self, event: WriteEvent) -> Result<WriteAction, FrameWriteError> {
+        match event {
+            WriteEvent::Written(n) if n > self.remaining() => {
+                Err(FrameWriteError::ExceedsRemaining)
+            }
+            WriteEvent::Written(0) => Ok(WriteAction::Stalled),
+            WriteEvent::Written(n) => {
+                self.written += n;
+                if self.is_complete() {
+                    Ok(WriteAction::Complete)
+                } else {
+                    Ok(WriteAction::Pending)
+                }
+            }
+            WriteEvent::WouldBlock => Ok(WriteAction::Wait),
+            WriteEvent::Interrupted => Ok(WriteAction::Retry),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +517,109 @@ mod tests {
             decoder.apply_read(ReadEvent::Data(0)),
             Err(ReadError::ZeroBytes)
         );
+    }
+
+    fn pending_bytes(write: &PendingFrameWrite<'_>) -> Vec<u8> {
+        let (prefix, payload) = write.parts();
+        let mut bytes = prefix.to_vec();
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn write_cursor_handles_every_short_write_boundary() {
+        let payload: Vec<u8> = (0..32).collect();
+        let expected = wire(&payload);
+
+        for split in 0..=expected.len() {
+            let mut write = PendingFrameWrite::new(&payload).unwrap();
+            assert_eq!(pending_bytes(&write), expected);
+
+            if split > 0 {
+                let action = write.apply_write(WriteEvent::Written(split)).unwrap();
+                let expected_action = if split == expected.len() {
+                    WriteAction::Complete
+                } else {
+                    WriteAction::Pending
+                };
+                assert_eq!(action, expected_action, "split {split}");
+            }
+
+            assert_eq!(pending_bytes(&write), expected[split..], "split {split}");
+            assert_eq!(write.remaining(), expected.len() - split);
+            assert_eq!(write.is_complete(), split == expected.len());
+
+            if !write.is_complete() {
+                assert_eq!(
+                    write.apply_write(WriteEvent::Written(write.remaining())),
+                    Ok(WriteAction::Complete)
+                );
+            }
+            assert!(write.is_complete());
+            assert_eq!(write.parts(), (&[][..], &[][..]));
+        }
+    }
+
+    #[test]
+    fn one_byte_writes_never_complete_early() {
+        let payload = [0xDE, 0xAD, 0xBE, 0xEF];
+        let expected = wire(&payload);
+        let mut write = PendingFrameWrite::new(&payload).unwrap();
+
+        for offset in 0..expected.len() {
+            assert_eq!(pending_bytes(&write), expected[offset..]);
+            assert_eq!(
+                write.apply_write(WriteEvent::Written(1)),
+                Ok(if offset + 1 == expected.len() {
+                    WriteAction::Complete
+                } else {
+                    WriteAction::Pending
+                })
+            );
+        }
+        assert!(write.is_complete());
+    }
+
+    #[test]
+    fn retryable_and_zero_writes_preserve_the_cursor() {
+        let payload = [1, 2, 3];
+        let mut write = PendingFrameWrite::new(&payload).unwrap();
+        let before = pending_bytes(&write);
+
+        assert_eq!(
+            write.apply_write(WriteEvent::WouldBlock),
+            Ok(WriteAction::Wait)
+        );
+        assert_eq!(
+            write.apply_write(WriteEvent::Interrupted),
+            Ok(WriteAction::Retry)
+        );
+        assert_eq!(
+            write.apply_write(WriteEvent::Written(0)),
+            Ok(WriteAction::Stalled)
+        );
+        assert_eq!(pending_bytes(&write), before);
+    }
+
+    #[test]
+    fn write_cursor_enforces_frame_and_progress_bounds() {
+        let at_limit = vec![0x5A; MAX_FRAME_LEN];
+        let mut write = PendingFrameWrite::new(&at_limit).unwrap();
+        assert_eq!(write.remaining(), MAX_WIRE_FRAME_LEN);
+        assert_eq!(
+            write.apply_write(WriteEvent::Written(MAX_WIRE_FRAME_LEN + 1)),
+            Err(FrameWriteError::ExceedsRemaining)
+        );
+        assert_eq!(write.remaining(), MAX_WIRE_FRAME_LEN);
+        assert_eq!(
+            write.apply_write(WriteEvent::Written(MAX_WIRE_FRAME_LEN)),
+            Ok(WriteAction::Complete)
+        );
+
+        let too_big = vec![0; MAX_FRAME_LEN + 1];
+        assert!(matches!(
+            PendingFrameWrite::new(&too_big),
+            Err(FrameWriteError::Oversized)
+        ));
     }
 }
