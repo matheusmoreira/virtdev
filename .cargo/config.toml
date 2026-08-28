@@ -1,0 +1,11 @@
+# Dependency sources are vendored into network/vendor and audited in
+# network/SUPPLY-CHAIN.md. Keeping this policy at the repository root makes it
+# apply to Cargo, IDEs, and packagers invoked from either worktree level.
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "network/vendor"
+
+[net]
+offline = true

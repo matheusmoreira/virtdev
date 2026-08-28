@@ -184,8 +184,14 @@ impl TxToken for QemuTxToken<'_> {
 impl Device for QemuDevice {
     // The GATs made concrete: the token type family, one member per borrow
     // lifetime `'a`. The `where Self: 'a` echoes the trait's required bound.
-    type RxToken<'a> = QemuRxToken<'a> where Self: 'a;
-    type TxToken<'a> = QemuTxToken<'a> where Self: 'a;
+    type RxToken<'a>
+        = QemuRxToken<'a>
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = QemuTxToken<'a>
+    where
+        Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         // Only offer a receive when a frame actually waits.

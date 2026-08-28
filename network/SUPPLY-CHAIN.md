@@ -14,9 +14,11 @@ one trust root with the rest of virtdev's runtime: qemu, nftables, …).
 - `core/Cargo.toml` (crate `network`) pins `smoltcp = "=0.13.1"` (exact) with
   `default-features = false`; every transitive version is frozen in `Cargo.lock`
   with a SHA-256 checksum.
-- `.cargo/config.toml` redirects the crates-io registry to `./vendor` and sets
-  `net.offline = true`. Builds read only the in-repo audited source.
-- Verified reproducible offline: `cargo build --frozen` + `cargo test --frozen`.
+- The repository-root `.cargo/config.toml` redirects the crates-io registry to
+  `network/vendor` and sets `net.offline = true`. It applies both from the
+  repository root and from `network/`.
+- Verified reproducible offline: `cargo build --manifest-path
+  network/Cargo.toml --locked --offline` and the matching `cargo test` command.
 - **Changing a dependency requires a conscious re-audit:** bump the pin, run
   `cargo vendor`, audit the new/changed source, and update this file.
 

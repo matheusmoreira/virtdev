@@ -152,8 +152,7 @@ mod tests {
             dst_addr: GW_MAC,
             ethertype: EthernetProtocol::Ipv4,
         };
-        let mut buf =
-            vec![0u8; eth_repr.buffer_len() + ip_repr.buffer_len() + seg.buffer_len()];
+        let mut buf = vec![0u8; eth_repr.buffer_len() + ip_repr.buffer_len() + seg.buffer_len()];
         eth_repr.emit(&mut EthernetFrame::new_unchecked(&mut buf[..]));
         {
             let mut p = Ipv4Packet::new_unchecked(&mut buf[IP_OFF..]);
@@ -193,13 +192,21 @@ mod tests {
 
     #[test]
     fn ignores_a_syn_ack() {
-        let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::Syn, Some(TcpSeqNumber(1)), 80));
+        let frame = craft(
+            GUEST_IP,
+            SERVER_IP,
+            &tcp(TcpControl::Syn, Some(TcpSeqNumber(1)), 80),
+        );
         assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 
     #[test]
     fn ignores_a_bare_ack() {
-        let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::None, Some(TcpSeqNumber(1)), 80));
+        let frame = craft(
+            GUEST_IP,
+            SERVER_IP,
+            &tcp(TcpControl::None, Some(TcpSeqNumber(1)), 80),
+        );
         assert_eq!(peek_tcp_syn(&frame, GW_MAC), None);
     }
 

@@ -37,6 +37,8 @@ check: bin/virtdev-exchange
 	bash -n $(scripts) $(libraries) $(iso_scripts) $(test_scripts)
 	shellcheck $(scripts) $(libraries) $(iso_scripts) $(test_scripts)
 	bash tests/run
-	cd network && cargo test --all-targets --locked --offline
+	cargo fmt --manifest-path network/Cargo.toml --all -- --check
+	cargo build --manifest-path network/Cargo.toml --workspace --locked --offline
+	cargo test --manifest-path network/Cargo.toml --all-targets --locked --offline
 
 .PHONY: all clean check

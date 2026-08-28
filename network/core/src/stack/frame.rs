@@ -98,7 +98,10 @@ mod tests {
         let wire = [0x00, 0x00, 0x00, 0x04, 0xDE, 0xAD, 0xBE, 0xEF];
         assert_eq!(
             decode(&wire),
-            Decoded::Complete { payload: &[0xDE, 0xAD, 0xBE, 0xEF][..], consumed: 8 }
+            Decoded::Complete {
+                payload: &[0xDE, 0xAD, 0xBE, 0xEF][..],
+                consumed: 8
+            }
         );
     }
 
@@ -107,7 +110,10 @@ mod tests {
         // Fewer than 4 bytes: can't even read the length prefix.
         assert_eq!(decode(&[0x00, 0x00]), Decoded::Incomplete);
         // A full 4-byte prefix claims 4 payload bytes, but only 2 are present.
-        assert_eq!(decode(&[0x00, 0x00, 0x00, 0x04, 0xDE, 0xAD]), Decoded::Incomplete);
+        assert_eq!(
+            decode(&[0x00, 0x00, 0x00, 0x04, 0xDE, 0xAD]),
+            Decoded::Incomplete
+        );
     }
 
     #[test]
@@ -120,14 +126,22 @@ mod tests {
             0x00, 0x00, 0x00, 0x03, 0x01, 0x02, 0x03, // frame 2: len 3
         ];
 
-        let Decoded::Complete { payload: first, consumed: n1 } = decode(&wire) else {
+        let Decoded::Complete {
+            payload: first,
+            consumed: n1,
+        } = decode(&wire)
+        else {
             panic!("frame 1 is complete");
         };
         assert_eq!(first, &[0xAA, 0xBB][..]);
         assert_eq!(n1, 6); // 4-byte prefix + 2-byte payload
 
         // Advance the cursor past frame 1, then decode frame 2 from the tail.
-        let Decoded::Complete { payload: second, consumed: n2 } = decode(&wire[n1..]) else {
+        let Decoded::Complete {
+            payload: second,
+            consumed: n2,
+        } = decode(&wire[n1..])
+        else {
             panic!("frame 2 is complete");
         };
         assert_eq!(second, &[0x01, 0x02, 0x03][..]);

@@ -129,7 +129,8 @@ mod tests {
             ethertype: EthernetProtocol::Ipv4,
         };
 
-        let mut buf = vec![0u8; eth_repr.buffer_len() + ip_repr.buffer_len() + tcp_repr.buffer_len()];
+        let mut buf =
+            vec![0u8; eth_repr.buffer_len() + ip_repr.buffer_len() + tcp_repr.buffer_len()];
         eth_repr.emit(&mut EthernetFrame::new_unchecked(&mut buf[..]));
         let ip_off = eth_repr.buffer_len();
         {
@@ -211,7 +212,10 @@ mod tests {
             .get_mut::<tcp::Socket>(handle)
             .listen((server_ip, 80))
             .expect("port is non-zero and the socket is fresh");
-        assert_eq!(sockets.get::<tcp::Socket>(handle).state(), tcp::State::Listen);
+        assert_eq!(
+            sockets.get::<tcp::Socket>(handle).state(),
+            tcp::State::Listen
+        );
 
         // Poll 1: feed the guest's SYN to 93.184.216.34:80.
         let syn = craft_syn(guest_mac, guest_ip, server_ip, 49152, 80);
@@ -227,7 +231,10 @@ mod tests {
         // It cannot send the SYN/ACK yet: it has never seen the guest's MAC, so
         // the FIRST outbound frame is an ARP request to resolve the guest.
         {
-            let out = stack.device_mut().outbound().expect("an ARP request is queued");
+            let out = stack
+                .device_mut()
+                .outbound()
+                .expect("an ARP request is queued");
             let eth = EthernetFrame::new_checked(out).unwrap();
             assert_eq!(eth.ethertype(), EthernetProtocol::Arp);
             let arp = ArpPacket::new_checked(eth.payload()).unwrap();
@@ -242,7 +249,10 @@ mod tests {
 
         // NOW the reply datapath completes: the outbound frame is the IPv4 TCP
         // SYN/ACK from 93.184.216.34:80 back to the guest.
-        let out = stack.device_mut().outbound().expect("the SYN/ACK is now queued");
+        let out = stack
+            .device_mut()
+            .outbound()
+            .expect("the SYN/ACK is now queued");
         let eth = EthernetFrame::new_checked(out).unwrap();
         assert_eq!(eth.ethertype(), EthernetProtocol::Ipv4);
         let ipv4 = Ipv4Packet::new_checked(eth.payload()).unwrap();
