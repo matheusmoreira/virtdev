@@ -6,10 +6,13 @@
 # Starts a project virtual machine as a transient systemd user service.
 # The VM runs in the background, and systemd tracks the process.
 #
-# Type=simple becomes active before QEMU runs. Start therefore requires a
-# successful QMP query-status before publishing the port or reporting success;
-# launch failures exit 13 without a stale running signal. Its socat transport
-# and jq parser are preflighted with exit 23. Guest boot remains asynchronous.
+# Type=simple becomes active before QEMU runs. Start requires QMP running state
+# before publishing the port. A rejected `systemd-run` returns its raw status
+# because submission may be ambiguous. Accepted submissions use 12 for an early
+# QEMU/netexec exit, 13 for QMP unready, 14 for an unknown lifecycle result, 16
+# for activation timeout, 17 for cleanup/publication failure, 18/19 for a
+# missing/failed backend, 20 for missing QEMU, and 21 for lost filter proof.
+# Missing socat or jq exits 23. Guest boot remains asynchronous.
 # Shared SSH preflights propagate exit 103 for corrupt project host identity and
 # exit 104 for a missing or incompatible guest transport contract.
 #
@@ -394,6 +397,11 @@ systemd-run \
         "${qemu_argv[@]}" \
   || submission_status=$?
 if (( submission_status != 0 )); then
+  printf >&2 '%s\n' "$(terminal_write fg=yellow \
+    'warning: systemd-run failed, but unit submission is indeterminate.' reset)"
+  printf >&2 'Runtime controls were preserved. Inspect the fixed unit before retrying:\n'
+  printf >&2 '    systemctl --user status %s\n' "${unit}"
+  printf >&2 'If it exists, stop it and wait for inactive/failed state before another start.\n'
   exit "${submission_status}"
 fi
 unit_owned=1

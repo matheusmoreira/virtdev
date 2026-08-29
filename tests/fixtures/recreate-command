@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+command_name="${0##*/}"
+phase="${command_name#virtdev-}"
+project="${!#}"
+
+if [[ "${RECREATE_FAIL_STEP:-}" == "${phase}" ]]; then
+  exit 1
+fi
+
+case "${phase}" in
+  backup)
+    mkdir -p "${RECREATE_SNAPSHOT_PATH:?}/tree"
+    printf '%s\n' "${RECREATE_SNAPSHOT_PATH}"
+    ;;
+  destroy)
+    rm -rf -- "${VIRTDEV_HOME:?}/projects/${project}"
+    ;;
+  create)
+    mkdir -p "${VIRTDEV_HOME:?}/projects/${project}"
+    ;;
+  restore)
+    if [[ -n "${RECREATE_RESTORE_ARGS_FILE:-}" ]]; then
+      printf '%s\0' "$@" > "${RECREATE_RESTORE_ARGS_FILE}"
+    fi
+    ;;
+  start|stop|wait|ssh) ;;
+  *)
+    printf 'unexpected recreate fixture command: %s\n' "${command_name}" >&2
+    exit 64
+    ;;
+esac

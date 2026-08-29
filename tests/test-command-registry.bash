@@ -66,6 +66,17 @@ for code in 103 104; do
     || { printf 'virtdev-start does not document propagated exit %s\n' \
       "${code}" >&2; exit 1; }
 done
+for code in 12 13 14 16 17 18 19 20 21 23; do
+  grep -Eq "^#.*[^0-9]${code}([^0-9]|$)" <<< "${start_header}" \
+    || { printf 'virtdev-start launch result %s is undocumented\n' \
+      "${code}" >&2; exit 1; }
+  grep -Eq "error ${code}( |$)" "${repository}/bin/virtdev-start" \
+    || { printf 'virtdev-start documents unused launch result %s\n' \
+      "${code}" >&2; exit 1; }
+done
+grep -Fq 'returns its raw status' <<< "${start_header}"
+# shellcheck disable=SC2016  # literal source contract
+grep -Fq 'exit "${submission_status}"' "${repository}/bin/virtdev-start"
 maintain_header="$(sed -n '1,/^set -euo pipefail$/p' \
   "${repository}/bin/virtdev-maintain")"
 grep -Eq '^# +103 ' <<< "${maintain_header}" \

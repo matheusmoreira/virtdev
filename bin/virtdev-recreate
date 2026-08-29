@@ -255,6 +255,10 @@ if (( do_restore )); then
   if (( ! do_backup )) && (( ! has_snapshots )); then
     do_restore=0
     restore_skip_reason="no prior snapshots"
+  elif (( ! do_backup )) && [[ -z "${pinned_snapshot}" ]]; then
+    pinned_snapshot="$(snapshot_latest "${project}")"
+    [[ -n "${pinned_snapshot}" ]] \
+      || error 9 <<<'Could not pin the selected restore snapshot'
   fi
 fi
 
@@ -358,10 +362,9 @@ restore() {
   fi
 }
 
-# Helper to point the user at the most recent snapshot in failure
-# messages. Returns the snapshot's <date>/<time> path component, or
-# the empty string if none exists.
-latest_snapshot() {
+# Return the transaction's exact snapshot, resolving latest only when no
+# backup or explicit selection supplied one.
+selected_snapshot() {
   if [[ -n "${backup_snapshot:-}" ]]; then
     printf '%s' "${backup_snapshot}"
   elif [[ -n "${pinned_snapshot}" ]]; then
@@ -371,24 +374,56 @@ latest_snapshot() {
   fi
 }
 
-# Resume-command builders for the failure hints. They reproduce the zone/unfiltered
-# the chain used, so a copy-pasted resume relaunches into the SAME egress zone instead
-# of whatever the project zone file now resolves to.
-#   start_resume    — the resolved zone (explicit or captured) the fresh machine needs.
-#   recreate_resume — only the EXPLICIT --zone (a captured/default zone re-resolves
-#                     naturally when recreate re-runs).
-start_resume() {
-  local h="virtdev-start"
-  [[ -n "${zone}" ]] && h+=" --zone ${zone}"
-  (( flags[unfiltered] )) && h+=" --unfiltered"
-  printf '%s %s' "${h}" "${project}"
+command_render() {
+  local -r first="${1}"
+  shift
+  printf '%q' "${first}"
+  (( $# )) && printf ' %q' "$@"
 }
-recreate_resume() {            # $1 (optional): extra flags, e.g. --no-backup
-  local h="virtdev-recreate"
-  [[ -n "${1:-}" ]] && h+=" ${1}"
-  [[ -n "${zone_arg}" ]] && h+=" --zone ${zone_arg}"
-  (( flags[unfiltered] )) && h+=" --unfiltered"
-  printf '%s %s' "${h}" "${project}"
+
+start_resume() {
+  local -a command=(virtdev-start)
+  [[ -n "${zone}" ]] && command+=(--zone "${zone}")
+  (( flags[unfiltered] )) && command+=(--unfiltered)
+  command+=("${project}")
+  command_render "${command[@]}"
+}
+
+recreate_resume() {
+  local -a command=(virtdev-recreate)
+  local -r snapshot="${backup_snapshot:-${pinned_snapshot}}"
+  local extra
+  local no_backup_added=0
+
+  if (( do_restore )) && [[ -n "${snapshot}" ]]; then
+    command+=(--no-backup --snapshot "${snapshot}")
+    no_backup_added=1
+  fi
+  for extra in "$@"; do
+    if [[ "${extra}" == --no-backup && ${no_backup_added} == 1 ]]; then
+      continue
+    fi
+    command+=("${extra}")
+  done
+  (( flags[no-restore] )) && command+=(--no-restore)
+  (( flags[no-provision] )) && command+=(--no-provision)
+  if [[ -n "${flags[provision]}" ]]; then
+    command+=(--provision "${flags[provision]}")
+  fi
+  (( flags[verbose] )) && command+=(--verbose)
+  [[ -n "${zone_arg}" ]] && command+=(--zone "${zone_arg}")
+  (( flags[unfiltered] )) && command+=(--unfiltered)
+  command+=("${project}")
+  command_render "${command[@]}"
+}
+
+restore_resume() {
+  local -a command=(virtdev-restore "${project}")
+  local snapshot
+
+  snapshot="$(selected_snapshot)"
+  [[ -z "${snapshot}" ]] || command+=("${snapshot}")
+  command_render "${command[@]}"
 }
 
 # Chain execution. Each step prints its banner first so the user can
@@ -424,7 +459,7 @@ if (( do_stop )); then
   (( ++step ))
   printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] stop" reset)" >&2
   if ! stop; then
-    snap="$(latest_snapshot)"
+    snap="$(selected_snapshot)"
     snap_hint=""
     [[ -n "${snap}" ]] && snap_hint="
 Snapshot from this run: ${backups_project_dir}/${snap}/"
@@ -459,7 +494,7 @@ fi
 (( ++step ))
 printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] destroy" reset)" >&2
 if ! destroy; then
-  snap="$(latest_snapshot)"
+  snap="$(selected_snapshot)"
   snap_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot is preserved at: ${backups_project_dir}/${snap}/"
@@ -473,7 +508,7 @@ fi
 (( ++step ))
 printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] create" reset)" >&2
 if ! create; then
-  snap="$(latest_snapshot)"
+  snap="$(selected_snapshot)"
   snap_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot is preserved at: ${backups_project_dir}/${snap}/"
@@ -484,31 +519,33 @@ recreate resume would dead-end at "Project not found". Rebuild by hand:
     virtdev-create ${project}
     $(start_resume)
     virtdev-wait ${project}
-    virtdev-restore ${project}${snap_hint}
+    $(restore_resume)${snap_hint}
 MESSAGE
 fi
 
 (( ++step ))
 printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] start" reset)" >&2
 if ! start; then
-  snap="$(latest_snapshot)"
+  snap="$(selected_snapshot)"
   snap_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot path: ${backups_project_dir}/${snap}/"
   error "${recreate_result_start_failed}" <<MESSAGE
 start failed (virtdev-start exited non-zero).
-A fresh project exists for ${project} but is not running.
-Resume manually:
+A fresh project exists for ${project}, but the fixed unit's ownership is
+indeterminate. Submission or cleanup may have partially succeeded. Inspect it:
+    systemctl --user status ${unit}
+If it exists, stop it and wait for inactive/failed state. Then resume:
     $(start_resume)
     virtdev-wait ${project}
-    virtdev-restore ${project}${snap_hint}
+    $(restore_resume)${snap_hint}
 MESSAGE
 fi
 
 (( ++step ))
 printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] wait" reset)" >&2
 if ! wait_ssh; then
-  snap="$(latest_snapshot)"
+  snap="$(selected_snapshot)"
   snap_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot path: ${backups_project_dir}/${snap}/"
@@ -518,7 +555,7 @@ The fresh virtual machine is up at the systemd level but SSH did not come up
 within the timeout. Inspect with:
     journalctl --user -u ${unit}
 Once SSH is up, restore manually:
-    virtdev-restore ${project}${snap_hint}
+    $(restore_resume)${snap_hint}
 MESSAGE
 fi
 
@@ -537,7 +574,7 @@ if (( do_restore )); then
   (( ++step ))
   printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] restore" reset)" >&2
   if ! restore; then
-    snap="$(latest_snapshot)"
+    snap="$(selected_snapshot)"
     snap_hint=""
     provision_hint=""
     restore_project_state="$(recreate_restore_project_state \

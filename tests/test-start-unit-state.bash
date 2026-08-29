@@ -158,6 +158,13 @@ if [[ -e "${stop_marker}" ]]; then
   printf 'failed systemd-run stopped a unit whose ownership was unproven\n' >&2
   exit 1
 fi
+if ! grep -Fq 'unit submission is indeterminate' "${output}" \
+    || ! grep -Fq 'systemctl --user status virtdev-probe' "${output}" \
+    || ! grep -Fq 'inactive/failed state before another start' "${output}"; then
+  printf 'failed systemd-run omitted its ownership recovery diagnostic\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
 for control in "${controls[@]}"; do
   if [[ ! -e "${project_directory}/${control}" ]]; then
     printf 'failed systemd-run removed unproven control %s\n' \
@@ -178,4 +185,5 @@ fi
 printf 'ok - start preserves controls unless unit state is terminal\n'
 printf 'ok - start rechecks unit state at the submission boundary\n'
 printf 'ok - failed submission never claims or stops the fixed unit name\n'
+printf 'ok - ambiguous submission reports the required ownership inspection\n'
 printf 'ok - start binds ExecStop to the exact monitor and systemd main PID\n'
