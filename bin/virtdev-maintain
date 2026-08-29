@@ -109,6 +109,7 @@
 #   82  corrupt base generation file — generation_read_base
 #   88  host egress lockdown not active / stale baseline / wrong user —
 #       firewall_require (the pre-copy guard and maintenance_boot)
+#   103 guest SSH host identity missing or corrupt — ssh_host_identity_ensure
 #
 # Configuration via environment variables:
 #

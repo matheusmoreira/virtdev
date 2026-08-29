@@ -29,6 +29,15 @@ if recreate_result_phase 19 >/dev/null || recreate_result_phase 29 >/dev/null; t
   exit 1
 fi
 
+[[ "$(recreate_restore_project_state 0)" == 'up and provisioned' ]]
+[[ "$(recreate_restore_project_state 1)" == 'up but unprovisioned' ]]
+if recreate_restore_project_state 2 >/dev/null; then
+  printf 'invalid provisioning state was accepted\n' >&2
+  exit 1
+fi
+grep -Fq 'Provisioning also failed. Retry it with:' \
+  "${repo_root}/bin/virtdev-recreate"
+
 if grep -En 'exit_code == 26|^[[:space:]]*(22|23|24|25|27|28)\)' \
     "${repo_root}/bin/virtdev-upgrade" >/dev/null; then
   printf 'upgrade contains a literal recreate result\n' >&2
@@ -36,3 +45,4 @@ if grep -En 'exit_code == 26|^[[:space:]]*(22|23|24|25|27|28)\)' \
 fi
 
 printf 'ok - recreate and upgrade share one named result contract\n'
+printf 'ok - restore failure reports the actual provisioning state\n'

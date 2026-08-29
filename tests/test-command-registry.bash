@@ -59,5 +59,17 @@ for script in virtdev-backup virtdev-restore virtdev-wait virtdev-transfer \
   done
 done
 
+start_header="$(sed -n '1,/^set -euo pipefail$/p' \
+  "${repository}/bin/virtdev-start")"
+for code in 103 104; do
+  grep -Eq "^#.*exit ${code} " <<< "${start_header}" \
+    || { printf 'virtdev-start does not document propagated exit %s\n' \
+      "${code}" >&2; exit 1; }
+done
+maintain_header="$(sed -n '1,/^set -euo pipefail$/p' \
+  "${repository}/bin/virtdev-maintain")"
+grep -Eq '^# +103 ' <<< "${maintain_header}" \
+  || { printf 'virtdev-maintain does not document propagated exit 103\n' >&2; exit 1; }
+
 printf 'ok - public commands and private helpers have explicit boundaries\n'
 printf 'ok - shared SSH exit contracts are registered and documented\n'

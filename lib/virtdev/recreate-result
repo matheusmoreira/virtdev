@@ -28,3 +28,11 @@ recreate_result_phase() {
     *) return 1 ;;
   esac
 }
+
+recreate_restore_project_state() {
+  case "${1}" in
+    0) printf '%s' 'up and provisioned' ;;
+    1) printf '%s' 'up but unprovisioned' ;;
+    *) return 1 ;;
+  esac
+}

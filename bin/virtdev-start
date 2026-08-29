@@ -10,6 +10,8 @@
 # successful QMP query-status before publishing the port or reporting success;
 # launch failures exit 13 without a stale running signal. Its socat transport
 # and jq parser are preflighted with exit 23. Guest boot remains asynchronous.
+# Shared SSH preflights propagate exit 103 for corrupt project host identity and
+# exit 104 for a missing or incompatible guest transport contract.
 #
 # Lifecycle:
 #

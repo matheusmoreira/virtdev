@@ -539,14 +539,22 @@ if (( do_restore )); then
   if ! restore; then
     snap="$(latest_snapshot)"
     snap_hint=""
+    provision_hint=""
+    restore_project_state="$(recreate_restore_project_state \
+      "${provision_failed}")"
+    if (( provision_failed )); then
+      provision_hint="
+Provisioning also failed. Retry it with:
+    virtdev-ssh ${project} -- bash -s < ${provision_path}"
+    fi
     [[ -n "${snap}" ]] && snap_hint="
 Latest snapshot: ${backups_project_dir}/${snap}/
 Retry with explicit snapshot:
     virtdev-restore ${project} ${snap}"
     error "${recreate_result_restore_failed}" <<MESSAGE
 restore failed (virtdev-restore exited non-zero).
-The fresh virtual machine is up and provisioned but the snapshot was not
-applied.${snap_hint}
+The fresh virtual machine is ${restore_project_state}, but the snapshot was not
+applied.${provision_hint}${snap_hint}
 MESSAGE
   fi
 fi
