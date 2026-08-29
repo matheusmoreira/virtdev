@@ -25,6 +25,9 @@
 
 set -euo pipefail
 
+# shellcheck disable=SC1091  # installed beside this script in the live ISO
+source /root/virtdev/timezone
+
 fw_cfg_dir=/sys/firmware/qemu_fw_cfg/by_name/opt/virtdev
 target=/mnt
 progress=/dev/virtio-ports/org.virtdev.install
@@ -258,10 +261,14 @@ else
   timezone=UTC
 fi
 
-if [[ ! -f "${target}/usr/share/zoneinfo/${timezone}" ]]; then
-  printf >&2 'virtdev: timezone not found: %s, falling back to UTC\n' "${timezone}"
+zoneinfo_root="${target}/usr/share/zoneinfo"
+if ! timezone_path_is_confined "${zoneinfo_root}" "${timezone}"; then
+  printf >&2 'virtdev: timezone is missing or unsafe: %s, falling back to UTC\n' \
+    "${timezone}"
   timezone=UTC
 fi
+timezone_path_is_confined "${zoneinfo_root}" "${timezone}" \
+  || { printf >&2 'virtdev: UTC timezone data is missing or unsafe\n'; exit 1; }
 
 arch-chroot "${target}" ln -sf "/usr/share/zoneinfo/${timezone}" /etc/localtime
 

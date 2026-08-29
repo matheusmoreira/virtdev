@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Timezone-name and zoneinfo-containment checks for the guest installer.
+
+set -euo pipefail
+
+timezone_name_is_valid() {
+  local -r name="${1:-}"
+  local component
+  local -a components=()
+  local LC_ALL=C
+
+  [[ "${name}" =~ ^[-+A-Za-z0-9_.]+(/[-+A-Za-z0-9_.]+)*$ ]] \
+    || return 1
+  IFS=/ read -r -a components <<< "${name}"
+  for component in "${components[@]}"; do
+    [[ "${component}" != . && "${component}" != .. ]] || return 1
+  done
+}
+
+timezone_path_is_confined() {
+  local -r zoneinfo_root="${1}" name="${2:-}"
+  local root_real candidate_real
+
+  timezone_name_is_valid "${name}" || return 1
+  root_real="$(realpath -e -- "${zoneinfo_root}" 2>/dev/null)" || return 1
+  candidate_real="$(realpath -e -- "${zoneinfo_root}/${name}" 2>/dev/null)" \
+    || return 1
+  [[ "${candidate_real}" == "${root_real}/"* && -f "${candidate_real}" ]]
+}

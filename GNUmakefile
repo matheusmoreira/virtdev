@@ -19,6 +19,7 @@ private_scripts := $(filter-out libexec/virtdev/virtdev-exchange,$(wildcard libe
 libraries := $(wildcard lib/virtdev/*)
 iso_scripts := iso/profiledef.sh \
 	iso/airootfs/root/virtdev/install.sh \
+	iso/airootfs/root/virtdev/timezone \
 	iso/airootfs/root/virtdev/virtdev-ssh-hostkeys
 test_scripts := $(wildcard tests/run tests/test-*.bash tests/fixtures/*)
 manpages := $(patsubst %.scd,%,$(wildcard man/*.scd))
