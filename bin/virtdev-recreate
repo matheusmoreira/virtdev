@@ -365,6 +365,7 @@ restore() {
 # Return the transaction's exact snapshot, resolving latest only when no
 # backup or explicit selection supplied one.
 selected_snapshot() {
+  (( do_restore )) || return 0
   if [[ -n "${backup_snapshot:-}" ]]; then
     printf '%s' "${backup_snapshot}"
   elif [[ -n "${pinned_snapshot}" ]]; then
@@ -418,12 +419,29 @@ recreate_resume() {
 }
 
 restore_resume() {
-  local -a command=(virtdev-restore "${project}")
+  local -a command=(virtdev-restore)
   local snapshot
 
+  (( flags[verbose] )) && command+=(--verbose)
+  command+=("${project}")
   snapshot="$(selected_snapshot)"
   [[ -z "${snapshot}" ]] || command+=("${snapshot}")
   command_render "${command[@]}"
+}
+
+provision_resume() {
+  command_render virtdev-ssh "${project}" -- bash -s
+  printf ' < '
+  printf '%q' "${provision_path}"
+}
+
+post_wait_resume() {
+  if (( do_provision )); then
+    printf '    %s\n' "$(provision_resume)"
+  fi
+  if (( do_restore )); then
+    printf '    %s\n' "$(restore_resume)"
+  fi
 }
 
 # Chain execution. Each step prints its banner first so the user can
@@ -519,7 +537,7 @@ recreate resume would dead-end at "Project not found". Rebuild by hand:
     virtdev-create ${project}
     $(start_resume)
     virtdev-wait ${project}
-    $(restore_resume)${snap_hint}
+$(post_wait_resume)${snap_hint}
 MESSAGE
 fi
 
@@ -538,7 +556,7 @@ indeterminate. Submission or cleanup may have partially succeeded. Inspect it:
 If it exists, stop it and wait for inactive/failed state. Then resume:
     $(start_resume)
     virtdev-wait ${project}
-    $(restore_resume)${snap_hint}
+$(post_wait_resume)${snap_hint}
 MESSAGE
 fi
 
@@ -547,6 +565,11 @@ printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] wait" reset)" >
 if ! wait_ssh; then
   snap="$(selected_snapshot)"
   snap_hint=""
+  wait_followup='Once SSH is up, no later recreate steps remain.'
+  if (( do_provision || do_restore )); then
+    wait_followup="Once SSH is up, finish the selected recreate steps:
+$(post_wait_resume)"
+  fi
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot path: ${backups_project_dir}/${snap}/"
   error "${recreate_result_wait_failed}" <<MESSAGE
@@ -554,8 +577,7 @@ wait failed (virtdev-wait exited non-zero).
 The fresh virtual machine is up at the systemd level but SSH did not come up
 within the timeout. Inspect with:
     journalctl --user -u ${unit}
-Once SSH is up, restore manually:
-    $(restore_resume)${snap_hint}
+${wait_followup}${snap_hint}
 MESSAGE
 fi
 

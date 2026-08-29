@@ -37,8 +37,12 @@ prepare_project() {
 run_recreate() {
   local -r active_state="${1}" failure="${2}" output="${3}"
   shift 3
+  local -a options=(--unfiltered --yes)
   local status=0
 
+  if [[ "${RECREATE_WITH_PROVISION:-0}" != 1 ]]; then
+    options+=(--no-provision)
+  fi
   SYSTEMCTL_ACTIVE_STATE="${active_state}" \
   RECREATE_FAIL_STEP="${failure}" \
   RECREATE_SNAPSHOT_PATH="${virtdev_home}/backups/probe/${backup_snapshot}" \
@@ -48,8 +52,8 @@ run_recreate() {
   VIRTDEV_HOME="${virtdev_home}" \
   VIRTDEV_LOCK_DIRECTORY="${test_tmp}/locks" \
   NO_COLOR=1 \
-    "${test_bin}/virtdev-recreate" --unfiltered --no-provision --yes \
-      "$@" probe > "${output}" 2>&1 || status=$?
+    "${test_bin}/virtdev-recreate" "${options[@]}" "$@" probe \
+      > "${output}" 2>&1 || status=$?
   printf '%d' "${status}"
 }
 
@@ -125,5 +129,60 @@ if [[ "${restore_args[*]}" != "probe ${latest_snapshot}" ]]; then
   exit 1
 fi
 
+prepare_project
+provision_path="${test_tmp}/provision hook.bash"
+printf 'true\n' > "${provision_path}"
+provision_output="${test_tmp}/provision-wait.output"
+status="$(RECREATE_WITH_PROVISION=1 run_recreate inactive wait \
+  "${provision_output}" --no-backup --snapshot "${old_snapshot}" \
+  --provision "${provision_path}" --verbose)"
+if (( status != 25 )); then
+  printf 'recreate did not reach provisioned wait failure (status %d)\n' \
+    "${status}" >&2
+  cat "${provision_output}" >&2
+  exit 1
+fi
+provision_line="$(grep -n -m1 '^    virtdev-ssh ' "${provision_output}" | cut -d: -f1)"
+restore_line="$(grep -n -m1 '^    virtdev-restore ' "${provision_output}" | cut -d: -f1)"
+grep -Fq "virtdev-restore --verbose probe ${old_snapshot}" \
+  "${provision_output}"
+if [[ -z "${provision_line}" || -z "${restore_line}" ]] \
+  || (( provision_line >= restore_line )); then
+  printf 'recovery did not preserve provision-before-restore order\n' >&2
+  cat "${provision_output}" >&2
+  exit 1
+fi
+provision_command="$(sed -n 's/^    \(virtdev-ssh .*\)$/\1/p' \
+  "${provision_output}" | tail -n1)"
+ssh_args_file="${test_tmp}/ssh.args"
+PATH="${test_bin}:${PATH}" \
+RECREATE_SSH_ARGS_FILE="${ssh_args_file}" \
+  bash -c "${provision_command}"
+mapfile -d '' -t ssh_args < "${ssh_args_file}"
+if [[ "${ssh_args[*]}" != 'probe -- bash -s' ]]; then
+  printf 'provision recovery command changed arguments: %q\n' \
+    "${ssh_args[@]}" >&2
+  exit 1
+fi
+
+prepare_project
+no_restore_output="${test_tmp}/no-restore-wait.output"
+status="$(run_recreate inactive wait "${no_restore_output}" \
+  --no-backup --no-restore)"
+if (( status != 25 )); then
+  printf 'recreate did not reach no-restore wait failure (status %d)\n' \
+    "${status}" >&2
+  cat "${no_restore_output}" >&2
+  exit 1
+fi
+grep -Fq 'Once SSH is up, no later recreate steps remain.' \
+  "${no_restore_output}"
+if grep -Fq 'virtdev-restore' "${no_restore_output}"; then
+  printf 'no-restore recovery incorrectly recommended restore\n' >&2
+  cat "${no_restore_output}" >&2
+  exit 1
+fi
+
 printf 'ok - recreate recovery commands retain the transaction snapshot\n'
+printf 'ok - recreate recovery preserves selected post-wait steps\n'
 printf 'ok - failed starts report indeterminate fixed-unit ownership\n'

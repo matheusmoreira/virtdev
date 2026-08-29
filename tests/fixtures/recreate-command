@@ -26,7 +26,12 @@ case "${phase}" in
       printf '%s\0' "$@" > "${RECREATE_RESTORE_ARGS_FILE}"
     fi
     ;;
-  start|stop|wait|ssh) ;;
+  ssh)
+    if [[ -n "${RECREATE_SSH_ARGS_FILE:-}" ]]; then
+      printf '%s\0' "$@" > "${RECREATE_SSH_ARGS_FILE}"
+    fi
+    ;;
+  start|stop|wait) ;;
   *)
     printf 'unexpected recreate fixture command: %s\n' "${command_name}" >&2
     exit 64
