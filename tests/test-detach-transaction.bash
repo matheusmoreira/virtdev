@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # documentation assertions are literal Markdown
 
 set -euo pipefail
 
@@ -63,4 +64,11 @@ if [[ -e "${project_directory}/.detach.transaction" \
   exit 1
 fi
 
+grep -Fq '`.detach.transaction`' "${repository}/DESIGN.md"
+grep -Fq 'A `.bak` file without the journal is untrusted' \
+  "${repository}/DESIGN.md"
+grep -Fq 'identity-bound `.detach.transaction` journal' \
+  "${repository}/CLAUDE.md"
+
 printf 'ok - detach recovery requires a matching disk-identity journal\n'
+printf 'ok - detach documentation denies authority to unexplained backups\n'

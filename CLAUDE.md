@@ -350,8 +350,8 @@ a feature complete:
    move-in, write-marker, remove-old) need signal traps around the
    critical section and auto-recovery on re-entry. `virtdev-detach`
    implements this pattern: `trap '' INT TERM HUP QUIT` before the
-   swap, restore after, and `.bak`-detection recovery at the top of
-   the script. `virtdev-maintain` avoids the problem entirely via
+   swap, restore after, and an identity-bound `.detach.transaction` journal.
+   A `.bak` name alone never authorizes recovery. `virtdev-maintain` uses
    `virtdev-exchange` (`renameat2(2)` with `RENAME_EXCHANGE`), which
    atomically swaps `system/` and `maintenance/` in a single syscall.
    Prefer atomic operations when possible; use signal traps when
