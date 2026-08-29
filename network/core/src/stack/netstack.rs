@@ -22,6 +22,7 @@ const GATEWAY_MAC: EthernetAddress = EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IngestOutcome {
     Queued,
+    DroppedInvalidDestination,
     DroppedInvalidSource,
     Denied(TcpFlowKey),
 }
@@ -52,14 +53,21 @@ impl NetStack {
     }
 
     /// Inspect a decoded frame, request admission for a new SYN, and queue it.
-    /// Invalid sources and denied SYNs do not consume the inbound slot.
+    /// Invalid IPv4 destinations/sources and denied SYNs do not consume the
+    /// inbound slot.
     pub fn ingest<F>(&mut self, frame: &[u8], admit_new_flow: F) -> Result<IngestOutcome, LoadError>
     where
         F: FnOnce(&TcpFlowKey) -> bool,
     {
         let inspection = inspect_ingress(frame, GATEWAY_MAC, LINK_CIDR);
-        if inspection == IngressInspection::InvalidSource {
-            return Ok(IngestOutcome::DroppedInvalidSource);
+        match inspection {
+            IngressInspection::InvalidDestination => {
+                return Ok(IngestOutcome::DroppedInvalidDestination);
+            }
+            IngressInspection::InvalidSource => {
+                return Ok(IngestOutcome::DroppedInvalidSource);
+            }
+            IngressInspection::Other | IngressInspection::TcpSyn(_) => {}
         }
         self.device.load_inbound(frame)?;
 
@@ -365,5 +373,31 @@ mod tests {
             Ok(IngestOutcome::Queued)
         );
         assert!(called);
+    }
+
+    #[test]
+    fn non_gateway_ipv4_never_reaches_flow_admission() {
+        let guest_mac = EthernetAddress([0x02, 0, 0, 0, 0, 2]);
+        let off_link = Ipv4Address::new(192, 0, 2, 1);
+        let server_ip = Ipv4Address::new(93, 184, 216, 34);
+
+        for destination in [
+            EthernetAddress::BROADCAST,
+            EthernetAddress([0x01, 0, 0x5e, 0, 0, 1]),
+        ] {
+            let mut syn = craft_syn(guest_mac, off_link, server_ip, 49152, 80);
+            syn[..6].copy_from_slice(&destination.0);
+            let mut stack = NetStack::new(Instant::ZERO);
+            let mut called = false;
+            assert_eq!(
+                stack.ingest(&syn, |_| {
+                    called = true;
+                    true
+                }),
+                Ok(IngestOutcome::DroppedInvalidDestination)
+            );
+            assert!(!called, "admission called for L2 destination {destination}");
+            assert_eq!(stack.outbound(), None);
+        }
     }
 }

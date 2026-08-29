@@ -21,6 +21,7 @@ pub struct TcpFlowKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum IngressInspection {
     Other,
+    InvalidDestination,
     InvalidSource,
     TcpSyn(TcpFlowKey),
 }
@@ -49,11 +50,11 @@ pub(super) fn inspect_ingress(
     let Ok(eth) = EthernetFrame::new_checked(frame) else {
         return IngressInspection::Other;
     };
-    if eth.dst_addr() != gateway_mac {
-        return IngressInspection::Other;
-    }
     if eth.ethertype() != EthernetProtocol::Ipv4 {
         return IngressInspection::Other;
+    }
+    if eth.dst_addr() != gateway_mac {
+        return IngressInspection::InvalidDestination;
     }
 
     let Ok(ipv4) = Ipv4Packet::new_checked(eth.payload()) else {
@@ -83,7 +84,11 @@ pub(super) fn inspect_ingress(
     ) else {
         return IngressInspection::Other;
     };
-    if seg.control != TcpControl::Syn || seg.ack_number.is_some() || seg.dst_port == 0 {
+    if seg.control != TcpControl::Syn
+        || seg.ack_number.is_some()
+        || seg.src_port == 0
+        || seg.dst_port == 0
+    {
         return IngressInspection::Other;
     }
 
@@ -103,7 +108,9 @@ fn peek_tcp_syn(
 ) -> Option<TcpFlowKey> {
     match inspect_ingress(frame, gateway_mac, link_cidr) {
         IngressInspection::TcpSyn(flow) => Some(flow),
-        IngressInspection::Other | IngressInspection::InvalidSource => None,
+        IngressInspection::Other
+        | IngressInspection::InvalidDestination
+        | IngressInspection::InvalidSource => None,
     }
 }
 
@@ -360,8 +367,15 @@ mod tests {
     }
 
     #[test]
-    fn ignores_port_zero() {
+    fn ignores_zero_ports() {
         let frame = craft(GUEST_IP, SERVER_IP, &tcp(TcpControl::Syn, None, 0));
+        assert_eq!(peek_tcp_syn(&frame, GW_MAC, LINK_CIDR), None);
+
+        let frame = craft(
+            GUEST_IP,
+            SERVER_IP,
+            &tcp_with_ports(TcpControl::Syn, None, 0, 80),
+        );
         assert_eq!(peek_tcp_syn(&frame, GW_MAC, LINK_CIDR), None);
     }
 }
