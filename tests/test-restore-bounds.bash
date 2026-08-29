@@ -5,12 +5,7 @@ set -euo pipefail
 
 repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
-restore_pid=''
 cleanup() {
-  if [[ -n "${restore_pid}" ]] && kill -0 "${restore_pid}" 2>/dev/null; then
-    kill -TERM "${restore_pid}" 2>/dev/null || true
-    wait "${restore_pid}" 2>/dev/null || true
-  fi
   rm -rf -- "${test_tmp}"
 }
 trap cleanup EXIT
@@ -19,8 +14,7 @@ fixture_bin="${test_tmp}/bin"
 mkdir "${fixture_bin}"
 cp "${repository}/tests/fixtures/ssh-restore" "${fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
-cp "${repository}/tests/fixtures/cp-restore-stage" "${fixture_bin}/cp"
-chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl" "${fixture_bin}/cp"
+chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl"
 
 virtdev_home="${test_tmp}/store"
 project_directory="${virtdev_home}/projects/probe"
@@ -217,49 +211,61 @@ if (( status != 20 )) || [[ ! -s "${timeout_pid_file}" ]] \
   exit 1
 fi
 
-mutable="${snapshot}/tree/mutable"
-mutation_guest="${test_tmp}/mutation-guest"
-stage_ready="${test_tmp}/stage-ready"
-stage_continue="${test_tmp}/stage-continue"
-mkdir "${mutable}"
-printf 'seed\n' > "${mutable}/seed"
-printf 'mutable/\n' >> "${snapshot}/manifest"
-mutation_bytes=$(( logical_bytes + $(stat -c '%s' "${mutable}/seed") ))
-
-status=0
-run_restore "${mutation_guest}" "${mutation_bytes}" 100 10 \
-  env RESTORE_STAGE_READY_FILE="${stage_ready}" \
-    RESTORE_STAGE_CONTINUE_FILE="${stage_continue}" \
-  >"${test_tmp}/mutation.output" 2>&1 &
-restore_pid=$!
-stage_seen=0
-for (( attempt = 0; attempt < 500; attempt++ )); do
-  if [[ -e "${stage_ready}" ]]; then
-    stage_seen=1
-    break
-  fi
-  kill -0 "${restore_pid}" 2>/dev/null || break
-  sleep 0.01
-done
-if (( ! stage_seen )); then
-  printf 'restore did not reach the stable-stage boundary\n' >&2
-  cat "${test_tmp}/mutation.output" >&2
+copy_helper="${repository}/libexec/virtdev/virtdev-copy-tree"
+copy_source="${test_tmp}/copy-source"
+copy_parent="${test_tmp}/copy-parent"
+mkdir -p "${copy_source}/mutable" "${copy_parent}"
+printf 'seed\n' > "${copy_source}/mutable/seed"
+"${copy_helper}" "${copy_source}" "${copy_parent}" 5 2 0 0 \
+  > "${test_tmp}/copy-summary"
+truncate -s 6 "${copy_source}/mutable/seed"
+printf 'late\n' > "${copy_source}/mutable/late"
+if [[ "$(< "${copy_parent}/tree/mutable/seed")" != seed \
+      || -e "${copy_parent}/tree/mutable/late" ]]; then
+  printf 'bounded copy did not produce an independent stable tree\n' >&2
   exit 1
 fi
-truncate -s $(( mutation_bytes + 1 )) "${mutable}/seed"
-printf 'late\n' > "${mutable}/late"
-: > "${stage_continue}"
-wait "${restore_pid}" || status=$?
-restore_pid=''
-if (( status != 0 )) \
-    || [[ "$(< "${mutation_guest}/mutable/seed")" != seed \
-          || -e "${mutation_guest}/mutable/late" ]]; then
-  printf 'restore transfer was not bound to its validated stage (status %d)\n' \
+
+byte_source="${test_tmp}/byte-source"
+byte_parent="${test_tmp}/byte-parent"
+mkdir "${byte_source}" "${byte_parent}"
+truncate -s 8192 "${byte_source}/large"
+status=0
+"${copy_helper}" "${byte_source}" "${byte_parent}" 4096 1 0 0 \
+  > "${test_tmp}/byte-copy.output" 2>&1 || status=$?
+if (( status != 44 )); then
+  printf 'bounded copy exceeded its logical-byte ceiling (status %d)\n' \
     "${status}" >&2
-  cat "${test_tmp}/mutation.output" >&2
+  exit 1
+fi
+
+entry_source="${test_tmp}/entry-source"
+entry_parent="${test_tmp}/entry-parent"
+mkdir "${entry_source}" "${entry_parent}"
+: > "${entry_source}/one"
+: > "${entry_source}/two"
+status=0
+"${copy_helper}" "${entry_source}" "${entry_parent}" 1 1 0 0 \
+  > "${test_tmp}/entry-copy.output" 2>&1 || status=$?
+if (( status != 42 )) \
+    || (( $(find "${entry_parent}/tree" -mindepth 1 | wc -l) > 1 )); then
+  printf 'bounded copy exceeded its entry ceiling (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
+capacity_parent="${test_tmp}/capacity-parent"
+mkdir "${capacity_parent}"
+status=0
+"${copy_helper}" "${copy_source}" "${capacity_parent}" 6 3 \
+  18446744073709551615 0 \
+  > "${test_tmp}/capacity-copy.output" 2>&1 || status=$?
+if (( status != 45 )) || [[ -e "${capacity_parent}/tree" ]]; then
+  printf 'bounded copy crossed its capacity reserve (status %d)\n' \
+    "${status}" >&2
   exit 1
 fi
 
 printf 'ok - restore uses a compatible manifest file and preserves inode fidelity\n'
 printf 'ok - restore bounds regular logical bytes, entry count, and total time\n'
-printf 'ok - restore transfers the exact stable tree it validates\n'
+printf 'ok - restore stages and validates one independently bounded tree\n'

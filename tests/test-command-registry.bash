@@ -18,7 +18,7 @@ PATH="${test_tmp}:${PATH}" "${repository}/bin/virtdev" --help > "${test_tmp}/hel
 for command in start stop backup; do
   [[ "$(grep -Ec "^  ${command}$" "${test_tmp}/help")" == 1 ]]
 done
-for helper in netexec exchange stop-acpi; do
+for helper in copy-tree netexec exchange stop-acpi; do
   if grep -Eq "^  ${helper}$" "${test_tmp}/help"; then
     printf 'private helper was advertised: %s\n' "${helper}" >&2
     exit 1
@@ -31,7 +31,7 @@ PATH="${test_tmp}:${PATH}" "${repository}/bin/virtdev" \
   probe-extension one two
 [[ "$(< "${apply_patch_marker}")" == 'one two' ]]
 
-for helper in netexec exchange stop-acpi; do
+for helper in copy-tree netexec exchange stop-acpi; do
   status=0
   PATH="${test_tmp}:${PATH}" "${repository}/bin/virtdev" "${helper}" \
     >"${test_tmp}/output" 2>&1 || status=$?

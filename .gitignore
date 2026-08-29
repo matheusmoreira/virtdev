@@ -4,4 +4,5 @@ pkg/
 *.pkg.tar*
 virtdev-git/
 libexec/virtdev/virtdev-exchange
+libexec/virtdev/virtdev-copy-tree
 man/*.[1-8]

@@ -46,9 +46,9 @@ From the AUR (`virtdev-git`):
 yay -S virtdev-git
 ```
 
-From source — scripts auto-detect the layout, and `make` builds the
-small private C helper `libexec/virtdev/virtdev-exchange` that `virtdev-maintain` requires
-(needs a C toolchain, e.g. `base-devel`):
+From source — scripts auto-detect the layout, and `make` builds the private C
+helpers used for bounded restore staging and atomic maintenance exchange (needs
+a C toolchain, e.g. `base-devel`):
 
 ```
 git clone https://github.com/matheusmoreira/virtdev.git

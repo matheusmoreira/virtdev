@@ -15,7 +15,9 @@ SCDOC ?= scdoc
 SCDOC := $(SCDOC)
 
 scripts := $(wildcard bin/virtdev bin/virtdev-*)
-private_scripts := $(filter-out libexec/virtdev/virtdev-exchange,$(wildcard libexec/virtdev/*))
+compiled_helpers := libexec/virtdev/virtdev-copy-tree \
+	libexec/virtdev/virtdev-exchange
+private_scripts := $(filter-out $(compiled_helpers),$(wildcard libexec/virtdev/*))
 libraries := $(wildcard lib/virtdev/*)
 iso_scripts := iso/profiledef.sh \
 	iso/airootfs/root/virtdev/install.sh \
@@ -24,7 +26,10 @@ iso_scripts := iso/profiledef.sh \
 test_scripts := $(wildcard tests/run tests/test-*.bash tests/fixtures/*)
 manpages := $(patsubst %.scd,%,$(wildcard man/*.scd))
 
-all: libexec/virtdev/virtdev-exchange $(manpages)
+all: $(compiled_helpers) $(manpages)
+
+libexec/virtdev/virtdev-copy-tree: source/virtdev/copy-tree.c
+	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 libexec/virtdev/virtdev-exchange: source/virtdev/exchange.c
 	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
@@ -33,9 +38,9 @@ man/%: man/%.scd
 	$(SCDOC) < $< > $@
 
 clean:
-	rm -f bin/virtdev-exchange libexec/virtdev/virtdev-exchange $(manpages)
+	rm -f $(compiled_helpers) $(manpages)
 
-check: libexec/virtdev/virtdev-exchange
+check: $(compiled_helpers)
 	bash -n $(scripts) $(private_scripts) $(libraries) $(iso_scripts) $(test_scripts)
 	shellcheck $(scripts) $(private_scripts) $(libraries) $(iso_scripts) $(test_scripts)
 	bash tests/run
