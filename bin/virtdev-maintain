@@ -96,6 +96,7 @@
 #   31  Boot 1 QEMU exited zero without positive guest-shutdown evidence
 #   32  socat or jq is unavailable, so QMP evidence cannot be validated
 #   33  sealed-base SSH transport marker is missing or incompatible
+#   34  reseal tree contains a mount or its mount state is indeterminate
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -126,7 +127,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments ssh project confirm terminal port qemu firewall runtime qmp lifecycle machine integer
+import error lock arguments ssh project confirm terminal port qemu firewall runtime qmp lifecycle machine integer mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -218,6 +219,29 @@ maintenance_unit_owned=0
 maintenance_submission_attempted=0
 maintenance_terminal_proven=0
 maintenance_shutdown_proven=0
+
+maintenance_require_unmounted_tree() {
+  local -r path="${1}" description="${2}"
+  local mount_path="" mount_status=0
+
+  mount_find_below "$(realpath -m -- "${path}")" mount_path \
+    || mount_status=$?
+  case "${mount_status}" in
+    0)
+      error 34 <<MESSAGE
+Mounted filesystem detected in ${description}: '${mount_path}'
+Resealing and recursive cleanup were refused. Unmount it explicitly and retry.
+MESSAGE
+      ;;
+    1) ;;
+    *)
+      error 34 <<MESSAGE
+Could not inspect mount state for ${description}: '${path}'
+Resealing and recursive cleanup were refused.
+MESSAGE
+      ;;
+  esac
+}
 
 maintenance_boot() {
   # Per-boot proof: Boot 2 must not inherit Boot 1.
@@ -515,6 +539,8 @@ No maintenance staging or VM was started. Reinstall the base and recreate or
 restore projects rather than publishing a wrapped generation.
 MESSAGE
 fi
+
+maintenance_require_unmounted_tree "${system_directory}" 'the sealed base'
 
 # Check unit ownership before mentioning removal of old staging. A live or
 # indeterminate QEMU may still hold those images; advising rm first would turn
@@ -1121,6 +1147,9 @@ next_generation=$(( old_generation + 1 ))
 
 # Seal staging before the atomic exchange; afterward maintenance/ is the old
 # base and is removed only if the exchange and its durability sync succeed.
+maintenance_require_unmounted_tree "${system_directory}" 'the sealed base'
+maintenance_require_unmounted_tree "${maintenance_directory}" \
+  'the maintenance staging tree'
 printf >&2 'Incrementing generation counter (%d → %d)...\n' \
        "${old_generation}" "${next_generation}"
 printf '%d\n' "${next_generation}" > "${maintenance_directory}/generation.tmp"
@@ -1158,10 +1187,26 @@ MESSAGE
     ;;
 esac
 
-if ! rm -rf "${maintenance_directory}"; then
-  printf >&2 'warning: previous-base cleanup remains at %s; remove it manually before the next virtdev-maintain run\n' \
-             "${maintenance_directory}"
-fi
+previous_mount=""
+previous_mount_status=0
+mount_find_below "$(realpath -m -- "${maintenance_directory}")" previous_mount \
+  || previous_mount_status=$?
+case "${previous_mount_status}" in
+  0)
+    printf >&2 'warning: previous-base cleanup was preserved because it contains a mount: %s\n' \
+      "${previous_mount}"
+    ;;
+  1)
+    if ! rm -rf --one-file-system -- "${maintenance_directory}"; then
+      printf >&2 'warning: previous-base cleanup remains at %s; remove it manually before the next virtdev-maintain run\n' \
+                 "${maintenance_directory}"
+    fi
+    ;;
+  *)
+    printf >&2 'warning: previous-base cleanup was preserved because mount state could not be inspected: %s\n' \
+      "${maintenance_directory}"
+    ;;
+esac
 if ! sync -f "${VIRTDEV_HOME}"; then
   printf >&2 'warning: could not durably sync cleanup of %s; the new base itself was already committed\n' \
              "${maintenance_directory}"

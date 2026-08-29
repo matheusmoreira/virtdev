@@ -78,6 +78,38 @@ fi
 grep -Fq "${bind_target}" "${output}"
 [[ -f "${bind_source}/sentinel" && -f "${store}/projects/probe/disk" ]]
 umount "${bind_target}"
+
+system_directory="${store}/system"
+mount_source="${test_home}/base-mount-source"
+mount_target="${system_directory}/mounted"
+mkdir -p "${system_directory}" "${mount_source}" "${mount_target}"
+for image in system.qcow2 home.qcow2 nvram; do
+  : > "${system_directory}/${image}"
+done
+printf '0\n' > "${system_directory}/generation"
+printf 'ssh-host-identity=1\n' > "${system_directory}/guest-contract"
+printf 'outside base\n' > "${mount_source}/sentinel"
+mount --bind "${mount_source}" "${mount_target}"
+
+status=0
+HOME="${test_home}" \
+VIRTDEV_HOME="${store}" \
+VIRTDEV_CACHE="${cache}" \
+VIRTDEV_LOCK_DIRECTORY="${locks}" \
+NO_COLOR=1 \
+  "${DESTRUCTIVE_TEST_REPOSITORY}/bin/virtdev-maintain" \
+    --unfiltered --no-provision --no-inventory \
+    >"${output}" 2>&1 || status=$?
+if (( status != 34 )); then
+  printf 'maintain accepted a mount in the sealed base (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+grep -Fq "${mount_target}" "${output}"
+[[ -f "${mount_source}/sentinel" && ! -e "${store}/maintenance" ]]
+umount "${mount_target}"
 NAMESPACE
 
 printf 'ok - destroy and nuke refuse nested filesystems and bind mounts\n'
+printf 'ok - maintenance refuses reseal trees containing mounts\n'
