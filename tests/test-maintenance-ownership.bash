@@ -109,7 +109,8 @@ prepare_launch_home() {
 
 run_launch() {
   local -r launch_home="${1}" ssh_mode="${2}" cache="${3}" \
-    malformed_control="${4:-0}" wait_timeout="${5:-1}" argv_file="${6:-}"
+    malformed_control="${4:-0}" wait_timeout="${5:-1}" argv_file="${6:-}" \
+    systemd_run_status="${7:-0}"
   PATH="${launch_bin}:${PATH}" \
     HOME="${test_tmp}" \
     XDG_CONFIG_HOME="${test_tmp}/config" \
@@ -124,6 +125,7 @@ run_launch() {
     SYSTEMCTL_UNREACHABLE_FILE="${launch_home}/manager.lost" \
     SYSTEMD_RUN_MARKER="${launch_home}/systemd-run.called" \
     SYSTEMD_RUN_ARGV_FILE="${argv_file}" \
+    SYSTEMD_RUN_STATUS="${systemd_run_status}" \
     MAINTENANCE_NO_SHUTDOWN_MARKER="${launch_home}/no-shutdown.called" \
     MAINTENANCE_PANIC_PAUSE_MARKER="${launch_home}/panic-pause.called" \
     MAINTENANCE_RUNTIME_DIRECTORY="${launch_home}/projects/maintenance" \
@@ -154,6 +156,30 @@ if ! grep -Fq 'no VM was submitted' "${output}"; then
   cat "${output}" >&2
   exit 1
 fi
+
+collision_home="${test_tmp}/collision-home"
+prepare_launch_home "${collision_home}"
+status=0
+run_launch "${collision_home}" failure \
+  "${collision_home}/cache" 0 1 "" 42 || status=$?
+if (( status != 20 )); then
+  printf 'expected failed-submission exit 20, got %d\n' "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+if [[ ! -e "${collision_home}/systemd-run.called" \
+      || -e "${collision_home}/stop.called" ]]; then
+  printf 'failed maintenance submission claimed or stopped an unproven unit\n' >&2
+  exit 1
+fi
+for control in monitor.sock console.sock network.sock passt.sock qmp.sock; do
+  if [[ ! -e "${collision_home}/projects/maintenance/${control}" ]]; then
+    printf 'failed maintenance submission removed unproven control %s\n' \
+      "${control}" >&2
+    exit 1
+  fi
+done
+grep -Fq 'ownership of virtdev-maintenance could not be proven' "${output}"
 
 terminal_home="${test_tmp}/terminal-home"
 prepare_launch_home "${terminal_home}"
@@ -379,6 +405,7 @@ fi
 
 printf 'ok - maintenance preflight preserves staging owned by live or unknown units\n'
 printf 'ok - maintenance prerequisites cannot fall through to submission\n'
+printf 'ok - failed submission preserves an unproven fixed-name unit\n'
 printf 'ok - submitted maintenance units clean only after terminal proof\n'
 printf 'ok - maintenance comma-encodes its configurable QEMU cache path\n'
 printf 'ok - terminal cleanup reports malformed runtime controls\n'

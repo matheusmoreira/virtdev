@@ -131,9 +131,11 @@ for control in "${controls[@]}"; do
 done
 
 argv_file="${test_tmp}/systemd-run.argv"
+stop_marker="${test_tmp}/stop.called"
 rm -f -- "${marker}"
 status=0
 SYSTEMCTL_ACTIVE_STATE=inactive \
+SYSTEMCTL_STOP_FILE="${stop_marker}" \
 SYSTEMD_RUN_MARKER="${marker}" \
 SYSTEMD_RUN_ARGV_FILE="${argv_file}" \
 SYSTEMD_RUN_STATUS=42 \
@@ -152,6 +154,17 @@ if (( status != 42 )) || [[ ! -e "${marker}" || ! -s "${argv_file}" ]]; then
   cat "${output}" >&2
   exit 1
 fi
+if [[ -e "${stop_marker}" ]]; then
+  printf 'failed systemd-run stopped a unit whose ownership was unproven\n' >&2
+  exit 1
+fi
+for control in "${controls[@]}"; do
+  if [[ ! -e "${project_directory}/${control}" ]]; then
+    printf 'failed systemd-run removed unproven control %s\n' \
+      "${control}" >&2
+    exit 1
+  fi
+done
 mapfile -d '' -t systemd_run_argv < "${argv_file}"
 expected_monitor="--setenv=VIRTDEV_STOP_MONITOR_SOCK=${project_directory}/monitor.sock"
 expected_stop="--property=ExecStop=${repository}/libexec/virtdev/virtdev-stop-acpi probe \${MAINPID}"
@@ -164,4 +177,5 @@ fi
 
 printf 'ok - start preserves controls unless unit state is terminal\n'
 printf 'ok - start rechecks unit state at the submission boundary\n'
+printf 'ok - failed submission never claims or stops the fixed unit name\n'
 printf 'ok - start binds ExecStop to the exact monitor and systemd main PID\n'

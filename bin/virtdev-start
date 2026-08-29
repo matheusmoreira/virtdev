@@ -286,14 +286,15 @@ else
   done
 fi
 
-# Failed starts stop their submitted unit before removing controls. If manager
-# state is unknown, recovery paths stay intact.
+# Failed starts stop only a unit whose submission succeeded. A nonzero
+# systemd-run result does not prove ownership of the fixed unit name, so that
+# path preserves controls for inspection.
 vm_started=0
-unit_submission_attempted=0
+unit_owned=0
 unsubmitted_cleanup_safe=1
 cleanup_failed_start() {
   (( vm_started )) && return 0
-  if (( unit_submission_attempted )); then
+  if (( unit_owned )); then
     local cleanup_status=0
     lifecycle_stop_and_clean \
       "${unit}" "${project_directory}" "${VIRTDEV_STOP_TIMEOUT}" \
@@ -375,7 +376,7 @@ fi
 # submitting a new owner for the same runtime paths.
 unsubmitted_cleanup_safe=0
 require_terminal_unit
-unit_submission_attempted=1
+submission_status=0
 systemd-run \
     --user \
     --unit="${unit}" \
@@ -388,7 +389,12 @@ systemd-run \
     "${virtdev_libexec_directory}/virtdev-netexec" \
         "${netexec_opts[@]}" \
         -- \
-        "${qemu_argv[@]}"
+        "${qemu_argv[@]}" \
+  || submission_status=$?
+if (( submission_status != 0 )); then
+  exit "${submission_status}"
+fi
+unit_owned=1
 
 # Activation and QMP readiness share one lifecycle boundary. The CLI maps its
 # structured result to stable public exit codes.

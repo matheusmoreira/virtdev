@@ -215,12 +215,14 @@ fi
 # ── Functions ───────────────────────────────────────────────────────
 
 maintenance_unit_owned=0
+maintenance_submission_attempted=0
 maintenance_terminal_proven=0
 maintenance_shutdown_proven=0
 
 maintenance_boot() {
   # Per-boot proof: Boot 2 must not inherit Boot 1.
   maintenance_shutdown_proven=0
+  maintenance_submission_attempted=0
 
   # Gate the launch on the host egress lockdown. This function backs BOTH
   # Boot 1 and Boot 2, so the guard fires before each boot — if the
@@ -293,7 +295,8 @@ maintenance_boot() {
   fi
 
   maintenance_terminal_proven=0
-  maintenance_unit_owned=1
+  maintenance_submission_attempted=1
+  local submission_status=0
   systemd-run \
       --user \
       --unit="${unit}" \
@@ -304,7 +307,10 @@ maintenance_boot() {
           --runtime-dir "${maintenance_project}" \
           --forward "${maintenance_port}" \
           -- \
-          "${qemu_argv[@]}"
+          "${qemu_argv[@]}" \
+    || submission_status=$?
+  (( submission_status == 0 )) || return "${submission_status}"
+  maintenance_unit_owned=1
 }
 
 maintenance_stop_and_confirm() {
@@ -697,6 +703,15 @@ terminal. Inspect with: journalctl --user -u ${unit}
 Maintenance images preserved: '${maintenance_directory}'
 MESSAGE
   fi
+  if (( maintenance_submission_attempted )); then
+    error 20 <<MESSAGE
+Failed to submit the maintenance virtual machine.
+systemd-run returned an error, so ownership of ${unit} could not be proven.
+No unit was stopped and runtime controls plus staging were preserved.
+Inspect with: systemctl --user status ${unit}
+Maintenance images preserved: '${maintenance_directory}'
+MESSAGE
+  fi
   error 20 <<MESSAGE
 Failed a maintenance launch prerequisite before systemd submission.
 The specific prerequisite diagnostic is printed above; no VM was submitted.
@@ -1041,6 +1056,15 @@ MESSAGE
 Inventory boot submission failed. The unit was proven terminal, but it may have
 opened the maintenance images before failing. Resealing is conservatively
 refused; staging is preserved: '${maintenance_directory}'
+MESSAGE
+    fi
+    if (( maintenance_submission_attempted )); then
+      [[ -n "${inventory_before}" ]] && rm -f "${inventory_before}"
+      [[ -n "${inventory_after}" ]] && rm -f "${inventory_after}"
+      error 24 <<MESSAGE
+Inventory boot submission failed, so ownership of ${unit} could not be proven.
+No unit was stopped. Runtime controls and staging were preserved; inspect the
+unit before retrying: systemctl --user status ${unit}
 MESSAGE
     fi
     printf >&2 '%s\n' "$(terminal_write fg=yellow 'warning: second boot prerequisites failed before submission; skipping inventory' reset)"
