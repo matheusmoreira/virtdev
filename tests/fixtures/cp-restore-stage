@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+status=0
+/usr/bin/cp "$@" || status=$?
+if (( status == 0 )) \
+    && [[ -n "${RESTORE_STAGE_READY_FILE:-}" \
+          && -n "${RESTORE_STAGE_CONTINUE_FILE:-}" ]]; then
+  : > "${RESTORE_STAGE_READY_FILE}"
+  while [[ ! -e "${RESTORE_STAGE_CONTINUE_FILE}" ]]; do
+    sleep 0.01
+  done
+fi
+exit "${status}"

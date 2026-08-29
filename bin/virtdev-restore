@@ -239,7 +239,17 @@ restore_tree_summary_file="$(mktemp)"
 restore_files_from=''
 rsync_log=''
 rsync_wrapper=''
-trap 'rm -f -- "${restore_tree_summary_file}" "${restore_files_from}" "${rsync_log}" "${rsync_wrapper}"' EXIT
+restore_stage=''
+cleanup_restore() {
+  local -r status=$?
+  rm -f -- "${restore_tree_summary_file}" "${restore_files_from}" \
+    "${rsync_log}" "${rsync_wrapper}"
+  if [[ -n "${restore_stage}" ]]; then
+    rm -rf --one-file-system -- "${restore_stage}"
+  fi
+  return "${status}"
+}
+trap cleanup_restore EXIT
 
 restore_deadline=$(( BASH_MONOSECONDS + VIRTDEV_RESTORE_TIMEOUT ))
 restore_files_from="$(mktemp)"
@@ -248,9 +258,10 @@ manifest_write_rsync_files_from "${snapshot}/manifest" "${restore_files_from}"
   || error 10 <<<"Snapshot manifest has no restorable paths: ${snapshot}"
 
 restore_require_confined_tree() {
+  local -r tree="${1}"
   local mount_path="" mount_status=0
 
-  mount_find_below "$(realpath -m -- "${snapshot}/tree")" mount_path \
+  mount_find_below "$(realpath -m -- "${tree}")" mount_path \
     || mount_status=$?
   case "${mount_status}" in
     0)
@@ -262,17 +273,35 @@ MESSAGE
     1) ;;
     *) error 19 <<<'Could not inspect snapshot mount state' ;;
   esac
-  manifest_sources_confined "${snapshot}/tree" "${restore_files_from}" \
+  manifest_sources_confined "${tree}" "${restore_files_from}" \
     || error 19 <<<'Snapshot manifest crosses a symlinked source path'
 }
 
-restore_require_confined_tree
+restore_require_confined_tree "${snapshot}/tree"
+remaining=$(( restore_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) || error 20 <<<'Restore deadline expired before snapshot staging'
+restore_stage="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" .restore.XXXXXXXX)"
+stage_status=0
+(
+  cd -P -- "${snapshot}/tree"
+  exec timeout --signal=TERM \
+    --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
+    cp -a --reflink=auto --sparse=always --one-file-system -- \
+      . "${restore_stage}/tree"
+) || stage_status=$?
+case "${stage_status}" in
+  0) ;;
+  124|137) error 20 <<<'Restore snapshot staging exceeded its wall-clock deadline' ;;
+  *) error 19 <<<'Could not create a stable restore snapshot' ;;
+esac
+restore_source_tree="${restore_stage}/tree"
+restore_require_confined_tree "${restore_source_tree}"
 remaining=$(( restore_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Restore deadline expired before entry preflight'
 set +e
 LC_ALL=C timeout --signal=TERM \
     --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
-    find "${snapshot}/tree" -xdev -printf '%D %i %y %s\n' 2>/dev/null \
+    find "${restore_source_tree}" -xdev -printf '%D %i %y %s\n' 2>/dev/null \
   | awk -v maximum_entries="${VIRTDEV_RESTORE_MAX_ENTRIES}" \
       -v maximum_bytes="${VIRTDEV_RESTORE_MAX_BYTES}" '
       NR == 1 {
@@ -358,14 +387,14 @@ rsync_opts=(-a -r --one-file-system --sparse --hard-links --no-D \
 # Keep the parsed rsync --stats labels stable.
 remaining=$(( restore_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Restore deadline expired before transfer'
-restore_require_confined_tree
+restore_require_confined_tree "${restore_source_tree}"
 set +e
 LC_ALL=C timeout --signal=TERM \
     --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
     rsync "${rsync_opts[@]}" \
     --files-from="${restore_files_from}" \
     -e "${ssh_command}" \
-    "${snapshot}/tree/" \
+    "${restore_source_tree}/" \
     "dev@127.0.0.1:/home/dev/" \
     | tee "${rsync_log}"
 transfer_status=("${PIPESTATUS[@]}")
