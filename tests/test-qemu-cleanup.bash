@@ -23,7 +23,7 @@ terminal_write() {
   done
 }
 vm_started=0
-unit_submission_attempted=1
+unit_owned=1
 unit=virtdev-probe
 project_directory="${test_tmp}/start-runtime"
 VIRTDEV_STOP_TIMEOUT=1
