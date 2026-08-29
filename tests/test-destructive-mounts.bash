@@ -109,7 +109,59 @@ fi
 grep -Fq "${mount_target}" "${output}"
 [[ -f "${mount_source}/sentinel" && ! -e "${store}/maintenance" ]]
 umount "${mount_target}"
+
+preserved_source="${test_home}/preserved-base"
+preserved_tree="${store}/maintenance"
+preserved_mount="${preserved_tree}/mounted"
+mkdir -p "${preserved_source}" "${preserved_mount}"
+printf 'preserved base data\n' > "${preserved_source}/sentinel"
+mount --bind "${preserved_source}" "${preserved_mount}"
+
+status=0
+HOME="${test_home}" \
+VIRTDEV_HOME="${store}" \
+VIRTDEV_CACHE="${cache}" \
+VIRTDEV_LOCK_DIRECTORY="${locks}" \
+NO_COLOR=1 \
+  "${DESTRUCTIVE_TEST_REPOSITORY}/bin/virtdev-maintain" \
+    --unfiltered --no-provision --no-inventory \
+    >"${output}" 2>&1 || status=$?
+if (( status != 5 )); then
+  printf 'maintain did not preserve a mount-bearing previous base (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+grep -Fq "Mounted filesystem detected below staging: ${preserved_mount}" \
+  "${output}"
+grep -Fq "umount -- ${preserved_mount}" "${output}"
+if grep -Fq 'rm -rf' "${output}"; then
+  printf 'maintain advised recursive removal of a mount-bearing tree\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
+[[ -f "${preserved_source}/sentinel" ]]
+umount "${preserved_mount}"
+
+status=0
+HOME="${test_home}" \
+VIRTDEV_HOME="${store}" \
+VIRTDEV_CACHE="${cache}" \
+VIRTDEV_LOCK_DIRECTORY="${locks}" \
+NO_COLOR=1 \
+  "${DESTRUCTIVE_TEST_REPOSITORY}/bin/virtdev-maintain" \
+    --unfiltered --no-provision --no-inventory \
+    >"${output}" 2>&1 || status=$?
+if (( status != 5 )) \
+    || ! grep -Fq \
+      "rm -rf --one-file-system -- ${preserved_tree}" "${output}"; then
+  printf 'mount-free maintenance recovery omitted its filesystem boundary\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
 NAMESPACE
 
 printf 'ok - destroy and nuke refuse nested filesystems and bind mounts\n'
 printf 'ok - maintenance refuses reseal trees containing mounts\n'
+printf 'ok - maintenance recovery never removes through preserved mounts\n'
+printf 'ok - mount-free maintenance removal stays on one filesystem\n'

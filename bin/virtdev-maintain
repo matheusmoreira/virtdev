@@ -244,6 +244,31 @@ MESSAGE
   esac
 }
 
+maintenance_cleanup_guidance() {
+  local -r path="${1}"
+  local mount_path="" mount_status=0 quoted_path quoted_mount
+
+  mount_find_below "$(realpath -m -- "${path}")" mount_path \
+    || mount_status=$?
+  printf -v quoted_path '%q' "${path}"
+  case "${mount_status}" in
+    0)
+      printf -v quoted_mount '%q' "${mount_path}"
+      printf 'Mounted filesystem detected below staging: %s\n' "${mount_path}"
+      printf 'Do not recursively remove staging. Unmount it, then rerun virtdev-maintain:\n\n'
+      printf '    umount -- %s\n' "${quoted_mount}"
+      ;;
+    1)
+      printf 'After inspection, remove staging without crossing filesystems:\n\n'
+      printf '    rm -rf --one-file-system -- %s\n' "${quoted_path}"
+      ;;
+    *)
+      printf 'Mount state could not be inspected. Do not recursively remove staging.\n'
+      printf 'Restore mount inspection and rerun virtdev-maintain.\n'
+      ;;
+  esac
+}
+
 maintenance_boot() {
   # Per-boot proof: Boot 2 must not inherit Boot 1.
   maintenance_shutdown_proven=0
@@ -576,9 +601,7 @@ if [[ -d "${maintenance_directory}" ]]; then
   error 5 <<MESSAGE
 Maintenance staging directory already exists: '${maintenance_directory}'
 A previous virtdev-maintain session may have failed or been interrupted.
-Inspect the directory and remove it manually to proceed:
-
-    rm -rf '${maintenance_directory}'
+$(maintenance_cleanup_guidance "${maintenance_directory}")
 
 The original sealed base system should be intact: '${system_directory}'
 MESSAGE
@@ -623,7 +646,20 @@ mkdir -p "${maintenance_directory}"
 
 staging_ready=0
 cleanup_partial_staging() {
-  (( staging_ready )) || rm -rf "${maintenance_directory}"
+  (( staging_ready )) && return 0
+  local mount_path="" mount_status=0
+  mount_find_below "$(realpath -m -- "${maintenance_directory}")" mount_path \
+    || mount_status=$?
+  if (( mount_status == 1 )); then
+    if ! rm -rf --one-file-system -- "${maintenance_directory}"; then
+      printf >&2 'warning: partial maintenance staging could not be removed: %s\n' \
+        "${maintenance_directory}"
+    fi
+  else
+    printf >&2 'warning: partial maintenance staging was preserved because mount state is unsafe: %s\n' \
+      "${mount_path:-${maintenance_directory}}"
+  fi
+  return 0
 }
 trap cleanup_partial_staging EXIT
 
@@ -809,7 +845,7 @@ MESSAGE
 SSH did not become available within ${VIRTDEV_WAIT_TIMEOUT}s.
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
-Remove manually to retry: rm -rf '${maintenance_directory}'
+$(maintenance_cleanup_guidance "${maintenance_directory}")
 MESSAGE
 fi
 
@@ -898,8 +934,8 @@ refused because QMP never observed status=shutdown under -no-shutdown.
 
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
-Remove the staging directory manually after inspection, then retry and finish
-inside the guest with 'sudo poweroff'.
+$(maintenance_cleanup_guidance "${maintenance_directory}")
+On the next maintenance boot, finish inside the guest with 'sudo poweroff'.
 MESSAGE
     fi
     :
@@ -927,10 +963,7 @@ in this state would bake that dirty state into the new base.
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
 
-Discard the staging directory and re-enter maintenance:
-
-    rm -rf '${maintenance_directory}'
-    virtdev-maintain
+$(maintenance_cleanup_guidance "${maintenance_directory}")
 
 Inside the virtual machine, finish with 'sudo poweroff'. The host will observe
 QEMU's guest-originated shutdown state, ask QEMU to quit, and require exit 0.
@@ -949,7 +982,7 @@ half-applied writes). Resealing is refused.
 
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
-Remove manually to retry: rm -rf '${maintenance_directory}'
+$(maintenance_cleanup_guidance "${maintenance_directory}")
 MESSAGE
     ;;
 esac
@@ -1060,11 +1093,9 @@ No reseal commit ran — the generation bump, the read-only re-marking,
 and the atomic exchange were all skipped, so the staging from your
 maintenance session survives and the session can be retried.
 
-Inspect the staging, then either re-enter maintenance for a clean
-inventory boot, or discard and start over:
-
-    rm -rf '${maintenance_directory}'
-    virtdev-maintain
+Inspect the staging, then re-enter maintenance for a clean inventory boot or
+discard it only as follows:
+$(maintenance_cleanup_guidance "${maintenance_directory}")
 MESSAGE
         ;;
     esac
@@ -1119,7 +1150,7 @@ if (( ! flags[yes] )); then
 Reseal cancelled.
 The sealed base images are intact: '${system_directory}'
 Maintenance images preserved for inspection: '${maintenance_directory}'
-Remove manually to retry: rm -rf '${maintenance_directory}'
+$(maintenance_cleanup_guidance "${maintenance_directory}")
 MESSAGE
   fi
 fi
@@ -1196,16 +1227,19 @@ case "${previous_mount_status}" in
   0)
     printf >&2 'warning: previous-base cleanup was preserved because it contains a mount: %s\n' \
       "${previous_mount}"
+    maintenance_cleanup_guidance "${maintenance_directory}" >&2
     ;;
   1)
     if ! rm -rf --one-file-system -- "${maintenance_directory}"; then
-      printf >&2 'warning: previous-base cleanup remains at %s; remove it manually before the next virtdev-maintain run\n' \
+      printf >&2 'warning: previous-base cleanup remains at %s\n' \
                  "${maintenance_directory}"
+      maintenance_cleanup_guidance "${maintenance_directory}" >&2
     fi
     ;;
   *)
     printf >&2 'warning: previous-base cleanup was preserved because mount state could not be inspected: %s\n' \
       "${maintenance_directory}"
+    maintenance_cleanup_guidance "${maintenance_directory}" >&2
     ;;
 esac
 if ! sync -f "${VIRTDEV_HOME}"; then

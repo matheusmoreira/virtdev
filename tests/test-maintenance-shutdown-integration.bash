@@ -170,10 +170,14 @@ fi
 
 if grep -Fq 'will be cleaned up on next virtdev-maintain run' \
     "${repository}/bin/virtdev-maintain" \
-    || ! grep -Fq \
-      'remove it manually before the next virtdev-maintain run' \
+    || grep -Fq "rm -rf '\${maintenance_directory}'" \
       "${repository}/bin/virtdev-maintain"; then
   printf 'post-reseal cleanup guidance promises an unsupported retry\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'rm -rf --one-file-system --' \
+    "${repository}/bin/virtdev-maintain"; then
+  printf 'maintenance has no filesystem-bounded removal path\n' >&2
   exit 1
 fi
 
