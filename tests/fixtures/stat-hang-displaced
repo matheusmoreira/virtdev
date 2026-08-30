@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+target="${!#}"
+if [[ "${TRANSFER_STAT_HANG_DISPLACED:-0}" == 1 \
+    && "${target}" == */displaced/tree ]]; then
+  : > "${TRANSFER_STAT_HANG_READY:?}"
+  sleep 30
+fi
+
+exec /usr/bin/stat "$@"

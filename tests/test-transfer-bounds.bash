@@ -4,14 +4,26 @@ set -euo pipefail
 
 repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
-trap 'rm -rf -- "${test_tmp}"' EXIT
+target_lock_pid=''
+target_lock_release=''
+cleanup() {
+  if [[ -n "${target_lock_pid}" ]]; then
+    [[ -z "${target_lock_release}" ]] || : > "${target_lock_release}"
+    kill "${target_lock_pid}" 2>/dev/null || true
+    wait "${target_lock_pid}" 2>/dev/null || true
+  fi
+  rm -rf -- "${test_tmp}"
+}
+trap cleanup EXIT
 
 fixture_bin="${test_tmp}/bin"
 command_fixture_bin="${test_tmp}/command-bin"
 mutation_bin="${test_tmp}/mutation-bin"
+stat_bin="${test_tmp}/stat-bin"
 virtdev_home="${test_tmp}/virtdev"
 ssh_key="${test_tmp}/id"
 mkdir -p "${fixture_bin}" "${command_fixture_bin}" "${mutation_bin}" \
+  "${stat_bin}" \
   "${virtdev_home}/projects/probe" \
   "${test_tmp}/archive-source"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
@@ -54,6 +66,8 @@ chmod +x "${command_fixture_bin}/ssh" "${command_fixture_bin}/systemctl"
 cp "${repository}/tests/fixtures/rsync-mutate-target" \
   "${mutation_bin}/rsync"
 chmod 755 "${mutation_bin}/rsync"
+cp "${repository}/tests/fixtures/stat-hang-displaced" "${stat_bin}/stat"
+chmod 755 "${stat_bin}/stat"
 printf '2222\n' > "${virtdev_home}/projects/probe/port"
 printf 'ssh-host-identity=1\n' \
   > "${virtdev_home}/projects/probe/guest-contract"
@@ -81,12 +95,38 @@ run_transfer() {
     VIRTDEV_SSH_KEY="${ssh_key}" \
     VIRTDEV_TRANSFER_MAX_BYTES=1024 \
     VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES=1048576 \
+    VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES=8388608 \
     VIRTDEV_TRANSFER_MAX_ENTRIES=10 \
     VIRTDEV_TRANSFER_TIMEOUT=10 \
     VIRTDEV_TRANSFER_KILL_AFTER=1 \
     BACKUP_TAR_STREAM="${archive}" \
     "$@" \
     "${repository}/bin/virtdev-transfer" probe ":${source}" "${destination}"
+}
+
+publication_value() {
+  local -r manifest="${1}" key="${2}"
+  local record
+
+  while IFS= read -r -d '' record; do
+    if [[ "${record}" == "${key}="* ]]; then
+      printf '%s\n' "${record#*=}"
+      return 0
+    fi
+  done < "${manifest}"
+  return 1
+}
+
+recovery_entry_from_output() {
+  local -r output="${1}"
+  local line
+
+  [[ "$(grep -Fc 'Previous host target retained for recovery: ' \
+    "${output}")" == 1 ]] || return 1
+  line="$(grep -F 'Previous host target retained for recovery: ' \
+    "${output}")" || return 1
+  printf '%s\n' \
+    "${line#Previous host target retained for recovery: }"
 }
 
 printf 'payload\n' > "${test_tmp}/archive-source/item"
@@ -130,12 +170,7 @@ target_lock_release="${test_tmp}/target-lock.release"
   # shellcheck disable=SC1090
   source "${repository}/lib/virtdev/import"
   import lock
-  target_lock_path="$(lock_identity_path transfer-target \
-    "${locked_destination}")"
-  lock_prepare_control_directory
-  lock_prepare_file "${target_lock_path}"
-  exec 6>>"${target_lock_path}"
-  flock -n 6
+  lock_acquire_transfer_target "${locked_destination}"
   : > "${target_lock_ready}"
   while [[ ! -e "${target_lock_release}" ]]; do
     sleep 0.01
@@ -147,12 +182,18 @@ for _ in {1..1000}; do
   kill -0 "${target_lock_pid}" 2>/dev/null || break
   sleep 0.01
 done
+if [[ ! -e "${target_lock_ready}" ]] \
+    || ! kill -0 "${target_lock_pid}" 2>/dev/null; then
+  printf 'target-lock fixture did not acquire the public lock\n' >&2
+  exit 1
+fi
 status=0
 run_transfer "${test_tmp}/file.tar" file "${locked_destination}" \
   env VIRTDEV_LOCK_DIRECTORY="${target_lock_directory}" \
   >"${test_tmp}/target-lock.output" 2>&1 || status=$?
 : > "${target_lock_release}"
 wait "${target_lock_pid}"
+target_lock_pid=''
 if (( status != 75 )) || [[ -e "${locked_destination}" ]]; then
   printf 'target-lock contention was not fail-safe (status %d)\n' \
     "${status}" >&2
@@ -176,6 +217,7 @@ env \
   VIRTDEV_SSH_KEY="${ssh_key}" \
   VIRTDEV_TRANSFER_MAX_BYTES=1024 \
   VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES=1048576 \
+  VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES=8388608 \
   VIRTDEV_TRANSFER_MAX_ENTRIES=10 \
   VIRTDEV_TRANSFER_TIMEOUT=10 \
   VIRTDEV_TRANSFER_KILL_AFTER=1 \
@@ -199,6 +241,7 @@ merge_root="${test_tmp}/merge-root"
 merge_target="${merge_root}/remote-dir"
 mkdir -p "${merge_target}"
 printf 'keep\n' > "${merge_target}/keep"
+merge_identity="$(stat -c '%d:%i' -- "${merge_target}")"
 status=0
 run_transfer "${test_tmp}/directory.tar" remote-dir "${merge_root}" \
   >"${test_tmp}/merge.output" 2>&1 || status=$?
@@ -209,6 +252,33 @@ if (( status != 0 )) || [[ "$(< "${merge_target}/keep")" != keep ]] \
   cat "${test_tmp}/merge.output" >&2
   exit 1
 fi
+merge_recovery_entry="$(recovery_entry_from_output \
+  "${test_tmp}/merge.output")" || {
+  printf 'existing-directory merge did not report its recovery entry\n' >&2
+  exit 1
+}
+merge_recovery_directory="${merge_recovery_entry%/*}"
+merge_manifest="${merge_recovery_directory}/publication"
+if [[ ! -d "${merge_recovery_entry}" \
+      || "$(< "${merge_recovery_entry}/keep")" != keep \
+      || -e "${merge_recovery_entry}/new" \
+      || "$(stat -c '%d:%i' -- "${merge_recovery_entry}")" \
+        != "${merge_identity}" \
+      || "$(stat -c '%a' -- "${merge_recovery_directory}")" != 700 \
+      || "$(stat -c '%a' -- "${merge_manifest}")" != 600 \
+      || "$(publication_value "${merge_manifest}" phase)" != retained \
+      || "$(publication_value "${merge_manifest}" target)" \
+        != "${merge_target}" \
+      || "$(publication_value "${merge_manifest}" entry)" \
+        != "${merge_recovery_entry}" \
+      || "$(publication_value "${merge_manifest}" previous_type)" \
+        != directory \
+      || "$(publication_value "${merge_manifest}" previous_identity)" \
+        != "${merge_identity}" ]]; then
+  printf 'existing-directory recovery state was incomplete or ambiguous\n' >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${merge_recovery_directory}"
 
 trailing_target="${test_tmp}/trailing-target"
 mkdir "${trailing_target}"
@@ -223,11 +293,18 @@ if (( status != 0 )) || [[ "$(< "${trailing_target}/existing")" != existing ]] \
   cat "${test_tmp}/trailing.output" >&2
   exit 1
 fi
+trailing_recovery_entry="$(recovery_entry_from_output \
+  "${test_tmp}/trailing.output")" || {
+  printf 'trailing merge did not report its recovery entry\n' >&2
+  exit 1
+}
+rm -rf --one-file-system -- "${trailing_recovery_entry%/*}"
 
 printf 'replacement\n' > "${test_tmp}/archive-source/item"
 tar -C "${test_tmp}/archive-source" -cf "${test_tmp}/replacement.tar" \
   --transform='s,^item$,payload/item,' item
 printf 'old\n' > "${destination}"
+file_replacement_identity="$(stat -c '%d:%i' -- "${destination}")"
 status=0
 run_transfer "${test_tmp}/replacement.tar" file "${destination}" \
   >"${test_tmp}/replacement.output" 2>&1 || status=$?
@@ -237,8 +314,95 @@ if (( status != 0 )) || [[ "$(< "${destination}")" != replacement ]]; then
   cat "${test_tmp}/replacement.output" >&2
   exit 1
 fi
+file_recovery_entry="$(recovery_entry_from_output \
+  "${test_tmp}/replacement.output")" || {
+  printf 'existing-file replacement did not report its recovery entry\n' >&2
+  exit 1
+}
+file_recovery_directory="${file_recovery_entry%/*}"
+file_manifest="${file_recovery_directory}/publication"
+if [[ ! -f "${file_recovery_entry}" \
+      || "$(< "${file_recovery_entry}")" != old \
+      || "$(stat -c '%d:%i' -- "${file_recovery_entry}")" \
+        != "${file_replacement_identity}" \
+      || "$(publication_value "${file_manifest}" phase)" != retained \
+      || "$(publication_value "${file_manifest}" previous_type)" != file \
+      || "$(publication_value "${file_manifest}" previous_identity)" \
+        != "${file_replacement_identity}" ]]; then
+  printf 'existing-file recovery state was incomplete or ambiguous\n' >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${file_recovery_directory}"
 
-printf 'ok - directory merges and file replacement publish complete candidates\n'
+printf 'ok - overwrites publish complete candidates and retain exact recovery state\n'
+
+(
+  late_transfer_pid=''
+  late_release="${test_tmp}/late-fd.release"
+  # shellcheck disable=SC2329  # invoked by the EXIT trap
+  cleanup_late_transfer() {
+    : > "${late_release}"
+    if [[ "${late_transfer_pid}" =~ ^[0-9]+$ ]] \
+        && kill -0 "${late_transfer_pid}" 2>/dev/null; then
+      kill "${late_transfer_pid}" 2>/dev/null || true
+      wait "${late_transfer_pid}" 2>/dev/null || true
+    fi
+  }
+  trap cleanup_late_transfer EXIT
+
+  late_root="${test_tmp}/late-fd-root"
+  late_target="${late_root}/remote-dir"
+  late_counter="${test_tmp}/late-fd.counter"
+  late_ready="${test_tmp}/late-fd.ready"
+  mkdir -p "${late_target}"
+  printf 'keep\n' > "${late_target}/keep"
+  exec {late_fd}>> "${late_target}/keep"
+  status=0
+  run_transfer "${test_tmp}/directory.tar" remote-dir "${late_root}" \
+    env PATH="${mutation_bin}:${fixture_bin}:${PATH}" \
+      TRANSFER_MUTATION_MODE=gate-second \
+      TRANSFER_MUTATION_COUNTER="${late_counter}" \
+      TRANSFER_MUTATION_READY="${late_ready}" \
+      TRANSFER_MUTATION_RELEASE="${late_release}" \
+    >"${test_tmp}/late-fd.output" 2>&1 &
+  late_transfer_pid=$!
+  for _ in {1..1000}; do
+    [[ -e "${late_ready}" ]] && break
+    kill -0 "${late_transfer_pid}" 2>/dev/null || break
+    sleep 0.01
+  done
+  if [[ ! -e "${late_ready}" ]] \
+      || ! kill -0 "${late_transfer_pid}" 2>/dev/null; then
+    printf 'late-writer validation gate did not become ready\n' >&2
+    cat "${test_tmp}/late-fd.output" >&2
+    exit 1
+  fi
+  printf 'late-writer\n' >&"${late_fd}"
+  exec {late_fd}>&-
+  : > "${late_release}"
+  wait "${late_transfer_pid}" || status=$?
+  late_transfer_pid=''
+
+  late_recovery_entry="$(recovery_entry_from_output \
+    "${test_tmp}/late-fd.output")" || {
+    printf 'late-writer transfer did not report retained recovery state\n' >&2
+    exit 1
+  }
+  if (( status != 0 )) \
+      || [[ "$(< "${late_target}/keep")" != keep \
+        || "$(< "${late_recovery_entry}/keep")" \
+          != $'keep\nlate-writer' \
+        || "$(publication_value \
+          "${late_recovery_entry%/*}/publication" phase)" != retained ]]; then
+    printf 'late writable descriptor update became unreachable (status %d)\n' \
+      "${status}" >&2
+    cat "${test_tmp}/late-fd.output" >&2
+    exit 1
+  fi
+  rm -rf --one-file-system -- "${late_recovery_entry%/*}"
+)
+
+printf 'ok - late writes through displaced handles remain named for recovery\n'
 
 nested_race_root="${test_tmp}/nested-race-root"
 nested_race_target="${nested_race_root}/remote-dir"
@@ -317,6 +481,35 @@ if (( status != 15 )) || [[ "$(< "${destination}")" != writer-update \
 fi
 rm -rf --one-file-system -- "${file_race_transaction}"
 
+nanosecond_root="${test_tmp}/nanosecond-race-root"
+nanosecond_target="${nanosecond_root}/remote-dir"
+nanosecond_marker="${test_tmp}/nanosecond-race.marker"
+mkdir -p "${nanosecond_target}"
+printf 'keep\n' > "${nanosecond_target}/keep"
+touch -d '@1700000000.100000000' -- "${nanosecond_target}"
+status=0
+run_transfer "${test_tmp}/directory.tar" remote-dir "${nanosecond_root}" \
+  env PATH="${mutation_bin}:${fixture_bin}:${PATH}" \
+    TRANSFER_MUTATION_MODE=root-mtime-ns \
+    TRANSFER_MUTATION_TARGET="${nanosecond_target}" \
+    TRANSFER_MUTATION_MARKER="${nanosecond_marker}" \
+    TRANSFER_MUTATION_MTIME='@1700000000.900000000' \
+  >"${test_tmp}/nanosecond-race.output" 2>&1 || status=$?
+nanosecond_transaction="$(find "${nanosecond_root}" -maxdepth 1 -type d \
+  -name '.virtdev-transfer.*' -print -quit)"
+if (( status != 15 )) \
+    || [[ "$(stat -c '%y' -- "${nanosecond_target}")" \
+      != *'.900000000 '* \
+      || -e "${nanosecond_target}/new" \
+      || -z "${nanosecond_transaction}" ]]; then
+  printf 'same-second metadata race was not rolled back safely (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/nanosecond-race.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${nanosecond_transaction}"
+
+printf 'ok - existing-target races include nanosecond metadata changes\n'
 printf 'ok - existing-target races roll back without discarding writer data\n'
 
 sync_fault="${test_tmp}/publish-sync-fail.so"
@@ -340,6 +533,72 @@ rm -rf --one-file-system -- "${preserved_transaction}"
 
 printf 'ok - committed publication sync failures preserve recovery state\n'
 
+exchange_exit_fault="${test_tmp}/publish-exchange-then-exit.so"
+cc -std=c99 -shared -fPIC -Wall -Wextra -Wpedantic -Werror \
+  -o "${exchange_exit_fault}" \
+  "${repository}/tests/support/publish-exchange-then-exit.c"
+printf 'uncertain-old\n' > "${destination}"
+exchange_exit_marker="${test_tmp}/exchange-exit.marker"
+status=0
+run_transfer "${test_tmp}/replacement.tar" file "${destination}" \
+  LD_PRELOAD="${exchange_exit_fault}" \
+  TRANSFER_EXIT_AFTER_EXCHANGE_TARGET="${destination}" \
+  TRANSFER_EXIT_AFTER_EXCHANGE_MARKER="${exchange_exit_marker}" \
+  >"${test_tmp}/exchange-exit.output" 2>&1 || status=$?
+exchange_exit_transaction="$(find "${test_tmp}" -maxdepth 1 -type d \
+  -name '.virtdev-transfer.*' -print -quit)"
+exchange_exit_manifest="${exchange_exit_transaction}/publication"
+exchange_exit_entry=''
+[[ -z "${exchange_exit_transaction}" ]] \
+  || exchange_exit_entry="$(publication_value \
+    "${exchange_exit_manifest}" entry)"
+if (( status != 16 )) || [[ ! -e "${exchange_exit_marker}" \
+      || "$(< "${destination}")" != replacement \
+      || -z "${exchange_exit_transaction}" \
+      || ! -f "${exchange_exit_entry}" \
+      || "$(< "${exchange_exit_entry}")" != uncertain-old \
+      || "$(publication_value "${exchange_exit_manifest}" phase)" \
+        != publication-uncertain ]]; then
+  printf 'after-exchange publisher death lost recovery state (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/exchange-exit.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${exchange_exit_transaction}"
+
+printf 'ok - after-exchange publisher death preserves the displaced target\n'
+
+validation_timeout_root="${test_tmp}/validation-timeout-root"
+validation_timeout_target="${validation_timeout_root}/remote-dir"
+validation_timeout_ready="${test_tmp}/validation-timeout.ready"
+mkdir -p "${validation_timeout_target}"
+printf 'deadline-original\n' > "${validation_timeout_target}/keep"
+status=0
+run_transfer "${test_tmp}/directory.tar" remote-dir \
+  "${validation_timeout_root}" \
+  env PATH="${stat_bin}:${fixture_bin}:${PATH}" \
+    VIRTDEV_TRANSFER_TIMEOUT=3 \
+    TRANSFER_STAT_HANG_DISPLACED=1 \
+    TRANSFER_STAT_HANG_READY="${validation_timeout_ready}" \
+  >"${test_tmp}/validation-timeout.output" 2>&1 || status=$?
+validation_timeout_transaction="$(find "${validation_timeout_root}" \
+  -maxdepth 1 -type d -name '.virtdev-transfer.*' -print -quit)"
+if (( status != 12 )) || [[ ! -e "${validation_timeout_ready}" \
+      || "$(< "${validation_timeout_target}/keep")" != deadline-original \
+      || -e "${validation_timeout_target}/new" \
+      || -z "${validation_timeout_transaction}" \
+      || "$(publication_value \
+        "${validation_timeout_transaction}/publication" phase)" \
+        != rolled-back ]]; then
+  printf 'post-publication deadline was not reported after rollback (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/validation-timeout.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${validation_timeout_transaction}"
+
+printf 'ok - post-publication validation deadlines return 12 after rollback\n'
+
 mkdir -p "${test_tmp}/oversize-source"
 head -c 1025 /dev/zero | tr '\0' x > "${test_tmp}/oversize-source/item"
 tar -C "${test_tmp}/oversize-source" -cf "${test_tmp}/oversize.tar" \
@@ -352,6 +611,20 @@ if (( status != 11 )) || [[ "$(< "${destination}")" != unchanged ]]; then
   printf 'logical-byte overflow changed the destination (status %d)\n' \
     "${status}" >&2
   cat "${test_tmp}/oversize.output" >&2
+  exit 1
+fi
+
+transaction_limit_destination="${test_tmp}/transaction-limit-destination"
+status=0
+run_transfer "${test_tmp}/file.tar" file "${transaction_limit_destination}" \
+  VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES=4096 \
+  >"${test_tmp}/transaction-limit.output" 2>&1 || status=$?
+if (( status != 11 )) || [[ -e "${transaction_limit_destination}" ]] \
+    || ! grep -Fq 'aggregate byte budget' \
+      "${test_tmp}/transaction-limit.output"; then
+  printf 'aggregate transaction overflow published data (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/transaction-limit.output" >&2
   exit 1
 fi
 
@@ -394,7 +667,7 @@ if (( status != 11 )) || [[ -e "${entry_destination}" ]] \
   exit 1
 fi
 
-printf 'ok - aggregate byte, entry, and depth limits fail before publication\n'
+printf 'ok - tree, transaction, entry, and depth limits fail before publication\n'
 
 mkdir -p "${test_tmp}/internal-link-source/item"
 printf 'linked\n' > "${test_tmp}/internal-link-source/item/data"

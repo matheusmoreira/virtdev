@@ -2,21 +2,48 @@
 
 set -euo pipefail
 
-if ( set -o noclobber; : > "${TRANSFER_MUTATION_MARKER:?}" ) 2>/dev/null; then
-  case "${TRANSFER_MUTATION_MODE:?}" in
-    nested)
-      printf 'writer-update\n' > "${TRANSFER_MUTATION_TARGET:?}/keep"
-      printf 'writer-added\n' > "${TRANSFER_MUTATION_TARGET}/writer-added"
-      ;;
-    replace)
-      mv -- "${TRANSFER_MUTATION_TARGET:?}" \
-        "${TRANSFER_MUTATION_TARGET}.writer-old"
-      mkdir -- "${TRANSFER_MUTATION_TARGET}"
-      printf 'writer-replacement\n' \
-        > "${TRANSFER_MUTATION_TARGET}/replacement"
-      ;;
-    *) exit 64 ;;
-  esac
-fi
+mode="${TRANSFER_MUTATION_MODE:?}"
+case "${mode}" in
+  nested|replace|root-mtime-ns)
+    if ( set -o noclobber; : > "${TRANSFER_MUTATION_MARKER:?}" ) \
+        2>/dev/null; then
+      case "${mode}" in
+        nested)
+          printf 'writer-update\n' > "${TRANSFER_MUTATION_TARGET:?}/keep"
+          printf 'writer-added\n' > "${TRANSFER_MUTATION_TARGET}/writer-added"
+          ;;
+        replace)
+          mv -- "${TRANSFER_MUTATION_TARGET:?}" \
+            "${TRANSFER_MUTATION_TARGET}.writer-old"
+          mkdir -- "${TRANSFER_MUTATION_TARGET}"
+          printf 'writer-replacement\n' \
+            > "${TRANSFER_MUTATION_TARGET}/replacement"
+          ;;
+        root-mtime-ns)
+          touch -d "${TRANSFER_MUTATION_MTIME:?}" -- \
+            "${TRANSFER_MUTATION_TARGET:?}"
+          ;;
+      esac
+    fi
+    ;;
+  gate-second)
+    counter=0
+    [[ ! -e "${TRANSFER_MUTATION_COUNTER:?}" ]] \
+      || read -r counter < "${TRANSFER_MUTATION_COUNTER}"
+    [[ "${counter}" =~ ^[0-9]+$ ]] || exit 64
+    (( ++counter ))
+    printf '%d\n' "${counter}" > "${TRANSFER_MUTATION_COUNTER}"
+    if (( counter == 2 )); then
+      comparison_status=0
+      /usr/bin/rsync "$@" || comparison_status=$?
+      : > "${TRANSFER_MUTATION_READY:?}"
+      while [[ ! -e "${TRANSFER_MUTATION_RELEASE:?}" ]]; do
+        sleep 0.01
+      done
+      exit "${comparison_status}"
+    fi
+    ;;
+  *) exit 64 ;;
+esac
 
 exec /usr/bin/rsync "$@"
