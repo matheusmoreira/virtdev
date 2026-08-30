@@ -1182,6 +1182,10 @@ static int apply_fd_metadata(int fd, const struct source_record *record,
 {
 	struct timespec times[2] = { record->atime, record->mtime };
 
+	if (fd < 0) {
+		errno = EBADF;
+		return fail_errno("invalid metadata descriptor for", path);
+	}
 	if (fchown(fd, record->uid, record->gid))
 		return fail_errno("cannot preserve ownership on", path);
 	if (fchmod(fd, record->mode & 07777))
@@ -1373,6 +1377,11 @@ static int copy_regular(int source_directory_fd, int destination_directory_fd,
 	int destination_fd = -1;
 	int result;
 
+	if (source_directory_fd < 0 || destination_directory_fd < 0 ||
+	    destination_root_fd < 0) {
+		errno = EBADF;
+		return fail_errno("invalid copy directory for", path);
+	}
 	if (record->copied_occurrences > 1) {
 		if (!record->destination_path)
 			return source_changed("hard-link source order changed at", path);
@@ -1462,6 +1471,11 @@ static int copy_symlink(int source_directory_fd, int destination_directory_fd,
 	struct stat initial;
 	int result;
 
+	if (source_directory_fd < 0 || destination_directory_fd < 0 ||
+	    destination_root_fd < 0) {
+		errno = EBADF;
+		return fail_errno("invalid copy directory for", path);
+	}
 	if (record->copied_occurrences > 1) {
 		if (!record->destination_path)
 			return source_changed("hard-link source order changed at", path);
@@ -1484,6 +1498,10 @@ static int copy_symlink(int source_directory_fd, int destination_directory_fd,
 				     &target, &length);
 	if (result)
 		return result;
+	if (!target) {
+		errno = EIO;
+		return fail_errno("cannot read symlink target for", path);
+	}
 	if (length != record->symlink_target_length ||
 	    (length && memcmp(target, record->symlink_target, length) != 0)) {
 		result = source_changed("symlink target changed before copy at", path);
@@ -1524,6 +1542,11 @@ static int copy_entry(int source_directory_fd, int destination_directory_fd,
 
 	if (!path)
 		return fail_errno("cannot allocate path below", relative);
+	if (source_directory_fd < 0 || destination_directory_fd < 0) {
+		errno = EBADF;
+		result = fail_errno("invalid copy directory for", path);
+		goto out;
+	}
 	result = require_path_length(path);
 	if (result)
 		goto out;
