@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+command_name="${0##*/}"
+count=1
+if [[ -n "${STALL_COUNT_FILE:-}" ]]; then
+  count=0
+  [[ ! -f "${STALL_COUNT_FILE}" ]] || count="$(< "${STALL_COUNT_FILE}")"
+  (( count += 1 ))
+  printf '%d\n' "${count}" > "${STALL_COUNT_FILE}"
+fi
+if [[ "${STALL_COMMAND:?}" == "${command_name}" \
+    && "${count}" == "${STALL_CALL:-1}" ]]; then
+  [[ -z "${STALL_MARKER:-}" ]] || : > "${STALL_MARKER}"
+  sleep "${STALL_DELAY:-30}"
+fi
+exec "/usr/bin/${command_name}" "$@"

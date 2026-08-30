@@ -24,6 +24,68 @@ readonly manifest_result_empty=42
 readonly manifest_result_timeout=43
 readonly manifest_result_io=44
 
+_manifest_cleanup_pair() {
+  local -r kill_after="${1}"
+  shift
+  local grace="${kill_after}"
+
+  (( grace <= 5 )) || grace=5
+  timeout --signal=TERM --kill-after="${grace}" "${grace}" \
+    rm -f -- "$@" >/dev/null 2>&1 || true
+}
+
+# Move a validated manifest pair under an absolute deadline. The manifest is
+# the commit marker, so it is published only after its files-from companion.
+manifest_publish_pair() {
+  local -r source_manifest="${1:-}" source_files="${2:-}" \
+    destination_manifest="${3:-}" destination_files="${4:-}" \
+    deadline="${5:-}" kill_after="${6:-}"
+  local remaining status=0
+
+  [[ -f "${source_manifest}" && ! -L "${source_manifest}" \
+      && -f "${source_files}" && ! -L "${source_files}" \
+      && ! -e "${destination_manifest}" && ! -L "${destination_manifest}" \
+      && ! -e "${destination_files}" && ! -L "${destination_files}" \
+      && "${deadline}" =~ ^[0-9]+$ && "${kill_after}" =~ ^[0-9]+$ \
+      && "${kill_after}" != 0 ]] || return "${manifest_result_invalid}"
+  remaining=$(( deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return "${manifest_result_timeout}"
+
+  # shellcheck disable=SC2016  # child receives paths as positional arguments
+  timeout --signal=TERM --kill-after="${kill_after}" "${remaining}" \
+    bash -c '
+      set -euo pipefail
+      source_manifest=$1
+      source_files=$2
+      destination_manifest=$3
+      destination_files=$4
+      cleanup() {
+        saved_status=$?
+        trap - EXIT
+        rm -f -- "${destination_manifest}" "${destination_files}"
+        exit "${saved_status}"
+      }
+      trap cleanup EXIT
+      mv -T -- "${source_files}" "${destination_files}"
+      mv -T -- "${source_manifest}" "${destination_manifest}"
+      trap - EXIT
+    ' manifest-publish "${source_manifest}" "${source_files}" \
+      "${destination_manifest}" "${destination_files}" || status=$?
+
+  if [[ -f "${destination_manifest}" && ! -L "${destination_manifest}" \
+      && -f "${destination_files}" && ! -L "${destination_files}" \
+      && ! -e "${source_manifest}" && ! -L "${source_manifest}" \
+      && ! -e "${source_files}" && ! -L "${source_files}" ]]; then
+    return 0
+  fi
+  _manifest_cleanup_pair "${kill_after}" "${destination_manifest}" \
+    "${destination_files}"
+  case "${status}" in
+    124|137) return "${manifest_result_timeout}" ;;
+    *) return "${manifest_result_io}" ;;
+  esac
+}
+
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
 
@@ -74,11 +136,13 @@ manifest_freeze_validate() {
   local -r source="${1:-}" destination="${2:-}" files_from="${3:-}" \
     deadline="${4:-}" kill_after="${5:-}"
   local -r frozen_tmp="${destination}.tmp" files_tmp="${files_from}.tmp"
-  local remaining copy_status validate_status size
+  local remaining copy_status validate_status size_status size
 
   [[ -n "${source}" && -n "${destination}" && -n "${files_from}" \
       && "${deadline}" =~ ^[0-9]+$ && "${kill_after}" =~ ^[0-9]+$ \
-      && -f "${source}" && -r "${source}" ]] \
+      && "${kill_after}" != 0 && -f "${source}" && -r "${source}" \
+      && ! -e "${frozen_tmp}" && ! -L "${frozen_tmp}" \
+      && ! -e "${files_tmp}" && ! -L "${files_tmp}" ]] \
     || return "${manifest_result_invalid}"
   remaining=$(( deadline - BASH_MONOSECONDS ))
   (( remaining > 0 )) || return "${manifest_result_timeout}"
@@ -90,23 +154,41 @@ manifest_freeze_validate() {
   case "${copy_status}" in
     0) ;;
     124|137)
-      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
       return "${manifest_result_timeout}"
       ;;
     *)
-      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
       return "${manifest_result_io}"
       ;;
   esac
-  size="$(stat -c '%s' -- "${frozen_tmp}" 2>/dev/null)" || size=''
+  remaining=$(( deadline - BASH_MONOSECONDS ))
+  if (( remaining <= 0 )); then
+    _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
+    return "${manifest_result_timeout}"
+  fi
+  size_status=0
+  size="$(timeout --signal=TERM --kill-after="${kill_after}" "${remaining}" \
+    stat -c '%s' -- "${frozen_tmp}" 2>/dev/null)" || size_status=$?
+  case "${size_status}" in
+    0) ;;
+    124|137)
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_timeout}"
+      ;;
+    *)
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_io}"
+      ;;
+  esac
   if [[ ! "${size}" =~ ^[0-9]+$ ]] || (( size > manifest_max_bytes )); then
-    rm -f -- "${frozen_tmp}" "${files_tmp}"
+    _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
     return "${manifest_result_too_large}"
   fi
 
   remaining=$(( deadline - BASH_MONOSECONDS ))
   if (( remaining <= 0 )); then
-    rm -f -- "${frozen_tmp}" "${files_tmp}"
+    _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
     return "${manifest_result_timeout}"
   fi
   validate_status=0
@@ -142,32 +224,29 @@ manifest_freeze_validate() {
   case "${validate_status}" in
     0) ;;
     40)
-      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
       return "${manifest_result_invalid}"
       ;;
     41)
-      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
       return "${manifest_result_too_large}"
       ;;
     42)
-      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
       return "${manifest_result_empty}"
       ;;
     124|137)
-      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
       return "${manifest_result_timeout}"
       ;;
     *)
-      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      _manifest_cleanup_pair "${kill_after}" "${frozen_tmp}" "${files_tmp}"
       return "${manifest_result_io}"
       ;;
   esac
 
-  if ! mv -T -- "${frozen_tmp}" "${destination}" \
-      || ! mv -T -- "${files_tmp}" "${files_from}"; then
-    rm -f -- "${frozen_tmp}" "${files_tmp}"
-    return "${manifest_result_io}"
-  fi
+  manifest_publish_pair "${frozen_tmp}" "${files_tmp}" "${destination}" \
+    "${files_from}" "${deadline}" "${kill_after}"
 }
 
 manifest_sources_confined() {

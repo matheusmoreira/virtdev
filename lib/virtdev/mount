@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Mount-boundary inspection for recursive host operations.
+# shellcheck disable=SC2154  # library directory is provided by import
 
 set -euo pipefail
 
@@ -91,6 +92,36 @@ mount_remove_tree() {
       return 1
       ;;
     2) return 2 ;;
+    *) return 3 ;;
+  esac
+}
+
+# Supervise the complete inspection-and-removal operation. Returns the same
+# statuses as mount_remove_tree, plus 4 when the cleanup window expires.
+mount_remove_tree_bounded() {
+  local -r path="${1}" timeout_seconds="${3}" kill_after="${4}"
+  local -n _mount_remove_bounded_ref="${2}"
+  local output='' status=0
+
+  _mount_remove_bounded_ref=''
+  [[ "${timeout_seconds}" =~ ^[0-9]+$ && "${timeout_seconds}" != 0 \
+      && "${kill_after}" =~ ^[0-9]+$ && "${kill_after}" != 0 ]] || return 2
+  # shellcheck disable=SC2016  # child receives paths as positional arguments
+  output="$(timeout --signal=TERM --kill-after="${kill_after}" \
+    "${timeout_seconds}" bash -c '
+      set -euo pipefail
+      source "$1/import"
+      import mount
+      mount_path=""
+      remove_status=0
+      mount_remove_tree "$2" mount_path || remove_status=$?
+      printf "%s" "${mount_path}"
+      exit "${remove_status}"
+    ' mount-remove-tree "${virtdev_library_directory}" "${path}")" || status=$?
+  _mount_remove_bounded_ref="${output}"
+  case "${status}" in
+    0|1|2|3) return "${status}" ;;
+    124|137) return 4 ;;
     *) return 3 ;;
   esac
 }

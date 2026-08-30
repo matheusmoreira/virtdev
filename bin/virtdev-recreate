@@ -274,10 +274,11 @@ if (( do_provision )); then
     "${frozen_input_result_timeout}")
       error 6 <<<"Provision script copy exceeded its 10-second deadline: ${provision_source}"
       ;;
+    "${frozen_input_result_durability}")
+      error 6 <<<"Provision script was frozen, but its durability could not be confirmed: ${provision_source}"
+      ;;
     *) error 6 <<<"Could not freeze provision script: ${provision_source}" ;;
   esac
-  sync -f -- "${transaction_root}" \
-    || error 6 <<<"Could not durably publish frozen provision input: ${provision_path}"
 fi
 
 # Restore needs something to restore from. If we are taking a backup

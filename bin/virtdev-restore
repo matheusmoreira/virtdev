@@ -161,6 +161,8 @@ fi
 restore_deadline=$(( BASH_MONOSECONDS + VIRTDEV_RESTORE_TIMEOUT ))
 readonly restore_free_space_reserve=536870912
 readonly restore_inode_reserve=4096
+readonly restore_cleanup_grace=2
+readonly restore_cleanup_kill_after=1
 restore_summary_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
   .restore-summary.XXXXXXXX)"
 restore_tree_summary_file="${restore_summary_directory}/tree"
@@ -173,30 +175,45 @@ rsync_log=''
 rsync_wrapper=''
 restore_stage=''
 cleanup_restore() {
-  local -r status=$?
-  local mount_path='' remove_status=0 path
+  local -r original_status=$?
+  local -r cleanup_deadline=$(( BASH_MONOSECONDS + restore_cleanup_grace ))
+  local mount_path='' remove_status=0 remaining path
 
+  set +e
   for path in "${rsync_log}" "${rsync_wrapper}"; do
     [[ -z "${path}" ]] || rm -f -- "${path}"
   done
   if [[ -n "${restore_stage}" ]]; then
-    mount_remove_tree "${restore_stage}" mount_path || remove_status=$?
+    remaining=$(( cleanup_deadline - BASH_MONOSECONDS ))
+    if (( remaining > 0 )); then
+      mount_remove_tree_bounded "${restore_stage}" mount_path "${remaining}" \
+        "${restore_cleanup_kill_after}" || remove_status=$?
+    else
+      remove_status=4
+    fi
     case "${remove_status}" in
       0) ;;
       1) printf >&2 'warning: preserving restore stage with mounted subtree: %s\n' "${mount_path}" ;;
+      4) printf >&2 'warning: preserving restore stage after cleanup grace expired: %s\n' "${restore_stage}" ;;
       *) printf >&2 'warning: preserving restore stage because cleanup safety is indeterminate: %s\n' "${restore_stage}" ;;
     esac
   fi
   mount_path=''
   remove_status=0
-  mount_remove_tree "${restore_summary_directory}" mount_path \
-    || remove_status=$?
+  remaining=$(( cleanup_deadline - BASH_MONOSECONDS ))
+  if (( remaining > 0 )); then
+    mount_remove_tree_bounded "${restore_summary_directory}" mount_path \
+      "${remaining}" "${restore_cleanup_kill_after}" || remove_status=$?
+  else
+    remove_status=4
+  fi
   case "${remove_status}" in
     0) ;;
     1) printf >&2 'warning: preserving restore summary state with mounted subtree: %s\n' "${mount_path}" ;;
+    4) printf >&2 'warning: preserving restore summary state after cleanup grace expired: %s\n' "${restore_summary_directory}" ;;
     *) printf >&2 'warning: preserving restore summary state because cleanup safety is indeterminate: %s\n' "${restore_summary_directory}" ;;
   esac
-  return "${status}"
+  return "${original_status}"
 }
 trap cleanup_restore EXIT
 

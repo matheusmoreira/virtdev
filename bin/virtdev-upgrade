@@ -413,6 +413,9 @@ if (( ${#provision_sources[@]} > 0 )); then
       "${frozen_input_result_timeout}")
         error 15 <<<"Provision script copy exceeded its 10-second deadline: ${provision_sources[${p}]}"
         ;;
+      "${frozen_input_result_durability}")
+        error 15 <<<"Provision script was frozen, but its durability could not be confirmed: ${provision_sources[${p}]}"
+        ;;
       *) error 15 <<<"Could not freeze provision script: ${provision_sources[${p}]}" ;;
     esac
     provision_size="$(stat -c '%s' -- "${provision_paths[${p}]}" 2>/dev/null)" \
@@ -421,8 +424,6 @@ if (( ${#provision_sources[@]} > 0 )); then
     (( provision_total_bytes <= 67108864 )) \
       || error 15 <<<'Frozen provision inputs exceed the 64 MiB transaction budget'
   done
-  sync -f -- "${transaction_root}" \
-    || error 15 <<<"Could not durably publish frozen provision inputs: ${upgrade_transaction_directory}"
 fi
 
 # Print the plan.

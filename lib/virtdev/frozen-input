@@ -11,6 +11,24 @@ readonly frozen_input_result_timeout=42
 readonly frozen_input_result_io=43
 readonly frozen_input_result_durability=44
 
+_frozen_input_cleanup() {
+  local -r kill_after="${1}" path="${2}"
+  local grace="${kill_after}"
+
+  (( grace <= 5 )) || grace=5
+  timeout --signal=TERM --kill-after="${grace}" "${grace}" \
+    rm -f -- "${path}" >/dev/null 2>&1 || true
+}
+
+_frozen_input_deadline_run() {
+  local -r deadline="${1}" kill_after="${2}"
+  shift 2
+  local remaining=$(( deadline - BASH_MONOSECONDS ))
+
+  (( remaining > 0 )) || return 124
+  timeout --signal=TERM --kill-after="${kill_after}" "${remaining}" "$@"
+}
+
 frozen_input_digest() {
   local -n _frozen_digest="${1}"
   local -r path="${2}" deadline="${3}" kill_after="${4}"
@@ -35,44 +53,99 @@ frozen_input_copy() {
   local -r source="${2}" destination="${3}" deadline="${4}" \
     kill_after="${5}"
   local -r temporary="${destination}.tmp"
-  local remaining status=0 size digest=''
+  local status=0 size digest=''
 
-  [[ -f "${source}" && -r "${source}" && -d "$(dirname "${destination}")" ]] \
+  [[ -f "${source}" && -r "${source}" \
+      && -d "$(dirname "${destination}")" \
+      && ! -L "$(dirname "${destination}")" \
+      && ! -e "${destination}" && ! -L "${destination}" \
+      && ! -e "${temporary}" && ! -L "${temporary}" \
+      && "${deadline}" =~ ^[0-9]+$ && "${kill_after}" =~ ^[0-9]+$ \
+      && "${kill_after}" != 0 ]] \
     || return "${frozen_input_result_invalid}"
-  remaining=$(( deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return "${frozen_input_result_timeout}"
-  timeout --signal=TERM --kill-after="${kill_after}" "${remaining}" \
-    head -c "$(( frozen_input_max_bytes + 1 ))" -- "${source}" \
-    > "${temporary}" || status=$?
+  _frozen_input_deadline_run "${deadline}" "${kill_after}" \
+      head -c "$(( frozen_input_max_bytes + 1 ))" -- "${source}" \
+      > "${temporary}" || status=$?
   case "${status}" in
     0) ;;
     124|137)
-      rm -f -- "${temporary}"
+      _frozen_input_cleanup "${kill_after}" "${temporary}"
       return "${frozen_input_result_timeout}"
       ;;
     *)
-      rm -f -- "${temporary}"
+      _frozen_input_cleanup "${kill_after}" "${temporary}"
       return "${frozen_input_result_io}"
       ;;
   esac
-  size="$(stat -c '%s' -- "${temporary}" 2>/dev/null)" || size=''
-  if [[ ! "${size}" =~ ^[0-9]+$ ]]; then
-    rm -f -- "${temporary}"
+  status=0
+  size="$(_frozen_input_deadline_run "${deadline}" "${kill_after}" \
+    stat -c '%s' -- "${temporary}" 2>/dev/null)" || status=$?
+  case "${status}" in
+    0) ;;
+    124|137)
+      _frozen_input_cleanup "${kill_after}" "${temporary}"
+      return "${frozen_input_result_timeout}"
+      ;;
+    *)
+      _frozen_input_cleanup "${kill_after}" "${temporary}"
+      return "${frozen_input_result_io}"
+      ;;
+  esac
+  [[ "${size}" =~ ^[0-9]+$ ]] || {
+    _frozen_input_cleanup "${kill_after}" "${temporary}"
     return "${frozen_input_result_io}"
-  fi
+  }
   if (( size > frozen_input_max_bytes )); then
-    rm -f -- "${temporary}"
+    _frozen_input_cleanup "${kill_after}" "${temporary}"
     return "${frozen_input_result_too_large}"
   fi
-  if ! chmod 0400 -- "${temporary}" \
-      || ! mv -T -- "${temporary}" "${destination}"; then
-    rm -f -- "${temporary}"
-    return "${frozen_input_result_io}"
+  status=0
+  _frozen_input_deadline_run "${deadline}" "${kill_after}" \
+    chmod 0400 -- "${temporary}" || status=$?
+  case "${status}" in
+    0) ;;
+    124|137)
+      _frozen_input_cleanup "${kill_after}" "${temporary}"
+      return "${frozen_input_result_timeout}"
+      ;;
+    *)
+      _frozen_input_cleanup "${kill_after}" "${temporary}"
+      return "${frozen_input_result_io}"
+      ;;
+  esac
+  frozen_input_digest digest "${temporary}" "${deadline}" "${kill_after}" \
+    || {
+      status=$?
+      _frozen_input_cleanup "${kill_after}" "${temporary}"
+      return "${status}"
+    }
+
+  status=0
+  _frozen_input_deadline_run "${deadline}" "${kill_after}" \
+    mv -T -- "${temporary}" "${destination}" || status=$?
+  if (( status != 0 )); then
+    if [[ -f "${destination}" && ! -L "${destination}" \
+        && ! -e "${temporary}" && ! -L "${temporary}" ]]; then
+      return "${frozen_input_result_durability}"
+    fi
+    _frozen_input_cleanup "${kill_after}" "${temporary}"
+    case "${status}" in
+      124|137) return "${frozen_input_result_timeout}" ;;
+      *) return "${frozen_input_result_io}" ;;
+    esac
   fi
-  frozen_input_digest digest "${destination}" "${deadline}" "${kill_after}" \
-    || return $?
-  if ! sync -f -- "${destination}" \
-      || ! sync -f -- "$(dirname "${destination}")"; then
+  if [[ ! -f "${destination}" || -L "${destination}" ]]; then
+    return "${frozen_input_result_durability}"
+  fi
+
+  status=0
+  _frozen_input_deadline_run "${deadline}" "${kill_after}" \
+    sync -f -- "${destination}" || status=$?
+  (( status == 0 )) || return "${frozen_input_result_durability}"
+  status=0
+  _frozen_input_deadline_run "${deadline}" "${kill_after}" \
+    sync -f -- "$(dirname "${destination}")" || status=$?
+  if (( status != 0 )); then
     return "${frozen_input_result_durability}"
   fi
   _frozen_copy_digest="${digest}"

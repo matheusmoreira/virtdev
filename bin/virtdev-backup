@@ -221,6 +221,16 @@ readonly backup_path_state_max_bytes=67108864
 readonly backup_extension_max_bytes=1048576
 readonly backup_archive_memory_kib=262144
 readonly backup_verbose_listing_max_bytes=65536
+readonly backup_cleanup_grace=2
+readonly backup_cleanup_kill_after=1
+
+backup_deadline_run() {
+  local remaining=$(( backup_deadline - BASH_MONOSECONDS ))
+
+  (( remaining > 0 )) || return 124
+  timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+    "${remaining}" "$@"
+}
 
 backup_metadata_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
   .backup-metadata.XXXXXXXX)"
@@ -410,27 +420,41 @@ backup_succeeded=0
 backup_preserve_partial=0
 ssh_wrapper=
 cleanup_partial() {
+  local -r original_status=$?
   local mount_path="" remove_status=0
+
+  set +e
   if (( ! backup_succeeded && ! backup_preserve_partial )); then
-    mount_remove_tree "${partial}" mount_path || remove_status=$?
+    mount_remove_tree_bounded "${partial}" mount_path \
+      "${backup_cleanup_grace}" "${backup_cleanup_kill_after}" \
+      || remove_status=$?
     case "${remove_status}" in
       0) ;;
       1) printf >&2 'warning: preserving partial backup with mounted subtree: %s\n' "${mount_path}" ;;
       2) printf >&2 'warning: preserving partial backup because cleanup safety is indeterminate: %s\n' "${partial}" ;;
+      4) printf >&2 'warning: preserving partial backup after cleanup grace expired: %s\n' "${partial}" ;;
       *) printf >&2 'warning: could not remove partial backup safely: %s\n' "${partial}" ;;
     esac
   fi
   cleanup_backup_metadata
   [[ -n "${ssh_wrapper}" ]] && rm -f "${ssh_wrapper}"
-  # Preserve the status that entered the EXIT trap.
-  return 0
+  return "${original_status}"
 }
 trap cleanup_partial EXIT
 
-mv -- "${manifest_copy}" "${partial}/manifest"
+manifest_relocation_status=0
+manifest_publish_pair "${manifest_copy}" "${manifest_files_from}" \
+  "${partial}/manifest" "${partial}/files-from" "${backup_deadline}" \
+  "${VIRTDEV_BACKUP_KILL_AFTER}" || manifest_relocation_status=$?
+case "${manifest_relocation_status}" in
+  0) ;;
+  "${manifest_result_timeout}")
+    error 20 <<<'Backup manifest relocation exceeded its wall-clock deadline'
+    ;;
+  *) error 18 <<<'Could not relocate the frozen backup manifest' ;;
+esac
 manifest_copy=
 files_from="${partial}/files-from"
-mv -- "${manifest_files_from}" "${files_from}"
 manifest_files_from=
 
 # Restore rejects a snapshot whose source marker names another project.
@@ -795,13 +819,26 @@ Another backup of ${project} completed within the same second. Wait a moment and
 MESSAGE
 fi
 
-if ! sync -f "${partial}"; then
-  backup_preserve_partial=1
-  error 18 <<MESSAGE
+prepublication_sync_status=0
+backup_deadline_run sync -f -- "${partial}" \
+  || prepublication_sync_status=$?
+case "${prepublication_sync_status}" in
+  0) ;;
+  124|137)
+    backup_preserve_partial=1
+    error 20 <<MESSAGE
+Backup durability flush exceeded its wall-clock deadline. The completed partial was preserved:
+${partial}
+MESSAGE
+    ;;
+  *)
+    backup_preserve_partial=1
+    error 18 <<MESSAGE
 Could not durably flush the completed backup. The partial snapshot was preserved:
 ${partial}
 MESSAGE
-fi
+    ;;
+esac
 backup_preserve_partial=1
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<MESSAGE
@@ -847,12 +884,26 @@ ${final}
 MESSAGE
     ;;
 esac
-if ! sync -f "${day_dir}"; then
-  error 18 <<MESSAGE
+postpublication_sync_status=0
+backup_deadline_run sync -f -- "${day_dir}" \
+  || postpublication_sync_status=$?
+case "${postpublication_sync_status}" in
+  0) ;;
+  124|137)
+    backup_succeeded=1
+    error 20 <<MESSAGE
+The snapshot was committed at '${final}', but its final durability flush exceeded the backup deadline.
+The final snapshot was preserved for inspection.
+MESSAGE
+    ;;
+  *)
+    backup_succeeded=1
+    error 18 <<MESSAGE
 Could not durably publish the completed backup. The final snapshot was preserved:
 ${final}
 MESSAGE
-fi
+    ;;
+esac
 backup_succeeded=1
 
 printf >&2 '%s\n' "$(terminal_write fg=green "Backed up ${entries_captured} entries." reset)"

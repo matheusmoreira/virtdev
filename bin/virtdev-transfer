@@ -186,6 +186,9 @@ fi
 
 remote="dev@127.0.0.1"
 transfer_deadline=$(( BASH_MONOSECONDS + VIRTDEV_TRANSFER_TIMEOUT ))
+readonly transfer_cleanup_grace=2
+readonly transfer_cleanup_kill_after=1
+readonly transfer_publication_not_started=200
 
 transfer_remaining() {
   local -n _transfer_remaining_result="${1}"
@@ -210,6 +213,14 @@ transfer_deadline_capture() {
   _transfer_deadline_capture_result="$(transfer_deadline_run "$@")" \
     || status=$?
   return "${status}"
+}
+
+transfer_publication_run() {
+  local remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+
+  (( remaining > 0 )) || return "${transfer_publication_not_started}"
+  timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+    "${remaining}" "$@"
 }
 
 transfer_recovery_begin() {
@@ -410,11 +421,13 @@ cleanup_transfer() {
     printf >&2 'Preserved transfer transaction for recovery: %s\n' \
       "${transfer_transaction}"
   else
-    mount_remove_tree "${transfer_transaction}" mount_path \
+    mount_remove_tree_bounded "${transfer_transaction}" mount_path \
+      "${transfer_cleanup_grace}" "${transfer_cleanup_kill_after}" \
       || remove_status=$?
     case "${remove_status}" in
       0) ;;
       1) printf >&2 'warning: preserving transfer stage with mounted subtree: %s\n' "${mount_path}" ;;
+      4) printf >&2 'warning: preserving transfer stage after cleanup grace expired: %s\n' "${transfer_transaction}" ;;
       *) printf >&2 'warning: transfer stage cleanup is unsafe or incomplete: %s\n' "${transfer_transaction}" ;;
     esac
   fi
@@ -1297,10 +1310,19 @@ rm -f -- "${archive}"
 # shellcheck disable=SC2034  # populated through mount_remove_tree nameref
 extract_mount=''
 extract_remove_status=0
-mount_remove_tree "${extract_directory}" extract_mount \
-  || extract_remove_status=$?
-(( extract_remove_status == 0 )) \
-  || error 11 <<<'Could not safely retire the validated extraction stage'
+remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+if (( remaining > 0 )); then
+  mount_remove_tree_bounded "${extract_directory}" extract_mount \
+    "${remaining}" "${VIRTDEV_TRANSFER_KILL_AFTER}" \
+    || extract_remove_status=$?
+else
+  extract_remove_status=4
+fi
+case "${extract_remove_status}" in
+  0) ;;
+  4) error 12 <<<'Extraction-stage retirement exceeded the transfer deadline' ;;
+  *) error 11 <<<'Could not safely retire the validated extraction stage' ;;
+esac
 
 if [[ -L "${stable_item}" ]]; then
   source_type=symlink
@@ -1455,7 +1477,7 @@ esac
 transfer_transaction_budget_checked 'publication preparation'
 (( ! target_exists )) || transfer_preserve_transaction=1
 publish_status=0
-transfer_deadline_run "${publish_helper}" "${publish_mode}" \
+transfer_publication_run "${publish_helper}" "${publish_mode}" \
   "${candidate}" "${target}" \
   || publish_status=$?
 case "${publish_status}" in
@@ -1484,6 +1506,13 @@ MESSAGE
     fi
     transfer_preserve_transaction=0
     error 15 <<<"Host publication target appeared during transfer: ${target}"
+    ;;
+  "${transfer_publication_not_started}")
+    transfer_preserve_transaction=0
+    error 12 <<MESSAGE
+The transfer deadline expired before publication began. The host target was not changed:
+${target}
+MESSAGE
     ;;
   124|137)
     transfer_preserve_transaction=1

@@ -10,9 +10,10 @@ trap 'rm -rf -- "${test_tmp}"' EXIT
 fixture_bin="${test_tmp}/bin"
 restore_bin="${test_tmp}/restore-bin"
 sync_bin="${test_tmp}/sync-bin"
+sync_stall_bin="${test_tmp}/sync-stall-bin"
 timeout_bin="${test_tmp}/timeout-bin"
 mkdir -p "${fixture_bin}" "${restore_bin}" "${test_tmp}/guest/data/sub"
-mkdir "${sync_bin}" "${timeout_bin}"
+mkdir "${sync_bin}" "${sync_stall_bin}" "${timeout_bin}"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
 printf '%s\n' \
@@ -45,6 +46,9 @@ cp "${repository}/tests/fixtures/ssh-restore" "${restore_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${restore_bin}/systemctl"
 chmod +x "${restore_bin}/ssh" "${restore_bin}/systemctl"
 ln -s "${repository}/tests/fixtures/sync-counted" "${sync_bin}/sync"
+cp "${repository}/tests/fixtures/sync-stall-counted" \
+  "${sync_stall_bin}/sync"
+chmod +x "${sync_stall_bin}/sync"
 cp "${repository}/tests/fixtures/timeout-copy-tree-status" \
   "${timeout_bin}/timeout"
 
@@ -543,6 +547,37 @@ if (( status != 18 )) || [[ "$(< "${post_sync_count}")" != 2 \
     "${status}" >&2
   exit 1
 fi
+
+for sync_phase in pre post; do
+  sync_stall_home="${test_tmp}/${sync_phase}-sync-stall-home"
+  sync_stall_count="${test_tmp}/${sync_phase}-sync-stall.count"
+  sync_stall_marker="${test_tmp}/${sync_phase}-sync-stall.marker"
+  sync_stall_call=1
+  [[ "${sync_phase}" == pre ]] || sync_stall_call=2
+  prepare_home "${sync_stall_home}"
+  status=0
+  run_backup "${sync_stall_home}" 1048576 100 3 \
+    env PATH="${sync_stall_bin}:${fixture_bin}:${PATH}" \
+      SYNC_COUNT_FILE="${sync_stall_count}" \
+      SYNC_STALL_CALL="${sync_stall_call}" \
+      SYNC_STALL_MARKER="${sync_stall_marker}" \
+    >"${test_tmp}/${sync_phase}-sync-stall.output" 2>&1 || status=$?
+  sync_stall_partial="$(find "${sync_stall_home}/backups/probe" \
+    -mindepth 2 -maxdepth 2 -type d -name '*.partial' -print -quit)"
+  sync_stall_final="$(find "${sync_stall_home}/backups/probe" \
+    -mindepth 2 -maxdepth 2 -type d ! -name '*.partial' -print -quit)"
+  if (( status != 20 )) || [[ ! -e "${sync_stall_marker}" ]] \
+      || { [[ "${sync_phase}" == pre ]] \
+        && [[ ! -f "${sync_stall_partial}/tree/data/sub/file" ]]; } \
+      || { [[ "${sync_phase}" == post ]] \
+        && [[ ! -f "${sync_stall_final}/tree/data/sub/file" \
+          || -n "${sync_stall_partial}" ]]; }; then
+    printf '%s-publication sync stall was not deadline-classified (status %d)\n' \
+      "${sync_phase}" "${status}" >&2
+    cat "${test_tmp}/${sync_phase}-sync-stall.output" >&2
+    exit 1
+  fi
+done
 
 publication_race_library="${test_tmp}/publish-race-target.so"
 cc -std=c99 -shared -fPIC -Wall -Wextra -Wpedantic -Werror \
