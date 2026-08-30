@@ -87,6 +87,27 @@ all_zero(const unsigned char *block)
 }
 
 static int
+remaining_zero(int fd, uint64_t remaining)
+{
+	unsigned char buffer[4096];
+
+	while (remaining > 0) {
+		size_t wanted = remaining < sizeof(buffer) ?
+		    (size_t)remaining : sizeof(buffer);
+		size_t index;
+
+		if (read_exact(fd, buffer, wanted) != 0)
+			return 0;
+		for (index = 0; index < wanted; ++index) {
+			if (buffer[index] != 0)
+				return 0;
+		}
+		remaining -= wanted;
+	}
+	return 1;
+}
+
+static int
 parse_octal(const unsigned char *field, size_t length, uint64_t *result)
 {
 	size_t index = 0;
@@ -306,8 +327,10 @@ main(int argc, char **argv)
 		offset += tar_block_size;
 		if (all_zero(block)) {
 			if (++zero_blocks == 2) {
+				int valid = remaining_zero(fd, file_size - offset);
+
 				close(fd);
-				return 0;
+				return valid ? 0 : gate_invalid;
 			}
 			continue;
 		}

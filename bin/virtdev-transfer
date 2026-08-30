@@ -26,8 +26,14 @@
 #
 # Configuration via environment variables:
 #
-#   VIRTDEV_HOME       Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
-#   VIRTDEV_SSH_KEY    Default: ${VIRTDEV_HOME}/ssh/id
+#   VIRTDEV_HOME                         Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   VIRTDEV_SSH_KEY                      Default: ${VIRTDEV_HOME}/ssh/id
+#   VIRTDEV_TRANSFER_MAX_BYTES           Default: 8589934592 (8 GiB logical data)
+#   VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES Default: 10737418240 (10 GiB)
+#   VIRTDEV_TRANSFER_MAX_ENTRIES         Default: 200000
+#   VIRTDEV_TRANSFER_TIMEOUT             Default: 3600 seconds total
+#   VIRTDEV_TRANSFER_KILL_AFTER          Default: 5 seconds from TERM to KILL
+#   VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES  Default: 65536
 #
 # Exit codes:
 #
@@ -38,6 +44,12 @@
 #   8   rsync not found
 #   9   neither source nor destination is a remote path
 #   10  both source and destination are remote paths
+#   11  download resource, structure, or capacity limit exceeded
+#   12  download deadline exceeded
+#   13  guest transport or archive capture failed
+#   14  guest produced an unsafe or malformed archive
+#   15  host publication target is unsafe or incompatible
+#   16  publication committed but its durability status is indeterminate
 #   64  usage error
 #   77  SSH key not found
 #   78  SSH key permissions too open
@@ -52,10 +64,50 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh port project
+import diagnostic enumerate error integer mount validate arguments ssh port project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
+: "${VIRTDEV_TRANSFER_MAX_BYTES:=8589934592}"
+: "${VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES:=10737418240}"
+: "${VIRTDEV_TRANSFER_MAX_ENTRIES:=200000}"
+: "${VIRTDEV_TRANSFER_TIMEOUT:=3600}"
+: "${VIRTDEV_TRANSFER_KILL_AFTER:=5}"
+: "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES:=65536}"
+
+integer_is_bounded_positive "${VIRTDEV_TRANSFER_MAX_BYTES}" 1099511627776 \
+  || error 64 <<<'Invalid VIRTDEV_TRANSFER_MAX_BYTES: expected 1..1099511627776'
+integer_is_bounded_positive "${VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES}" 2199023255552 \
+  || error 64 <<<'Invalid VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES: expected 1..2199023255552'
+integer_is_bounded_positive "${VIRTDEV_TRANSFER_MAX_ENTRIES}" 10000000 \
+  || error 64 <<<'Invalid VIRTDEV_TRANSFER_MAX_ENTRIES: expected 1..10000000'
+integer_is_bounded_positive "${VIRTDEV_TRANSFER_TIMEOUT}" 86400 \
+  || error 64 <<<'Invalid VIRTDEV_TRANSFER_TIMEOUT: expected 1..86400'
+integer_is_bounded_positive "${VIRTDEV_TRANSFER_KILL_AFTER}" 60 \
+  || error 64 <<<'Invalid VIRTDEV_TRANSFER_KILL_AFTER: expected 1..60'
+integer_is_bounded_positive "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" 1048576 \
+  || error 64 <<<'Invalid VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES: expected 1..1048576'
+
+readonly transfer_archive_entry_overhead=8192
+readonly transfer_archive_fixed_overhead=10240
+readonly transfer_free_space_reserve=536870912
+readonly transfer_inode_reserve=4096
+readonly transfer_member_path_max_bytes=4095
+readonly transfer_member_depth_max=128
+readonly transfer_extension_max_bytes=1048576
+readonly transfer_archive_memory_kib=262144
+
+transfer_archive_limit=$(( VIRTDEV_TRANSFER_MAX_BYTES \
+  + VIRTDEV_TRANSFER_MAX_ENTRIES * transfer_archive_entry_overhead \
+  + transfer_archive_fixed_overhead ))
+if (( VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES < transfer_archive_limit )); then
+  error 64 <<MESSAGE
+VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES must cover the configured logical-data
+and archive-metadata ceiling (${transfer_archive_limit} bytes).
+MESSAGE
+fi
+
+umask 077
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
 declare -A spec=()
@@ -123,27 +175,667 @@ fi
 
 remote="dev@127.0.0.1"
 
-if (( src_is_remote )); then
-  rsync_src="${remote}:${src#:}"
-  rsync_dest="${dest}"
-  printf >&2 'Copying from %s...\n' "${project}"
-else
-  rsync_src="${src}"
-  rsync_dest="${remote}:${dest#:}"
+if (( dest_is_remote )); then
   printf >&2 'Copying to %s...\n' "${project}"
+  ssh_command=""
+  rsync_wrapper=""
+  ssh_rsync_command ssh_command rsync_wrapper "${project}" \
+    "${VIRTDEV_SSH_KEY}" "${port}"
+  trap 'rm -f -- "${rsync_wrapper}"' EXIT
+  rsync -a -e "${ssh_command}" -- "${src}" "${remote}:${dest#:}"
+  exit 0
 fi
 
-ssh_command=""
-rsync_wrapper=""
-ssh_rsync_command ssh_command rsync_wrapper "${project}" \
-  "${VIRTDEV_SSH_KEY}" "${port}"
-trap 'rm -f "${rsync_wrapper}"' EXIT
+for command in tar rsync realpath; do
+  command -v "${command}" &>/dev/null \
+    || error 8 <<<"${command} is required for bounded downloads"
+done
 
-# --safe-links on a DOWNLOAD (guest -> host): a compromised guest could otherwise
-# plant symlinks pointing outside the destination (../../, /etc/...) that rsync would
-# faithfully recreate on the HOST. --safe-links drops symlinks that escape the
-# transfer. Omitted for uploads (the host is the trusted side), so a legitimate
-# outside-pointing symlink in your own tree still uploads.
-rsync_opts=(-a)
-(( src_is_remote )) && rsync_opts+=(--safe-links)
-rsync "${rsync_opts[@]}" -e "${ssh_command}" -- "${rsync_src}" "${rsync_dest}"
+# shellcheck disable=SC2154  # helper directory provided by import
+archive_gate="${virtdev_libexec_directory}/virtdev-archive-gate"
+copy_tree_helper="${virtdev_libexec_directory}/virtdev-copy-tree"
+publish_helper="${virtdev_libexec_directory}/virtdev-publish"
+for helper in "${archive_gate}" "${copy_tree_helper}" "${publish_helper}"; do
+  [[ -x "${helper}" ]] \
+    || error 11 <<<"Required bounded-transfer helper is unavailable: ${helper}. Run 'make'."
+done
+
+remote_path="${src#:}"
+if [[ -z "${remote_path}" || "${remote_path}" == *$'\n'* \
+    || "${remote_path}" == *$'\r'* ]]; then
+  error 64 <<<'Remote download path must be nonempty and contain no line breaks'
+fi
+tilde_slash=$'\x7e/'
+if [[ "${remote_path}" == '~' ]]; then
+  remote_normalized='/home/dev'
+elif [[ "${remote_path:0:2}" == "${tilde_slash}" ]]; then
+  remote_normalized="/home/dev/${remote_path:2}"
+elif [[ "${remote_path}" == /* ]]; then
+  remote_normalized="${remote_path}"
+else
+  remote_normalized="/home/dev/${remote_path}"
+fi
+remote_trailing=0
+if [[ "${remote_normalized}" != / && "${remote_normalized}" == */ ]]; then
+  remote_trailing=1
+  while [[ "${remote_normalized}" != / && "${remote_normalized}" == */ ]]; do
+    remote_normalized="${remote_normalized%/}"
+  done
+fi
+remote_basename="${remote_normalized##*/}"
+if [[ "${remote_normalized}" == / || -z "${remote_basename}" \
+    || "${remote_basename}" == . || "${remote_basename}" == .. ]]; then
+  error 64 <<<'Downloading a filesystem root or dot component is not supported'
+fi
+remote_request_path="${remote_normalized}"
+(( remote_trailing )) && remote_request_path+='/'
+
+if [[ -z "${dest}" || "${dest}" == *$'\n'* || "${dest}" == *$'\r'* ]]; then
+  error 64 <<<'Host destination must be nonempty and contain no line breaks'
+fi
+dest_trailing=0
+if [[ "${dest}" != / && "${dest}" == */ ]]; then
+  dest_trailing=1
+fi
+dest_trimmed="${dest}"
+while [[ "${dest_trimmed}" != / && "${dest_trimmed}" == */ ]]; do
+  dest_trimmed="${dest_trimmed%/}"
+done
+if [[ "${dest_trimmed}" == /* ]]; then
+  dest_lexical="${dest_trimmed}"
+else
+  dest_lexical="${PWD}/${dest_trimmed}"
+fi
+if [[ -L "${dest_lexical}" ]]; then
+  error 15 <<<"Refusing a symlink publication destination: ${dest}"
+fi
+dest_initial_directory=0
+if [[ -e "${dest_lexical}" ]]; then
+  dest_absolute="$(realpath -e -- "${dest_lexical}")" \
+    || error 15 <<<"Could not resolve host destination: ${dest}"
+  [[ -d "${dest_absolute}" ]] && dest_initial_directory=1
+else
+  (( ! dest_trailing )) \
+    || error 15 <<<"A destination ending in '/' must already be a directory: ${dest}"
+  dest_name="${dest_lexical##*/}"
+  dest_parent_lexical="${dest_lexical%/*}"
+  [[ -n "${dest_parent_lexical}" ]] || dest_parent_lexical=/
+  [[ -n "${dest_name}" && "${dest_name}" != . && "${dest_name}" != .. ]] \
+    || error 15 <<<"Unsafe host destination: ${dest}"
+  dest_parent="$(realpath -e -- "${dest_parent_lexical}")" \
+    || error 15 <<<"Host destination parent does not exist: ${dest_parent_lexical}"
+  [[ -d "${dest_parent}" && ! -L "${dest_parent}" ]] \
+    || error 15 <<<"Host destination parent is not a real directory: ${dest_parent}"
+  dest_absolute="${dest_parent%/}/${dest_name}"
+fi
+
+if (( remote_trailing )); then
+  [[ "${dest_absolute}" != / ]] \
+    || error 15 <<<'Refusing to merge a download into the host filesystem root'
+  transaction_parent="${dest_absolute%/*}"
+  [[ -n "${transaction_parent}" ]] || transaction_parent=/
+elif (( dest_initial_directory )); then
+  transaction_parent="${dest_absolute}"
+else
+  transaction_parent="${dest_absolute%/*}"
+  [[ -n "${transaction_parent}" ]] || transaction_parent=/
+fi
+[[ -d "${transaction_parent}" && ! -L "${transaction_parent}" ]] \
+  || error 15 <<<"Unsafe publication parent: ${transaction_parent}"
+
+transfer_deadline=$(( BASH_MONOSECONDS + VIRTDEV_TRANSFER_TIMEOUT ))
+transfer_transaction="$(mktemp -d \
+  --tmpdir="${transaction_parent}" '.virtdev-transfer.XXXXXXXX')" \
+  || error 11 <<<"Could not create a private download stage in ${transaction_parent}"
+transfer_preserve_transaction=0
+transfer_df_counter=0
+
+cleanup_transfer() {
+  local -r cleanup_status=$?
+  local mount_path='' remove_status=0
+
+  trap - EXIT
+  set +e
+  if (( transfer_preserve_transaction )); then
+    printf >&2 'Preserved transfer transaction for recovery: %s\n' \
+      "${transfer_transaction}"
+  else
+    mount_remove_tree "${transfer_transaction}" mount_path \
+      || remove_status=$?
+    case "${remove_status}" in
+      0) ;;
+      1) printf >&2 'warning: preserving transfer stage with mounted subtree: %s\n' "${mount_path}" ;;
+      *) printf >&2 'warning: transfer stage cleanup is unsafe or incomplete: %s\n' "${transfer_transaction}" ;;
+    esac
+  fi
+  exit "${cleanup_status}"
+}
+trap cleanup_transfer EXIT
+
+transfer_remaining() {
+  local -n _transfer_remaining_result="${1}"
+  _transfer_remaining_result=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( _transfer_remaining_result > 0 )) \
+    || error 12 <<<'Transfer wall-clock deadline expired'
+}
+
+transfer_df_value() {
+  local -n _transfer_df_result="${1}"
+  local -r column="${2}" path="${3}" phase="${4}"
+  local remaining output value output_size
+  local -a lines=() statuses=()
+
+  (( ++transfer_df_counter ))
+  output="${transfer_transaction}/df-${transfer_df_counter}"
+  transfer_remaining remaining
+  set +e
+  case "${column}" in
+    avail)
+      timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+        "${remaining}" df -B1 --output=avail -- "${path}" 2>/dev/null \
+        | head -c 4097 > "${output}"
+      statuses=("${PIPESTATUS[@]}")
+      ;;
+    iavail)
+      timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+        "${remaining}" df --output=iavail -- "${path}" 2>/dev/null \
+        | head -c 4097 > "${output}"
+      statuses=("${PIPESTATUS[@]}")
+      ;;
+    *) error 11 <<<"Could not inspect host capacity during ${phase}" ;;
+  esac
+  set -e
+  (( ${#statuses[@]} == 2 && statuses[1] == 0 )) \
+    || error 11 <<<"Could not capture host capacity during ${phase}"
+  output_size="$(stat -c '%s' -- "${output}" 2>/dev/null)" \
+    || output_size=''
+  if [[ ! "${output_size}" =~ ^[0-9]+$ ]] \
+      || (( output_size > 4096 )); then
+    error 11 <<<"Could not parse host capacity during ${phase}"
+  fi
+  case "${statuses[0]}" in
+    0) ;;
+    124|137) error 12 <<<"Host capacity check timed out during ${phase}" ;;
+    *) error 11 <<<"Could not inspect host capacity during ${phase}" ;;
+  esac
+  mapfile -t lines < "${output}"
+  (( ${#lines[@]} == 2 )) \
+    || error 11 <<<"Could not parse host capacity during ${phase}"
+  value="${lines[1]//[[:space:]]/}"
+  if [[ "${column}" == iavail && "${value}" == - ]]; then
+    error 11 <<<"Host inode availability is unavailable during ${phase}"
+  elif [[ "${value}" =~ ^[0-9]+$ && ${#value} -le 18 ]]; then
+    _transfer_df_result="${value}"
+  else
+    error 11 <<<"Could not parse host capacity during ${phase}"
+  fi
+}
+
+transfer_memory_limited() {
+  (
+    ulimit -v "${transfer_archive_memory_kib}" || exit 70
+    exec "$@"
+  )
+}
+
+transfer_du_value() {
+  local -n _transfer_du_result="${1}"
+  local -r path="${2}" phase="${3}"
+  local remaining output value ignored
+  local -a statuses=()
+
+  output="${transfer_transaction}/du-${phase}"
+  transfer_remaining remaining
+  set +e
+  LC_ALL=C timeout --signal=TERM \
+      --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+      du -sx -B1 -- "${path}" 2>/dev/null \
+    | head -c 4097 > "${output}"
+  statuses=("${PIPESTATUS[@]}")
+  set -e
+  (( ${#statuses[@]} == 2 && statuses[1] == 0 )) \
+    || error 11 <<<"Could not capture allocated bytes during ${phase}"
+  case "${statuses[0]}" in
+    0) ;;
+    124|137) error 12 <<<"Allocated-byte accounting timed out during ${phase}" ;;
+    *) error 11 <<<"Could not inspect allocated bytes during ${phase}" ;;
+  esac
+  read -r value ignored < "${output}"
+  [[ "${value}" =~ ^[0-9]+$ && ${#value} -le 18 \
+      && -n "${ignored}" ]] \
+    || error 11 <<<"Could not parse allocated bytes during ${phase}"
+  _transfer_du_result="${value}"
+}
+
+transfer_copy_tree() {
+  local -r source_tree="${1}" destination_parent="${2}" phase="${3}"
+  local remaining copy_status=0 summary_entries summary_bytes extra
+  local summary="${destination_parent}/summary"
+
+  mkdir -m 0700 -- "${destination_parent}"
+  transfer_remaining remaining
+  timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+    "${remaining}" "${copy_tree_helper}" \
+    "${source_tree}" "${destination_parent}" \
+    "${VIRTDEV_TRANSFER_MAX_BYTES}" "${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
+    "${transfer_free_space_reserve}" "${transfer_inode_reserve}" \
+    > "${summary}" || copy_status=$?
+  case "${copy_status}" in
+    0) ;;
+    42|44|45|46|48) error 11 <<<"${phase} exceeded a transfer resource or structure limit" ;;
+    47) error 14 <<<"${phase} changed while a stable copy was being constructed" ;;
+    124|137) error 12 <<<"${phase} exceeded the transfer deadline" ;;
+    *) error 11 <<<"Could not construct a stable tree during ${phase}" ;;
+  esac
+  read -r summary_entries summary_bytes extra < "${summary}"
+  [[ "${summary_entries}" =~ ^[0-9]+$ \
+      && "${summary_bytes}" =~ ^[0-9]+$ && -z "${extra}" ]] \
+    || error 11 <<<"Could not parse stable-tree accounting during ${phase}"
+  TRANSFER_COPY_ENTRIES="${summary_entries}"
+  TRANSFER_COPY_BYTES="${summary_bytes}"
+}
+
+printf >&2 'Capturing a bounded download from %s...\n' "${project}"
+archive="${transfer_transaction}/capture.tar"
+request="${transfer_transaction}/request"
+capture_stderr="${transfer_transaction}/capture.stderr"
+capture_stderr_fifo="${transfer_transaction}/capture.stderr.fifo"
+printf '%s\0' "${remote_request_path}" > "${request}"
+
+available_bytes=''
+transfer_df_value available_bytes avail "${transfer_transaction}" \
+  'archive capture preflight'
+if (( available_bytes <= transfer_free_space_reserve + 10240 )); then
+  error 11 <<<'Not enough host free space to preserve the transfer reserve'
+fi
+effective_archive_limit=$(( available_bytes - transfer_free_space_reserve ))
+(( effective_archive_limit <= transfer_archive_limit )) \
+  || effective_archive_limit="${transfer_archive_limit}"
+
+remote_tar=$'set -euo pipefail\nIFS= read -r -d "" path || exit 64\ntrailing=0\nif [[ "${path}" != / && "${path}" == */ ]]; then\n  trailing=1\n  while [[ "${path}" != / && "${path}" == */ ]]; do path="${path%/}"; done\nfi\n[[ "${path}" != / ]] || exit 65\nbase="${path##*/}"\nparent="${path%/*}"\n[[ -n "${parent}" ]] || parent=/\n[[ -n "${base}" && "${base}" != . && "${base}" != .. ]] || exit 65\ncd -- "${parent}" || exit 66\n[[ -e "${base}" || -L "${base}" ]] || exit 67\nif (( trailing )) && { [[ ! -d "${base}" ]] || [[ -L "${base}" ]]; }; then exit 68; fi\nif [[ ! -d "${base}" && ! -f "${base}" && ! -L "${base}" ]]; then exit 69; fi\nprintf "%s\\0" "${base}" | /usr/bin/tar --create --file=- --one-file-system --null --verbatim-files-from --files-from=- --transform="flags=rh;s,^[^/]*,payload/item,"'
+printf -v remote_tar_quoted '%q' "${remote_tar}"
+
+remaining=''
+transfer_remaining remaining
+set +e
+# shellcheck disable=SC2154  # helper directory provided by import
+LC_ALL=C bounded_stderr_run "${capture_stderr}" "${capture_stderr_fifo}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+    timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+      "${remaining}" "${virtdev_bin_directory}/virtdev-ssh" \
+      "${project}" -- bash -c "${remote_tar_quoted}" \
+    < "${request}" \
+  | head -c "$(( effective_archive_limit + 1 ))" > "${archive}"
+capture_status=("${PIPESTATUS[@]}")
+set -e
+
+diagnostic_status=0
+bounded_stderr_emit "${capture_stderr}" \
+  "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+case "${diagnostic_status}" in
+  0) ;;
+  2) error 11 <<<'Guest download diagnostics exceeded their output budget' ;;
+  *) error 13 <<<'Could not capture bounded guest download diagnostics' ;;
+esac
+archive_size="$(stat -c '%s' -- "${archive}" 2>/dev/null)" \
+  || archive_size=''
+[[ "${archive_size}" =~ ^[0-9]+$ ]] \
+  || error 13 <<<'Could not validate the captured download archive'
+if (( archive_size > effective_archive_limit )); then
+  error 11 <<<"Download exceeded its ${effective_archive_limit}-byte wire budget"
+fi
+(( ${#capture_status[@]} == 2 && capture_status[1] == 0 )) \
+  || error 13 <<<'Could not store the bounded download archive'
+case "${capture_status[0]}" in
+  0) ;;
+  124|137) error 12 <<<'Guest download capture exceeded the transfer deadline' ;;
+  255) error 13 <<<'SSH transport failed during download capture' ;;
+  *) error 13 <<<"Guest archive creation failed (exit ${capture_status[0]})" ;;
+esac
+
+remaining=''
+transfer_remaining remaining
+gate_status=0
+timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+  "${remaining}" "${archive_gate}" "${archive}" \
+  "${VIRTDEV_TRANSFER_MAX_ENTRIES}" "${transfer_member_path_max_bytes}" \
+  "${transfer_extension_max_bytes}" || gate_status=$?
+case "${gate_status}" in
+  0) ;;
+  2) error 14 <<<'Guest produced malformed tar metadata' ;;
+  3) error 11 <<<'Download archive metadata exceeded its bounded record budget' ;;
+  124|137) error 12 <<<'Download archive validation exceeded the transfer deadline' ;;
+  *) error 14 <<<'Could not validate guest tar metadata' ;;
+esac
+
+archive_paths_summary="${transfer_transaction}/archive-paths"
+remaining=''
+transfer_remaining remaining
+set +e
+# shellcheck disable=SC2016  # awk program is data passed through timeout
+LC_ALL=C transfer_memory_limited timeout --signal=TERM \
+    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+    tar --quoting-style=escape --list --file="${archive}" \
+  | LC_ALL=C transfer_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+      awk -v maximum_entries="${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
+        -v maximum_path_bytes="${transfer_member_path_max_bytes}" \
+        -v maximum_depth="${transfer_member_depth_max}" '
+        function add_component(parent, value, key) {
+          key = parent SUBSEP value
+          if (!(key in child_id)) {
+            nodes++
+            if (nodes > maximum_entries + 1) { entries_over = 1; exit }
+            child_id[key] = nodes
+          }
+          return child_id[key]
+        }
+        {
+          members++
+          if (members > maximum_entries) { entries_over = 1; exit }
+          path = $0
+          sub(/\/$/, "", path)
+          while (substr(path, 1, 2) == "./") path = substr(path, 3)
+          if (path == "" || substr(path, 1, 1) == "/" \
+              || (path != "payload/item" \
+                  && substr(path, 1, 13) != "payload/item/")) {
+            invalid_path = 1
+            exit
+          }
+          if (length(path) > maximum_path_bytes) { path_over = 1; exit }
+          if (seen[path]++) { duplicate_path = 1; exit }
+          count = split(path, component, "/")
+          if (count - 2 > maximum_depth) { path_over = 1; exit }
+          parent = 0
+          for (i = 1; i <= count; i++) {
+            if (component[i] == "" || component[i] == "." \
+                || component[i] == "..") {
+              invalid_path = 1
+              exit
+            }
+            parent = add_component(parent, component[i])
+          }
+        }
+        END {
+          if (entries_over) exit 42
+          if (invalid_path || duplicate_path) exit 43
+          if (path_over) exit 44
+          printf("%d %d\n", members, nodes - 1)
+        }
+      ' > "${archive_paths_summary}"
+path_status=("${PIPESTATUS[@]}")
+set -e
+case "${path_status[1]}" in
+  0) ;;
+  42) error 11 <<<'Download exceeded its extracted-entry budget' ;;
+  43) error 14 <<<'Download archive contains a duplicate or unsafe member path' ;;
+  44) error 11 <<<'Download archive path or nesting depth exceeded its limit' ;;
+  124|137) error 12 <<<'Download path validation exceeded the transfer deadline' ;;
+  *) error 14 <<<'Could not validate download archive paths' ;;
+esac
+case "${path_status[0]}" in
+  0) ;;
+  124|137) error 12 <<<'Download path listing exceeded the transfer deadline' ;;
+  *) error 14 <<<'Guest produced an invalid download archive' ;;
+esac
+read -r members_listed extracted_entries extra \
+  < "${archive_paths_summary}"
+[[ "${members_listed}" =~ ^[0-9]+$ \
+    && "${extracted_entries}" =~ ^[0-9]+$ && -z "${extra}" ]] \
+  || error 14 <<<'Could not parse download path accounting'
+
+remaining=''
+transfer_remaining remaining
+set +e
+# shellcheck disable=SC2016  # awk program is data passed through timeout
+archive_summary="$({
+  LC_ALL=C transfer_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+      tar --numeric-owner --quoting-style=escape --list --verbose \
+        --file="${archive}" \
+    | LC_ALL=C transfer_memory_limited timeout --signal=TERM \
+        --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+        awk -v maximum_entries="${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
+          -v maximum_bytes="${VIRTDEV_TRANSFER_MAX_BYTES}" '
+          {
+            count++
+            type = substr($0, 1, 1)
+            if (type !~ /^[-dlh]$/) bad_type = 1
+            if (count > maximum_entries) { entries_over = 1; exit }
+            if (type == "-") {
+              size = $3
+              if (size !~ /^[0-9]+$/) { bad_size = 1; exit }
+              sub(/^0+/, "", size)
+              if (size == "") size = "0"
+              if (length(size) > length(maximum_bytes) \
+                  || (length(size) == length(maximum_bytes) \
+                      && ("x" size) > ("x" maximum_bytes))) {
+                bytes_over = 1
+                exit
+              }
+              logical_bytes += size + 0
+              if (logical_bytes > maximum_bytes) { bytes_over = 1; exit }
+            }
+          }
+          END {
+            if (entries_over) exit 42
+            if (bad_type) exit 43
+            if (bytes_over) exit 44
+            if (bad_size) exit 45
+            printf("%d %.0f\n", count, logical_bytes)
+          }
+        '
+})"
+summary_status=$?
+set -e
+case "${summary_status}" in
+  0) ;;
+  42) error 11 <<<'Download exceeded its archive-entry budget' ;;
+  43) error 14 <<<'Download archive contains an unsupported special file' ;;
+  44) error 11 <<<'Download exceeded its logical-byte budget' ;;
+  45) error 14 <<<'Download archive contains an invalid regular-file size' ;;
+  124|137) error 12 <<<'Download accounting exceeded the transfer deadline' ;;
+  *) error 14 <<<'Could not account for download archive entries' ;;
+esac
+read -r entries_captured logical_bytes_captured extra <<< "${archive_summary}"
+[[ "${entries_captured}" =~ ^[0-9]+$ \
+    && "${logical_bytes_captured}" =~ ^[0-9]+$ && -z "${extra}" ]] \
+  || error 14 <<<'Could not parse download archive accounting'
+(( entries_captured == members_listed && entries_captured > 0 )) \
+  || error 14 <<<'Download archive listings disagreed or were empty'
+
+extraction_ceiling=$(( logical_bytes_captured \
+  + extracted_entries * transfer_archive_entry_overhead ))
+(( extraction_ceiling <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
+  || error 11 <<<'Download exceeds its allocated-byte ceiling'
+available_extract_bytes=''
+available_inodes=''
+transfer_df_value available_extract_bytes avail "${transfer_transaction}" \
+  'archive extraction preflight'
+transfer_df_value available_inodes iavail "${transfer_transaction}" \
+  'archive extraction inode preflight'
+(( available_extract_bytes >= extraction_ceiling + transfer_free_space_reserve )) \
+  || error 11 <<<'Not enough host free space to extract the bounded download'
+if (( available_inodes < extracted_entries + transfer_inode_reserve )); then
+  error 11 <<<'Not enough host inodes to extract the bounded download'
+fi
+
+extract_directory="${transfer_transaction}/extract"
+mkdir -m 0700 -- "${extract_directory}"
+remaining=''
+transfer_remaining remaining
+extract_status=0
+transfer_memory_limited timeout --signal=TERM \
+  --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+  tar --extract --file="${archive}" --directory="${extract_directory}" \
+    --no-same-owner --same-permissions --delay-directory-restore \
+  || extract_status=$?
+case "${extract_status}" in
+  0) ;;
+  124|137) error 12 <<<'Download extraction exceeded the transfer deadline' ;;
+  *) error 14 <<<"Download archive extraction failed (exit ${extract_status})" ;;
+esac
+payload="${extract_directory}/payload"
+source_item="${payload}/item"
+[[ -d "${payload}" && ! -L "${payload}" \
+    && ( -e "${source_item}" || -L "${source_item}" ) ]] \
+  || error 14 <<<'Download archive did not produce its exact payload root'
+if find "${extract_directory}" -mindepth 1 -maxdepth 1 \
+    ! -name payload -print -quit | grep -q .; then
+  error 14 <<<'Download archive produced data outside its payload root'
+fi
+
+declare -a transfer_symlinks=()
+if [[ -L "${source_item}" ]]; then
+  error 14 <<<'A downloaded root symlink cannot be confined after publication'
+elif [[ -d "${source_item}" ]]; then
+  symlink_root="${source_item}"
+  # shellcheck disable=SC2154  # provided by the enumerate library
+  enumerate_nul_sorted transfer_symlinks "${enumerate_max_bytes}" \
+    "${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
+    find -P "${symlink_root}" -mindepth 1 -type l -print0 \
+    || error 14 <<<'Could not completely enumerate downloaded symlinks'
+fi
+resolved_link_file="${transfer_transaction}/resolved-link"
+for link_path in "${transfer_symlinks[@]}"; do
+  remaining=''
+  transfer_remaining remaining
+  set +e
+  timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+    "${remaining}" realpath -m -z -- "${link_path}" \
+    > "${resolved_link_file}"
+  link_status=$?
+  set -e
+  case "${link_status}" in
+    0) ;;
+    124|137) error 12 <<<'Symlink validation exceeded the transfer deadline' ;;
+    *) error 14 <<<"Could not resolve downloaded symlink: ${link_path}" ;;
+  esac
+  mapfile -d '' -t resolved_links < "${resolved_link_file}"
+  (( ${#resolved_links[@]} == 1 )) \
+    || error 14 <<<"Could not parse downloaded symlink: ${link_path}"
+  resolved_link="${resolved_links[0]}"
+  if [[ "${resolved_link}" != "${symlink_root}" \
+      && "${resolved_link}" != "${symlink_root}/"* ]]; then
+    error 14 <<<"Downloaded symlink escapes the transfer root: ${link_path}"
+  fi
+done
+
+extracted_allocated=''
+transfer_du_value extracted_allocated "${payload}" extracted
+(( extracted_allocated <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
+  || error 11 <<<'Extracted download exceeded its allocated-byte budget'
+
+stable_parent="${transfer_transaction}/stable"
+TRANSFER_COPY_ENTRIES=''
+TRANSFER_COPY_BYTES=''
+transfer_copy_tree "${payload}" "${stable_parent}" 'download stabilization'
+(( TRANSFER_COPY_ENTRIES == extracted_entries \
+    && TRANSFER_COPY_BYTES == logical_bytes_captured )) \
+  || error 14 <<<'Download changed between archive validation and stabilization'
+stable_payload="${stable_parent}/tree"
+stable_item="${stable_payload}/item"
+stable_allocated=''
+transfer_du_value stable_allocated "${stable_payload}" stable
+(( stable_allocated <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
+  || error 11 <<<'Stable download exceeded its allocated-byte budget'
+
+rm -f -- "${archive}"
+# shellcheck disable=SC2034  # populated through mount_remove_tree nameref
+extract_mount=''
+extract_remove_status=0
+mount_remove_tree "${extract_directory}" extract_mount \
+  || extract_remove_status=$?
+(( extract_remove_status == 0 )) \
+  || error 11 <<<'Could not safely retire the validated extraction stage'
+
+if [[ -L "${stable_item}" ]]; then
+  source_type=symlink
+elif [[ -d "${stable_item}" ]]; then
+  source_type=directory
+elif [[ -f "${stable_item}" ]]; then
+  source_type='file'
+else
+  error 14 <<<'Stable download has an unsupported root type'
+fi
+if (( remote_trailing )) && [[ "${source_type}" != directory ]]; then
+  error 14 <<<'A remote path ending in slash did not resolve to a real directory'
+fi
+
+if (( remote_trailing )); then
+  target="${dest_absolute}"
+elif (( dest_initial_directory )); then
+  target="${dest_absolute%/}/${remote_basename}"
+else
+  target="${dest_absolute}"
+fi
+[[ "${target}" != / && ! -L "${target}" ]] \
+  || error 15 <<<"Unsafe host publication target: ${target}"
+target_parent="${target%/*}"
+[[ -n "${target_parent}" ]] || target_parent=/
+[[ -d "${target_parent}" && ! -L "${target_parent}" ]] \
+  || error 15 <<<"Host publication parent changed or is unsafe: ${target_parent}"
+transaction_device="$(stat -c '%d' -- "${transfer_transaction}")" \
+  || error 15 <<<'Could not inspect transfer-stage filesystem'
+target_parent_device="$(stat -c '%d' -- "${target_parent}")" \
+  || error 15 <<<'Could not inspect publication filesystem'
+[[ "${transaction_device}" == "${target_parent_device}" ]] \
+  || error 15 <<<'Atomic download publication cannot cross filesystems'
+
+target_exists=0
+[[ -e "${target}" || -L "${target}" ]] && target_exists=1
+candidate="${stable_item}"
+if (( target_exists )); then
+  [[ ! -L "${target}" ]] \
+    || error 15 <<<"Refusing to replace a symlink host target: ${target}"
+  if [[ -d "${target}" ]]; then
+    [[ "${source_type}" == directory ]] \
+      || error 15 <<<"Cannot merge a non-directory download into: ${target}"
+    clone_parent="${transfer_transaction}/clone"
+    transfer_copy_tree "${target}" "${clone_parent}" \
+      'existing destination stabilization'
+    remaining=''
+    transfer_remaining remaining
+    overlay_status=0
+    timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+      "${remaining}" rsync -a --safe-links --delay-updates -- \
+      "${stable_item}/" "${clone_parent}/tree/" || overlay_status=$?
+    case "${overlay_status}" in
+      0) ;;
+      124|137) error 12 <<<'Destination merge exceeded the transfer deadline' ;;
+      *) error 15 <<<"Could not build a private destination merge (rsync ${overlay_status})" ;;
+    esac
+    publish_parent="${transfer_transaction}/publish"
+    transfer_copy_tree "${clone_parent}/tree" "${publish_parent}" \
+      'merged destination validation'
+    candidate="${publish_parent}/tree"
+  elif [[ "${source_type}" == directory ]]; then
+    error 15 <<<"Cannot replace a non-directory host target with a directory: ${target}"
+  fi
+fi
+
+candidate_allocated=''
+transfer_du_value candidate_allocated "${candidate}" candidate
+(( candidate_allocated <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
+  || error 11 <<<'Publication candidate exceeded its allocated-byte budget'
+
+publish_mode=noreplace
+(( target_exists )) && publish_mode=exchange
+publish_status=0
+"${publish_helper}" "${publish_mode}" "${candidate}" "${target}" \
+  || publish_status=$?
+case "${publish_status}" in
+  0) ;;
+  2)
+    transfer_preserve_transaction=1
+    error 16 <<MESSAGE
+The completed download reached '${target}', but its post-publication sync failed.
+The previous target and transaction were preserved for inspection.
+MESSAGE
+    ;;
+  3) error 15 <<<"Host publication target appeared during transfer: ${target}" ;;
+  *) error 15 <<<"Could not atomically publish the completed download: ${target}" ;;
+esac
+
+printf >&2 'Downloaded %s entries (%s logical bytes) from %s.\n' \
+  "${extracted_entries}" "${logical_bytes_captured}" "${project}"
