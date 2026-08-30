@@ -8,9 +8,10 @@ trap 'rm -rf -- "${test_tmp}"' EXIT
 
 fixture_bin="${test_tmp}/bin"
 command_fixture_bin="${test_tmp}/command-bin"
+mutation_bin="${test_tmp}/mutation-bin"
 virtdev_home="${test_tmp}/virtdev"
 ssh_key="${test_tmp}/id"
-mkdir -p "${fixture_bin}" "${command_fixture_bin}" \
+mkdir -p "${fixture_bin}" "${command_fixture_bin}" "${mutation_bin}" \
   "${virtdev_home}/projects/probe" \
   "${test_tmp}/archive-source"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
@@ -19,12 +20,16 @@ chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl"
 cp "${repository}/tests/fixtures/ssh-command" "${command_fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${command_fixture_bin}/systemctl"
 chmod +x "${command_fixture_bin}/ssh" "${command_fixture_bin}/systemctl"
+cp "${repository}/tests/fixtures/rsync-mutate-target" \
+  "${mutation_bin}/rsync"
+chmod 755 "${mutation_bin}/rsync"
 printf '2222\n' > "${virtdev_home}/projects/probe/port"
 printf 'ssh-host-identity=1\n' \
   > "${virtdev_home}/projects/probe/guest-contract"
 printf 'test private key\n' > "${ssh_key}"
 chmod 600 "${ssh_key}"
 (
+  # shellcheck disable=SC2030  # project identity setup is isolated
   export VIRTDEV_HOME="${virtdev_home}"
   # shellcheck disable=SC1090
   source "${repository}/lib/virtdev/import"
@@ -73,6 +78,50 @@ if find "${test_tmp}" -maxdepth 2 -type d \
 fi
 
 printf 'ok - bounded download publishes one stable file atomically\n'
+
+locked_destination="${test_tmp}/locked-destination"
+target_lock_directory="${test_tmp}/target-locks"
+target_lock_ready="${test_tmp}/target-lock.ready"
+target_lock_release="${test_tmp}/target-lock.release"
+(
+  export HOME="${test_tmp}"
+  # shellcheck disable=SC2031  # lock holder is isolated
+  export VIRTDEV_HOME="${virtdev_home}"
+  export VIRTDEV_LOCK_DIRECTORY="${target_lock_directory}"
+  # shellcheck disable=SC1090
+  source "${repository}/lib/virtdev/import"
+  import lock
+  target_lock_path="$(lock_identity_path transfer-target \
+    "${locked_destination}")"
+  lock_prepare_control_directory
+  lock_prepare_file "${target_lock_path}"
+  exec 6>>"${target_lock_path}"
+  flock -n 6
+  : > "${target_lock_ready}"
+  while [[ ! -e "${target_lock_release}" ]]; do
+    sleep 0.01
+  done
+) &
+target_lock_pid=$!
+for _ in {1..1000}; do
+  [[ -e "${target_lock_ready}" ]] && break
+  kill -0 "${target_lock_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+status=0
+run_transfer "${test_tmp}/file.tar" file "${locked_destination}" \
+  env VIRTDEV_LOCK_DIRECTORY="${target_lock_directory}" \
+  >"${test_tmp}/target-lock.output" 2>&1 || status=$?
+: > "${target_lock_release}"
+wait "${target_lock_pid}"
+if (( status != 75 )) || [[ -e "${locked_destination}" ]]; then
+  printf 'target-lock contention was not fail-safe (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/target-lock.output" >&2
+  exit 1
+fi
+
+printf 'ok - concurrent publications to one host target are serialized\n'
 
 mkdir -p "${test_tmp}/live-guest/tree/sub"
 printf 'live\n' > "${test_tmp}/live-guest/tree/sub/file"
@@ -151,6 +200,85 @@ if (( status != 0 )) || [[ "$(< "${destination}")" != replacement ]]; then
 fi
 
 printf 'ok - directory merges and file replacement publish complete candidates\n'
+
+nested_race_root="${test_tmp}/nested-race-root"
+nested_race_target="${nested_race_root}/remote-dir"
+mkdir -p "${nested_race_target}"
+printf 'keep\n' > "${nested_race_target}/keep"
+nested_race_marker="${test_tmp}/nested-race.marker"
+status=0
+run_transfer "${test_tmp}/directory.tar" remote-dir "${nested_race_root}" \
+  env PATH="${mutation_bin}:${fixture_bin}:${PATH}" \
+    TRANSFER_MUTATION_MODE=nested \
+    TRANSFER_MUTATION_TARGET="${nested_race_target}" \
+    TRANSFER_MUTATION_MARKER="${nested_race_marker}" \
+  >"${test_tmp}/nested-race.output" 2>&1 || status=$?
+nested_race_transaction="$(find "${nested_race_root}" -maxdepth 1 -type d \
+  -name '.virtdev-transfer.*' -print -quit)"
+if (( status != 15 )) \
+    || [[ "$(< "${nested_race_target}/keep")" != writer-update \
+      || "$(< "${nested_race_target}/writer-added")" != writer-added \
+      || -e "${nested_race_target}/new" \
+      || -z "${nested_race_transaction}" ]]; then
+  printf 'nested destination race was not rolled back safely (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/nested-race.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${nested_race_transaction}"
+
+replacement_race_root="${test_tmp}/replacement-race-root"
+replacement_race_target="${replacement_race_root}/remote-dir"
+mkdir -p "${replacement_race_target}"
+printf 'original\n' > "${replacement_race_target}/original"
+replacement_race_marker="${test_tmp}/replacement-race.marker"
+status=0
+run_transfer "${test_tmp}/directory.tar" remote-dir \
+  "${replacement_race_root}" \
+  env PATH="${mutation_bin}:${fixture_bin}:${PATH}" \
+    TRANSFER_MUTATION_MODE=replace \
+    TRANSFER_MUTATION_TARGET="${replacement_race_target}" \
+    TRANSFER_MUTATION_MARKER="${replacement_race_marker}" \
+  >"${test_tmp}/replacement-race.output" 2>&1 || status=$?
+replacement_race_transaction="$(find "${replacement_race_root}" \
+  -maxdepth 1 -type d -name '.virtdev-transfer.*' -print -quit)"
+if (( status != 15 )) \
+    || [[ "$(< "${replacement_race_target}/replacement")" \
+        != writer-replacement \
+      || -e "${replacement_race_target}/new" \
+      || "$(< "${replacement_race_target}.writer-old/original")" != original \
+      || -z "${replacement_race_transaction}" ]]; then
+  printf 'destination replacement race was not rolled back safely (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/replacement-race.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${replacement_race_transaction}"
+
+file_mutation_library="${test_tmp}/publish-mutate-file.so"
+cc -std=c99 -shared -fPIC -Wall -Wextra -Wpedantic -Werror \
+  -o "${file_mutation_library}" \
+  "${repository}/tests/support/publish-mutate-file.c"
+printf 'old\n' > "${destination}"
+file_race_marker="${test_tmp}/file-race.marker"
+status=0
+run_transfer "${test_tmp}/replacement.tar" file "${destination}" \
+  env LD_PRELOAD="${file_mutation_library}" \
+    TRANSFER_MUTATION_TARGET="${destination}" \
+    TRANSFER_MUTATION_MARKER="${file_race_marker}" \
+  >"${test_tmp}/file-race.output" 2>&1 || status=$?
+file_race_transaction="$(find "${test_tmp}" -maxdepth 1 -type d \
+  -name '.virtdev-transfer.*' -print -quit)"
+if (( status != 15 )) || [[ "$(< "${destination}")" != writer-update \
+      || -z "${file_race_transaction}" ]]; then
+  printf 'existing-file race was not rolled back safely (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/file-race.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${file_race_transaction}"
+
+printf 'ok - existing-target races roll back without discarding writer data\n'
 
 sync_fault="${test_tmp}/publish-sync-fail.so"
 cc -shared -fPIC -Wall -Wextra -Werror \

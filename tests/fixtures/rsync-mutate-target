@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if ( set -o noclobber; : > "${TRANSFER_MUTATION_MARKER:?}" ) 2>/dev/null; then
+  case "${TRANSFER_MUTATION_MODE:?}" in
+    nested)
+      printf 'writer-update\n' > "${TRANSFER_MUTATION_TARGET:?}/keep"
+      printf 'writer-added\n' > "${TRANSFER_MUTATION_TARGET}/writer-added"
+      ;;
+    replace)
+      mv -- "${TRANSFER_MUTATION_TARGET:?}" \
+        "${TRANSFER_MUTATION_TARGET}.writer-old"
+      mkdir -- "${TRANSFER_MUTATION_TARGET}"
+      printf 'writer-replacement\n' \
+        > "${TRANSFER_MUTATION_TARGET}/replacement"
+      ;;
+    *) exit 64 ;;
+  esac
+fi
+
+exec /usr/bin/rsync "$@"

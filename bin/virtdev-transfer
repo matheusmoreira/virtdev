@@ -53,6 +53,8 @@
 #   15  host publication target is unsafe or incompatible
 #   16  publication committed but its durability status is indeterminate
 #   64  usage error
+#   75  another transfer holds the host-target lock
+#   76  host-target lock setup failed
 #   77  SSH key not found
 #   78  SSH key permissions too open
 #   81  corrupt port file
@@ -66,7 +68,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import diagnostic enumerate error integer mount validate arguments ssh port project
+import diagnostic enumerate error integer lock mount validate arguments ssh port project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -455,7 +457,8 @@ transfer_du_value() {
 
 transfer_copy_tree() {
   local -r source_tree="${1}" destination_parent="${2}" phase="${3}"
-  local remaining copy_status=0 summary_entries summary_bytes extra
+  local remaining copy_status=0 summary_entries summary_bytes summary_device \
+    summary_inode extra
   local summary="${destination_parent}/summary"
 
   mkdir -m 0700 -- "${destination_parent}"
@@ -465,6 +468,7 @@ transfer_copy_tree() {
     "${source_tree}" "${destination_parent}" \
     "${VIRTDEV_TRANSFER_MAX_BYTES}" "${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
     "${transfer_free_space_reserve}" "${transfer_inode_reserve}" \
+    identity \
     > "${summary}" || copy_status=$?
   case "${copy_status}" in
     0) ;;
@@ -473,12 +477,192 @@ transfer_copy_tree() {
     124|137) error 12 <<<"${phase} exceeded the transfer deadline" ;;
     *) error 11 <<<"Could not construct a stable tree during ${phase}" ;;
   esac
-  read -r summary_entries summary_bytes extra < "${summary}"
+  read -r summary_entries summary_bytes summary_device summary_inode extra \
+    < "${summary}"
   [[ "${summary_entries}" =~ ^[0-9]+$ \
-      && "${summary_bytes}" =~ ^[0-9]+$ && -z "${extra}" ]] \
+      && "${summary_bytes}" =~ ^[0-9]+$ \
+      && "${summary_device}" =~ ^[0-9]+$ \
+      && "${summary_inode}" =~ ^[0-9]+$ && -z "${extra}" ]] \
     || error 11 <<<"Could not parse stable-tree accounting during ${phase}"
   TRANSFER_COPY_ENTRIES="${summary_entries}"
   TRANSFER_COPY_BYTES="${summary_bytes}"
+  TRANSFER_COPY_DEVICE="${summary_device}"
+  TRANSFER_COPY_INODE="${summary_inode}"
+}
+
+transfer_file_state() {
+  local -r source_file="${1}"
+  local before after hash_line hash_before hash_after marker extra
+  local device inode mode uid gid links size mtime ctime
+  local remaining command_status=0
+
+  TRANSFER_FILE_IDENTITY=''
+  TRANSFER_FILE_SEMANTIC=''
+  [[ -f "${source_file}" && ! -L "${source_file}" ]] || return 1
+
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  before="$(LC_ALL=C timeout --signal=TERM \
+    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+    stat --printf='%d %i %f %u %g %h %s %Y %Z' -- "${source_file}" \
+    2>/dev/null)" || command_status=$?
+  case "${command_status}" in
+    0) ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
+  esac
+  read -r device inode mode uid gid links size mtime ctime extra <<< "${before}"
+  [[ "${device}" =~ ^[0-9]+$ && "${inode}" =~ ^[0-9]+$ \
+      && "${mode}" =~ ^[0-9a-f]+$ && "${uid}" =~ ^[0-9]+$ \
+      && "${gid}" =~ ^[0-9]+$ && "${links}" =~ ^[0-9]+$ \
+      && "${size}" =~ ^[0-9]+$ && "${mtime}" =~ ^-?[0-9]+$ \
+      && "${ctime}" =~ ^-?[0-9]+$ && -z "${extra}" ]] || return 3
+  (( size <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) || return 1
+
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  command_status=0
+  hash_line="$(timeout --signal=TERM \
+    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+    sha256sum < "${source_file}" 2>/dev/null)" || command_status=$?
+  case "${command_status}" in
+    0) ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
+  esac
+  read -r hash_before marker extra <<< "${hash_line}"
+  [[ "${hash_before}" =~ ^[0-9a-f]{64}$ && "${marker}" == - \
+      && -z "${extra}" ]] || return 3
+
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  command_status=0
+  hash_line="$(timeout --signal=TERM \
+    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+    sha256sum < "${source_file}" 2>/dev/null)" || command_status=$?
+  case "${command_status}" in
+    0) ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
+  esac
+  read -r hash_after marker extra <<< "${hash_line}"
+  [[ "${hash_after}" =~ ^[0-9a-f]{64}$ && "${marker}" == - \
+      && -z "${extra}" ]] || return 3
+
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  command_status=0
+  after="$(LC_ALL=C timeout --signal=TERM \
+    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+    stat --printf='%d %i %f %u %g %h %s %Y %Z' -- "${source_file}" \
+    2>/dev/null)" || command_status=$?
+  case "${command_status}" in
+    0) ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
+  esac
+  [[ -f "${source_file}" && ! -L "${source_file}" \
+      && "${before}" == "${after}" \
+      && "${hash_before}" == "${hash_after}" ]] || return 1
+
+  TRANSFER_FILE_IDENTITY="${device}:${inode}"
+  TRANSFER_FILE_SEMANTIC="${mode}:${uid}:${gid}:${links}:${size}:${mtime}:${hash_before}"
+}
+
+transfer_copy_tree_for_validation() {
+  local -r source_tree="${1}" destination_parent="${2}"
+  local remaining copy_status=0 diagnostic_status=0
+  local summary_entries summary_bytes summary_device summary_inode extra
+  local summary="${destination_parent}/summary"
+  local capture="${destination_parent}.stderr"
+  local fifo="${destination_parent}.stderr.fifo"
+
+  TRANSFER_VALIDATION_ENTRIES=''
+  TRANSFER_VALIDATION_BYTES=''
+  TRANSFER_VALIDATION_DEVICE=''
+  TRANSFER_VALIDATION_INODE=''
+  mkdir -m 0700 -- "${destination_parent}" || return 3
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  bounded_stderr_run "${capture}" "${fifo}" \
+      "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+      timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+        "${remaining}" "${copy_tree_helper}" \
+        "${source_tree}" "${destination_parent}" \
+        "${VIRTDEV_TRANSFER_MAX_BYTES}" "${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
+        "${transfer_free_space_reserve}" "${transfer_inode_reserve}" \
+        identity > "${summary}" || copy_status=$?
+  bounded_stderr_emit "${capture}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+  (( diagnostic_status == 0 )) || return 3
+  rm -f -- "${capture}" || return 3
+
+  case "${copy_status}" in
+    0) ;;
+    47) return 1 ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
+  esac
+  read -r summary_entries summary_bytes summary_device summary_inode extra \
+    < "${summary}"
+  [[ "${summary_entries}" =~ ^[0-9]+$ \
+      && "${summary_bytes}" =~ ^[0-9]+$ \
+      && "${summary_device}" =~ ^[0-9]+$ \
+      && "${summary_inode}" =~ ^[0-9]+$ && -z "${extra}" ]] || return 3
+  TRANSFER_VALIDATION_ENTRIES="${summary_entries}"
+  TRANSFER_VALIDATION_BYTES="${summary_bytes}"
+  TRANSFER_VALIDATION_DEVICE="${summary_device}"
+  TRANSFER_VALIDATION_INODE="${summary_inode}"
+}
+
+transfer_trees_equal() {
+  local -r expected="${1}" actual="${2}"
+  local remaining rsync_status=0 head_status=0 diagnostic_status=0
+  local expected_root actual_root
+  local difference="${transfer_transaction}/tree-comparison"
+  local capture="${transfer_transaction}/tree-comparison.stderr"
+  local fifo="${transfer_transaction}/tree-comparison.stderr.fifo"
+  local -a statuses=()
+
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  expected_root="$(LC_ALL=C timeout --signal=TERM \
+    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+    stat --printf='%f:%u:%g:%h:%s:%Y' -- "${expected}" 2>/dev/null)" \
+    || return 3
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  actual_root="$(LC_ALL=C timeout --signal=TERM \
+    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+    stat --printf='%f:%u:%g:%h:%s:%Y' -- "${actual}" 2>/dev/null)" \
+    || return 3
+  [[ "${expected_root}" == "${actual_root}" ]] || return 1
+
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  set +e
+  LC_ALL=C bounded_stderr_run "${capture}" "${fifo}" \
+      "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+      timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+        "${remaining}" rsync -aHnc --numeric-ids --delete \
+          --itemize-changes --out-format=x -- "${expected}/" "${actual}/" \
+    | head -c 1 > "${difference}"
+  statuses=("${PIPESTATUS[@]}")
+  set -e
+  (( ${#statuses[@]} == 2 )) || return 3
+  rsync_status="${statuses[0]}"
+  head_status="${statuses[1]}"
+  bounded_stderr_emit "${capture}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+  (( diagnostic_status == 0 )) || return 3
+  rm -f -- "${capture}" || return 3
+  (( head_status == 0 )) || return 3
+  [[ ! -s "${difference}" ]] || return 1
+  case "${rsync_status}" in
+    0) return 0 ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
+  esac
 }
 
 printf >&2 'Capturing a bounded download from %s...\n' "${project}"
@@ -820,6 +1004,19 @@ target_parent="${target%/*}"
 [[ -n "${target_parent}" ]] || target_parent=/
 [[ -d "${target_parent}" && ! -L "${target_parent}" ]] \
   || error 15 <<<"Host publication parent changed or is unsafe: ${target_parent}"
+
+transfer_target_lock="$(lock_identity_path transfer-target "${target}")" \
+  || error 76 <<<"Could not derive a lock identity for host target: ${target}"
+lock_prepare_control_directory
+lock_prepare_file "${transfer_target_lock}"
+if ! exec {transfer_target_lock_fd}>>"${transfer_target_lock}"; then
+  error 76 <<<"Could not open the host-target lock: ${transfer_target_lock}"
+fi
+if ! flock -n "${transfer_target_lock_fd}"; then
+  error 75 <<<"Another transfer is publishing to the host target: ${target}"
+fi
+printf '%d\n' "${BASHPID}" > "${transfer_target_lock}"
+
 transaction_device="$(stat -c '%d' -- "${transfer_transaction}")" \
   || error 15 <<<'Could not inspect transfer-stage filesystem'
 target_parent_device="$(stat -c '%d' -- "${target_parent}")" \
@@ -830,15 +1027,29 @@ target_parent_device="$(stat -c '%d' -- "${target_parent}")" \
 target_exists=0
 [[ -e "${target}" || -L "${target}" ]] && target_exists=1
 candidate="${stable_item}"
+target_original_type=''
+target_original_identity=''
+target_original_semantic=''
+target_original_entries=''
+target_original_bytes=''
+target_baseline=''
 if (( target_exists )); then
   [[ ! -L "${target}" ]] \
     || error 15 <<<"Refusing to replace a symlink host target: ${target}"
   if [[ -d "${target}" ]]; then
+    target_original_type=directory
     [[ "${source_type}" == directory ]] \
       || error 15 <<<"Cannot merge a non-directory download into: ${target}"
-    clone_parent="${transfer_transaction}/clone"
-    transfer_copy_tree "${target}" "${clone_parent}" \
+    baseline_parent="${transfer_transaction}/baseline"
+    transfer_copy_tree "${target}" "${baseline_parent}" \
       'existing destination stabilization'
+    target_original_identity="${TRANSFER_COPY_DEVICE}:${TRANSFER_COPY_INODE}"
+    target_original_entries="${TRANSFER_COPY_ENTRIES}"
+    target_original_bytes="${TRANSFER_COPY_BYTES}"
+    target_baseline="${baseline_parent}/tree"
+    clone_parent="${transfer_transaction}/clone"
+    transfer_copy_tree "${target_baseline}" "${clone_parent}" \
+      'existing destination clone'
     remaining=''
     transfer_remaining remaining
     overlay_status=0
@@ -856,6 +1067,21 @@ if (( target_exists )); then
     candidate="${publish_parent}/tree"
   elif [[ "${source_type}" == directory ]]; then
     error 15 <<<"Cannot replace a non-directory host target with a directory: ${target}"
+  elif [[ -f "${target}" ]]; then
+    target_original_type='file'
+    target_state_status=0
+    transfer_file_state "${target}" || target_state_status=$?
+    case "${target_state_status}" in
+      0)
+        target_original_identity="${TRANSFER_FILE_IDENTITY}"
+        target_original_semantic="${TRANSFER_FILE_SEMANTIC}"
+        ;;
+      1) error 15 <<<'Existing host file changed or exceeded the validation bound' ;;
+      2) error 12 <<<'Existing host file validation exceeded the transfer deadline' ;;
+      *) error 15 <<<'Could not capture a stable existing host file' ;;
+    esac
+  else
+    error 15 <<<"Host publication target has an unsupported type: ${target}"
   fi
 fi
 
@@ -866,6 +1092,11 @@ transfer_du_value candidate_allocated "${candidate}" candidate
 
 publish_mode=noreplace
 (( target_exists )) && publish_mode=exchange
+candidate_identity="$(stat -c '%d:%i' -- "${candidate}" 2>/dev/null)" \
+  || error 15 <<<'Could not bind the publication candidate identity'
+[[ "${candidate_identity}" =~ ^[0-9]+:[0-9]+$ ]] \
+  || error 15 <<<'Could not parse the publication candidate identity'
+(( ! target_exists )) || transfer_preserve_transaction=1
 publish_status=0
 "${publish_helper}" "${publish_mode}" "${candidate}" "${target}" \
   || publish_status=$?
@@ -878,9 +1109,85 @@ The completed download reached '${target}', but its post-publication sync failed
 The previous target and transaction were preserved for inspection.
 MESSAGE
     ;;
-  3) error 15 <<<"Host publication target appeared during transfer: ${target}" ;;
-  *) error 15 <<<"Could not atomically publish the completed download: ${target}" ;;
+  3)
+    transfer_preserve_transaction=0
+    error 15 <<<"Host publication target appeared during transfer: ${target}"
+    ;;
+  *)
+    (( ! target_exists )) || transfer_preserve_transaction=0
+    error 15 <<<"Could not atomically publish the completed download: ${target}"
+    ;;
 esac
+
+if (( target_exists )); then
+  validation_status=0
+  validation_detail='existing host target changed during publication'
+  case "${target_original_type}" in
+    directory)
+      displaced_parent="${transfer_transaction}/displaced"
+      transfer_copy_tree_for_validation "${candidate}" "${displaced_parent}" \
+        || validation_status=$?
+      if (( validation_status == 0 )) \
+          && [[ "${TRANSFER_VALIDATION_DEVICE}:${TRANSFER_VALIDATION_INODE}" \
+              != "${target_original_identity}" \
+            || "${TRANSFER_VALIDATION_ENTRIES}" != "${target_original_entries}" \
+            || "${TRANSFER_VALIDATION_BYTES}" != "${target_original_bytes}" ]]; then
+        validation_status=1
+      fi
+      if (( validation_status == 0 )); then
+        transfer_trees_equal "${target_baseline}" \
+          "${displaced_parent}/tree" || validation_status=$?
+      fi
+      ;;
+    file)
+      transfer_file_state "${candidate}" || validation_status=$?
+      if (( validation_status == 0 )) \
+          && [[ "${TRANSFER_FILE_IDENTITY}" != "${target_original_identity}" \
+            || "${TRANSFER_FILE_SEMANTIC}" != "${target_original_semantic}" ]]; then
+        validation_status=1
+      fi
+      ;;
+    *) validation_status=3 ;;
+  esac
+
+  if (( validation_status != 0 )); then
+    case "${validation_status}" in
+      1) validation_detail='existing host target changed during publication' ;;
+      2) validation_detail='existing host target validation exceeded the deadline' ;;
+      *) validation_detail='existing host target could not be validated after publication' ;;
+    esac
+    live_candidate_identity="$(stat -c '%d:%i' -- "${target}" 2>/dev/null)" \
+      || error 16 <<MESSAGE
+${validation_detail^}, and the provisional target identity is unknown.
+The displaced target and transaction were preserved for recovery.
+MESSAGE
+    if [[ "${live_candidate_identity}" != "${candidate_identity}" ]]; then
+      error 16 <<MESSAGE
+${validation_detail^}, and another writer replaced the provisional target.
+The displaced target and transaction were preserved for recovery.
+MESSAGE
+    fi
+
+    rollback_status=0
+    "${publish_helper}" exchange "${candidate}" "${target}" \
+      || rollback_status=$?
+    case "${rollback_status}" in
+      0)
+        error 15 <<MESSAGE
+${validation_detail^}. The original target was restored durably.
+The rejected download transaction was preserved for inspection.
+MESSAGE
+        ;;
+      *)
+        error 16 <<MESSAGE
+${validation_detail^}, and its rollback could not be proven durable.
+The complete transaction was preserved for recovery.
+MESSAGE
+        ;;
+    esac
+  fi
+  transfer_preserve_transaction=0
+fi
 
 printf >&2 'Downloaded %s entries (%s logical bytes) from %s.\n' \
   "${extracted_entries}" "${logical_bytes_captured}" "${project}"
