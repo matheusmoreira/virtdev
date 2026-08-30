@@ -38,7 +38,7 @@
 #
 # Failed shutdown proof, non-zero QEMU exit, or Ctrl-C preserves maintenance/
 # for inspection and leaves system/ unchanged.
-# Remove maintenance/ manually to retry.
+# Resolve any reported mount or ownership problem, then rerun the command.
 #
 # The maintenance virtual machine runs as a systemd user service
 # named virtdev-maintenance. Use standard systemd and virtdev tools
@@ -258,8 +258,8 @@ maintenance_cleanup_guidance() {
       printf '    umount -- %s\n' "${quoted_mount}"
       ;;
     1)
-      printf 'After inspection, remove staging without crossing filesystems:\n\n'
-      printf '    rm -rf --one-file-system -- %s\n' "${quoted_path}"
+      printf 'No mount is currently visible. Rerun virtdev-maintain to retry '
+      printf 'descriptor-relative cleanup of %s.\n' "${quoted_path}"
       ;;
     *)
       printf 'Mount state could not be inspected. Do not recursively remove staging.\n'
@@ -646,18 +646,20 @@ mkdir -p "${maintenance_directory}"
 staging_ready=0
 cleanup_partial_staging() {
   (( staging_ready )) && return 0
-  local mount_path="" mount_status=0
-  mount_find_below "$(realpath -m -- "${maintenance_directory}")" mount_path \
-    || mount_status=$?
-  if (( mount_status == 1 )); then
-    if ! rm -rf --one-file-system -- "${maintenance_directory}"; then
-      printf >&2 'warning: partial maintenance staging could not be removed: %s\n' \
+  local mount_path="" remove_status=0
+  mount_remove_tree "${maintenance_directory}" mount_path \
+    || remove_status=$?
+  case "${remove_status}" in
+    0) ;;
+    1)
+      printf >&2 'warning: partial maintenance staging has a mounted subtree: %s\n' \
+        "${mount_path}"
+      ;;
+    *)
+      printf >&2 'warning: partial maintenance staging could not be removed safely: %s\n' \
         "${maintenance_directory}"
-    fi
-  else
-    printf >&2 'warning: partial maintenance staging was preserved because mount state is unsafe: %s\n' \
-      "${mount_path:-${maintenance_directory}}"
-  fi
+      ;;
+  esac
   return 0
 }
 trap cleanup_partial_staging EXIT
@@ -1218,25 +1220,19 @@ MESSAGE
     ;;
 esac
 
-previous_mount=""
-previous_mount_status=0
-mount_find_below "$(realpath -m -- "${maintenance_directory}")" previous_mount \
-  || previous_mount_status=$?
-case "${previous_mount_status}" in
-  0)
+previous_mount=''
+previous_remove_status=0
+mount_remove_tree "${maintenance_directory}" previous_mount \
+  || previous_remove_status=$?
+case "${previous_remove_status}" in
+  0) ;;
+  1)
     printf >&2 'warning: previous-base cleanup was preserved because it contains a mount: %s\n' \
       "${previous_mount}"
     maintenance_cleanup_guidance "${maintenance_directory}" >&2
     ;;
-  1)
-    if ! rm -rf --one-file-system -- "${maintenance_directory}"; then
-      printf >&2 'warning: previous-base cleanup remains at %s\n' \
-                 "${maintenance_directory}"
-      maintenance_cleanup_guidance "${maintenance_directory}" >&2
-    fi
-    ;;
   *)
-    printf >&2 'warning: previous-base cleanup was preserved because mount state could not be inspected: %s\n' \
+    printf >&2 'warning: previous-base cleanup could not be removed safely: %s\n' \
       "${maintenance_directory}"
     maintenance_cleanup_guidance "${maintenance_directory}" >&2
     ;;

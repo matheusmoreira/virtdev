@@ -70,6 +70,12 @@ if [[ ! -d "${profile}" ]]; then
   error 5 <<<"archiso releng profile not found: '${profile}'"
 fi
 
+# shellcheck disable=SC2154  # provided by lib/virtdev/import
+remove_tree_helper="${virtdev_libexec_directory}/virtdev-remove-tree"
+if [[ ! -x "${remove_tree_helper}" ]]; then
+  error 12 <<<"virtdev-remove-tree not found: '${remove_tree_helper}'. Run 'make' to compile it."
+fi
+
 lock_acquire_cache
 
 invoking_uid="$(/usr/bin/id -u)"
@@ -233,9 +239,22 @@ MESSAGE
       ;;
   esac
 
-  if ! sudo /usr/bin/rm -rf --one-file-system -- "${quarantined}"; then
-    error 12 <<<"Could not remove quarantined ISO build tree: '${quarantined}'"
-  fi
+  mount_path=""
+  status=0
+  mount_path="$(sudo "${remove_tree_helper}" "${quarantined}")" || status=$?
+  case "${status}" in
+    0) ;;
+    1)
+      original_mount="${path}${mount_path#"${quarantined}"}"
+      error 12 <<MESSAGE
+Mounted filesystem appeared during ISO cleanup: '${original_mount}'
+The quarantined tree was preserved for inspection: '${quarantined}'
+MESSAGE
+      ;;
+    *)
+      error 12 <<<"Could not remove quarantined ISO build tree safely: '${quarantined}'"
+      ;;
+  esac
 }
 
 printf >&2 'Clearing build tree...\n'
@@ -255,10 +274,18 @@ mkdir -p "${work_directory}" "${profile_directory}"
 
 printf >&2 "Copying profile: '%s'\n" "${profile}"
 cp -r "${profile}/." "${profile_directory}/"
-require_unmounted_tree "${profile_directory}"
-rm -rf --one-file-system -- "${profile_directory}/grub" \
-       "${profile_directory}/syslinux" \
-       "${profile_directory}/efiboot/loader/entries/"*.conf
+for obsolete_tree in "${profile_directory}/grub" \
+    "${profile_directory}/syslinux"; do
+  obsolete_mount=''
+  obsolete_status=0
+  mount_remove_tree "${obsolete_tree}" obsolete_mount || obsolete_status=$?
+  case "${obsolete_status}" in
+    0) ;;
+    1) error 12 <<<"Mounted filesystem appeared below ISO profile: '${obsolete_mount}'" ;;
+    *) error 12 <<<"Could not remove obsolete ISO profile tree safely: '${obsolete_tree}'" ;;
+  esac
+done
+rm -f -- "${profile_directory}/efiboot/loader/entries/"*.conf
 
 printf >&2 'Overlaying ISO configuration files...\n'
 cp -r "${iso_profile}/." "${profile_directory}/"

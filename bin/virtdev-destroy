@@ -97,5 +97,14 @@ if (( ! flags[yes] )); then
 fi
 
 require_unmounted_project
-rm -rf --one-file-system -- "${project_directory}"
+mount_path=''
+remove_status=0
+mount_remove_tree "${project_directory}" mount_path || remove_status=$?
+case "${remove_status}" in
+  0) ;;
+  1)
+    error 6 <<<"Mounted filesystem appeared during project destruction: '${mount_path}'"
+    ;;
+  *) error 6 <<<'Project directory changed or could not be removed safely.' ;;
+esac
 printf >&2 '%s\n' "$(terminal_write fg=green "Project destroyed: ${project}" reset)"

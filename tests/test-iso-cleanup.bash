@@ -209,7 +209,7 @@ VIRTDEV_LOCK_DIRECTORY="${ISO_TEST_TMP}/locks" \
 [[ -f "${cache}/virtdev.iso" ]]
 grep -Fq '/usr/bin/mktemp -d --tmpdir=/tmp' "${ISO_TEST_SUDO_LOG}"
 grep -Fq '/usr/bin/mv --no-target-directory -- work' "${ISO_TEST_SUDO_LOG}"
-grep -Fq '/usr/bin/rm -rf --one-file-system' "${ISO_TEST_SUDO_LOG}"
+grep -Fq 'virtdev-remove-tree' "${ISO_TEST_SUDO_LOG}"
 if grep -Eq '/usr/bin/(find|chown)' "${ISO_TEST_SUDO_LOG}"; then
   printf 'ISO cleanup retained a privileged path traversal\n' >&2
   exit 1

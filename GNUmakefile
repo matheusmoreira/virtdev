@@ -16,7 +16,8 @@ SCDOC := $(SCDOC)
 
 scripts := $(wildcard bin/virtdev bin/virtdev-*)
 compiled_helpers := libexec/virtdev/virtdev-copy-tree \
-	libexec/virtdev/virtdev-exchange
+	libexec/virtdev/virtdev-exchange \
+	libexec/virtdev/virtdev-remove-tree
 private_scripts := $(filter-out $(compiled_helpers),$(wildcard libexec/virtdev/*))
 libraries := $(wildcard lib/virtdev/*)
 iso_scripts := iso/profiledef.sh \
@@ -32,6 +33,9 @@ libexec/virtdev/virtdev-copy-tree: source/virtdev/copy-tree.c
 	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 libexec/virtdev/virtdev-exchange: source/virtdev/exchange.c
+	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+libexec/virtdev/virtdev-remove-tree: source/virtdev/remove-tree.c
 	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 man/%: man/%.scd

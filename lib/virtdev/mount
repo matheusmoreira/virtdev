@@ -57,22 +57,21 @@ mount_find_containing() {
   [[ -n "${_mount_containing_ref}" ]] || return 2
 }
 
-# Remove one absolute, non-symlink directory only after a fresh mount check.
-# Returns 1 for a subordinate mount, 2 for an unsafe/indeterminate target, and
-# 3 when bounded removal itself fails. The mount path is returned by nameref.
+# Remove one absolute, non-symlink directory without crossing a mount.
+# Returns 1 for a mount boundary, 2 for an unsafe target, and 3 for failure.
 mount_remove_tree() {
   local -r path="${1}"
   local -n _mount_remove_ref="${2}"
-  local canonical before after found_mount="" status=0
+  local canonical found_mount="" helper_output="" scan_status=0 remove_status=0
+  local remove_tree_helper
 
   _mount_remove_ref=""
   [[ "${path}" == /* ]] || return 2
   [[ -e "${path}" || -L "${path}" ]] || return 0
   [[ -d "${path}" && ! -L "${path}" ]] || return 2
   canonical="$(realpath -e -- "${path}" 2>/dev/null)" || return 2
-  before="$(stat -Lc '%d:%i:%u' -- "${canonical}" 2>/dev/null)" || return 2
-  mount_find_below "${canonical}" found_mount || status=$?
-  case "${status}" in
+  mount_find_below "${canonical}" found_mount || scan_status=$?
+  case "${scan_status}" in
     0)
       _mount_remove_ref="${found_mount}"
       return 1
@@ -80,9 +79,20 @@ mount_remove_tree() {
     1) ;;
     *) return 2 ;;
   esac
-  after="$(stat -Lc '%d:%i:%u' -- "${canonical}" 2>/dev/null)" || return 2
-  [[ "${after}" == "${before}" ]] || return 2
-  rm -rf --one-file-system -- "${canonical}" || return 3
+  remove_tree_helper="${virtdev_libexec_directory:-$(readlink -f \
+    "$(dirname "${BASH_SOURCE[0]}")/../../libexec/virtdev")}/virtdev-remove-tree"
+  [[ -x "${remove_tree_helper}" ]] || return 2
+  helper_output="$("${remove_tree_helper}" "${canonical}")" \
+    || remove_status=$?
+  case "${remove_status}" in
+    0) ;;
+    1)
+      _mount_remove_ref="${helper_output:-${canonical}}"
+      return 1
+      ;;
+    2) return 2 ;;
+    *) return 3 ;;
+  esac
 }
 
 mount_cleanup_guidance() {
@@ -109,8 +119,8 @@ mount_cleanup_guidance() {
       printf 'Unmount it first: umount -- %s' "${quoted_mount}"
       ;;
     1)
-      printf 'Remove it if stale: rm -rf --one-file-system -- %s' \
-        "${quoted_path}"
+      printf 'No mount is currently visible. Retry the owning virtdev command; '
+      printf 'do not recursively remove this tree by pathname: %s' "${quoted_path}"
       ;;
     *)
       printf 'Mount state is indeterminate; preserve and inspect: %s' \

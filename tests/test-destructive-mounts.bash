@@ -6,6 +6,8 @@ repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
 test_tmp="$(mktemp -d)"
 
 cleanup() {
+  mountpoint -q "${test_tmp}/home/late tree/mounted" \
+    && umount "${test_tmp}/home/late tree/mounted"
   mountpoint -q "${test_tmp}/home/store/projects/probe/mounted" \
     && umount "${test_tmp}/home/store/projects/probe/mounted"
   mountpoint -q "${test_tmp}/home/cache/mounted" \
@@ -64,6 +66,34 @@ fi
 umount "${helper_mount}"
 mount_remove_tree "${helper_tree}" mount_path
 [[ ! -e "${helper_tree}" && -f "${helper_source}/sentinel" ]]
+
+late_source="${test_home}/late source"
+late_tree="${test_home}/late tree"
+late_mount="${late_tree}/mounted"
+late_gate="${DESTRUCTIVE_TEST_TMP}/remove-tree-gate.so"
+mkdir -p "${late_source}" "${late_mount}"
+printf 'outside late tree\n' > "${late_source}/sentinel"
+gcc -std=c99 -Wall -Wextra -Wpedantic -Werror -shared -fPIC \
+  -o "${late_gate}" \
+  "${DESTRUCTIVE_TEST_REPOSITORY}/tests/support/remove-tree-gate.c"
+status=0
+mount_path="$(
+  REMOVE_TREE_GATE_NAME=mounted \
+  REMOVE_TREE_GATE_SOURCE="${late_source}" \
+  REMOVE_TREE_GATE_TARGET="${late_mount}" \
+  LD_PRELOAD="${late_gate}" \
+    "${DESTRUCTIVE_TEST_REPOSITORY}/libexec/virtdev/virtdev-remove-tree" \
+      "${late_tree}"
+)" || status=$?
+if (( status != 1 )) || [[ "${mount_path}" != "${late_mount}" ]] \
+    || [[ ! -f "${late_source}/sentinel" ]]; then
+  printf 'descriptor remover crossed a late bind mount (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+umount "${late_mount}"
+mount_remove_tree "${late_tree}" mount_path
+[[ ! -e "${late_tree}" && -f "${late_source}/sentinel" ]]
 
 mkdir -p "${store}/projects/probe/mounted" "${cache}" "${locks}"
 printf 'project data\n' > "${store}/projects/probe/disk"
@@ -267,16 +297,18 @@ NO_COLOR=1 \
     >"${output}" 2>&1 || status=$?
 if (( status != 5 )) \
     || ! grep -Fq \
-      "rm -rf --one-file-system -- ${preserved_tree}" "${output}"; then
-  printf 'mount-free maintenance recovery omitted its filesystem boundary\n' >&2
+      "Rerun virtdev-maintain to retry descriptor-relative cleanup" \
+      "${output}"; then
+  printf 'mount-free maintenance recovery omitted safe retry guidance\n' >&2
   cat "${output}" >&2
   exit 1
 fi
 NAMESPACE
 
 printf 'ok - destroy and nuke refuse nested filesystems and bind mounts\n'
+printf 'ok - descriptor removal refuses a mount introduced after its precheck\n'
 printf 'ok - staging cleanup preserves mount-bearing trees\n'
 printf 'ok - backup stale-partial guidance requires an explicit unmount\n'
 printf 'ok - maintenance refuses reseal trees containing mounts\n'
 printf 'ok - maintenance recovery never removes through preserved mounts\n'
-printf 'ok - mount-free maintenance removal stays on one filesystem\n'
+printf 'ok - mount-free maintenance removal is descriptor-relative\n'

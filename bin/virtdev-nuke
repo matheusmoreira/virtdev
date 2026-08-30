@@ -171,8 +171,14 @@ This root was not deleted.
 MESSAGE
   fi
   require_unmounted_root "${path}"
-  [[ -e "${path}" || -L "${path}" ]] \
-    && rm -rf --one-file-system -- "${path}"
+  mount_path=''
+  remove_status=0
+  mount_remove_tree "${path}" mount_path || remove_status=$?
+  case "${remove_status}" in
+    0) ;;
+    1) error 6 <<<"Mounted filesystem appeared during nuke: '${mount_path}'" ;;
+    *) error 6 <<<"Nuke root changed or could not be removed safely: '${path}'" ;;
+  esac
 done
 
 printf >&2 '%s\n' "$(terminal_write fg=green 'All virtdev data deleted.' reset)"
