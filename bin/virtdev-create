@@ -65,31 +65,50 @@ lock_acquire
 
 system_directory="${VIRTDEV_HOME}/system"
 
-if [[ ! -d "${system_directory}" ]]; then
-  error 4 <<MESSAGE
+base_directory_require() {
+  if [[ ! -d "${system_directory}" || -L "${system_directory}" ]]; then
+    error 4 <<MESSAGE
 Sealed base system images not found: '${system_directory}'
 Run virtdev-install and virtdev-seal first
 MESSAGE
-fi
+  fi
+}
 
-for file in system.qcow2 home.qcow2 nvram; do
-  if [[ ! -f "${system_directory}/${file}" ]]; then
+base_image_require() {
+  local -r file="${1}"
+  if [[ ! -f "${system_directory}/${file}" \
+      || -L "${system_directory}/${file}" ]]; then
     error 5 <<<"Base system image missing: '${system_directory}/${file}'"
   fi
-done
+}
 
-if [[ ! -f "${system_directory}/generation" ]]; then
-  error 7 <<<"Base system generation file missing: '${system_directory}/generation'"
-fi
-base_generation="$(generation_read_base "${system_directory}/generation")"
+base_generation_require() {
+  if [[ ! -f "${system_directory}/generation" \
+      || -L "${system_directory}/generation" ]]; then
+    error 7 <<<"Base system generation file missing: '${system_directory}/generation'"
+  fi
+}
 
-if ! ssh_guest_contract_valid "${system_directory}"; then
-  error 8 <<MESSAGE
+base_contract_require() {
+  if ! ssh_guest_contract_valid "${system_directory}"; then
+    error 8 <<MESSAGE
 Sealed-base SSH contract marker is missing or incompatible.
 If the base predates strict host identity, build and install the current ISO,
 then seal a new base before creating projects.
 MESSAGE
-fi
+  fi
+}
+
+base_directory_require
+
+for file in system.qcow2 home.qcow2 nvram; do
+  base_image_require "${file}"
+done
+
+base_generation_require
+base_generation="$(generation_read_base "${system_directory}/generation")"
+
+base_contract_require
 
 if [[ -d "${project_directory}" ]]; then
   error 6 <<<"Project already exists: '${project_directory}'"
@@ -120,6 +139,8 @@ system_disk="${project_directory}/system.qcow2"
 home_disk="${project_directory}/home.qcow2"
 nvram="${project_directory}/nvram"
 
+base_directory_require
+base_image_require system.qcow2
 printf >&2 "Creating system delta image: '%s'\n" "${system_disk}"
 qemu-img create \
     -f qcow2 \
@@ -127,6 +148,8 @@ qemu-img create \
     -F qcow2 \
     "${system_disk}"
 
+base_directory_require
+base_image_require home.qcow2
 printf >&2 "Creating home delta image: '%s'\n" "${home_disk}"
 qemu-img create \
     -f qcow2 \
@@ -134,12 +157,16 @@ qemu-img create \
     -F qcow2 \
     "${home_disk}"
 
+base_directory_require
+base_image_require nvram
 printf >&2 "Copying NVRAM: '%s'\n" "${nvram}"
 cp "${system_directory}/nvram" "${nvram}"
 chmod 644 "${nvram}"
 
 printf '%s\n' "${base_generation}" > "${project_directory}/generation"
 chmod 644 "${project_directory}/generation"
+base_directory_require
+base_contract_require
 cp -- "${system_directory}/${ssh_guest_contract_name}" \
   "${project_directory}/${ssh_guest_contract_name}"
 chmod 0444 "${project_directory}/${ssh_guest_contract_name}"
