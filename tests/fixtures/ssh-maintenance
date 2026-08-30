@@ -2,6 +2,25 @@
 
 set -euo pipefail
 
+if (( $# >= 2 )) \
+    && [[ "${*: -2:1}" == bash && "${*: -1}" == -s ]] \
+    && [[ "${MAINTENANCE_EXECUTE_HOOKS:-0}" == 1 ]]; then
+  : "${MAINTENANCE_HOOK_CAPTURE_DIRECTORY:?}"
+  mkdir -p -- "${MAINTENANCE_HOOK_CAPTURE_DIRECTORY}"
+  hook_count_file="${MAINTENANCE_HOOK_CAPTURE_DIRECTORY}/count"
+  hook_count=0
+  [[ ! -s "${hook_count_file}" ]] || hook_count="$(< "${hook_count_file}")"
+  hook_count=$(( hook_count + 1 ))
+  printf '%d\n' "${hook_count}" > "${hook_count_file}"
+  hook_capture="${MAINTENANCE_HOOK_CAPTURE_DIRECTORY}/${hook_count}"
+  cat > "${hook_capture}"
+  if (( hook_count == 1 )) && [[ -n "${MAINTENANCE_HOOK_REPLACE_SOURCE:-}" ]]; then
+    printf "printf 'replacement-inventory\\n'\n" \
+      > "${MAINTENANCE_HOOK_REPLACE_SOURCE}"
+  fi
+  exec bash -s < "${hook_capture}"
+fi
+
 case "${MAINTENANCE_SSH_MODE:-failure}" in
   ready)
     exit 0

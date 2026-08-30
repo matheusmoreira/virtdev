@@ -23,6 +23,7 @@ state_file="${test_tmp}/unit.state"
 event_log="${test_tmp}/qmp-events"
 boot_count_file="${test_tmp}/boot-count"
 output="${test_tmp}/output"
+hook_captures="${test_tmp}/hook-captures"
 
 mkdir -p "${system_directory}" "${virtdev_home}/projects" \
   "${virtdev_home}/ssh" "${fixture_bin}" \
@@ -36,7 +37,9 @@ printf 'test key\n' > "${virtdev_home}/ssh/id"
 chmod 600 "${virtdev_home}/ssh/id"
 : > "${test_tmp}/OVMF_CODE.fd"
 printf 'inactive\n' > "${state_file}"
-printf '# inventory fixture\n' > "${config_home}/virtdev/maintenance/inventory"
+printf "printf 'frozen-inventory\\n'\n" \
+  > "${config_home}/virtdev/maintenance/inventory"
+mkdir -p -- "${hook_captures}"
 
 cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
 cp "${repository}/tests/fixtures/systemd-run-maintenance" \
@@ -65,6 +68,9 @@ PATH="${fixture_bin}:${PATH}" \
   MAINTENANCE_QMP_SERVER_PID_FILE="${qmp_pid_file}" \
   MAINTENANCE_QMP_EVENT_LOG="${event_log}" \
   MAINTENANCE_BOOT_COUNT_FILE="${boot_count_file}" \
+  MAINTENANCE_EXECUTE_HOOKS=1 \
+  MAINTENANCE_HOOK_CAPTURE_DIRECTORY="${hook_captures}" \
+  MAINTENANCE_HOOK_REPLACE_SOURCE="${config_home}/virtdev/maintenance/inventory" \
   QEMU_OTHER_STATUS=0 \
   NO_COLOR=1 \
   "${repository}/bin/virtdev-maintain" \
@@ -98,8 +104,195 @@ if ! grep -Fq \
   cat "${output}" >&2
   exit 1
 fi
+if [[ ! -f "${hook_captures}/1" || ! -f "${hook_captures}/2" ]] \
+    || ! cmp -s -- "${hook_captures}/1" "${hook_captures}/2"; then
+  printf 'maintenance did not reuse the exact frozen inventory hook\n' >&2
+  exit 1
+fi
+if ! grep -Fq 'replacement-inventory' \
+    "${config_home}/virtdev/maintenance/inventory"; then
+  printf 'fixture did not replace the mutable inventory source\n' >&2
+  exit 1
+fi
+if find "${virtdev_home}/transactions" -mindepth 1 -maxdepth 1 \
+    -name 'maintain.*' -print -quit | grep -q .; then
+  printf 'successful maintenance stranded its hook transaction\n' >&2
+  exit 1
+fi
 
 printf 'ok - both maintenance boots require independent QMP shutdown proof\n'
+printf 'ok - maintenance reuses one frozen hook and cleans its transaction\n'
+
+run_hook_case() {
+  local -r case_output="${1}" case_captures="${2}"
+  shift 2
+  hook_case_status=0
+  printf 'inactive\n' > "${state_file}"
+  printf '0\n' > "${boot_count_file}"
+  : > "${event_log}"
+  : > "${qmp_pid_file}"
+  mkdir -p -- "${case_captures}"
+  env \
+    PATH="${fixture_bin}:${PATH}" \
+    HOME="${test_tmp}" \
+    XDG_CONFIG_HOME="${config_home}" \
+    VIRTDEV_HOME="${virtdev_home}" \
+    VIRTDEV_CACHE="${test_tmp}/cache" \
+    VIRTDEV_SSH_KEY="${virtdev_home}/ssh/id" \
+    VIRTDEV_WAIT_TIMEOUT=5 \
+    VIRTDEV_STOP_TIMEOUT=5 \
+    OVMF_CODE="${test_tmp}/OVMF_CODE.fd" \
+    SYSTEMCTL_STATE_FILE="${state_file}" \
+    MAINTENANCE_RUNTIME_DIRECTORY="${virtdev_home}/projects/maintenance" \
+    MAINTENANCE_SSH_MODE=ready \
+    MAINTENANCE_QMP_HANDLER="${fixture_bin}/qmp-maintenance-server" \
+    MAINTENANCE_QMP_SERVER_PID_FILE="${qmp_pid_file}" \
+    MAINTENANCE_QMP_EVENT_LOG="${event_log}" \
+    MAINTENANCE_BOOT_COUNT_FILE="${boot_count_file}" \
+    MAINTENANCE_EXECUTE_HOOKS=1 \
+    MAINTENANCE_HOOK_CAPTURE_DIRECTORY="${case_captures}" \
+    QEMU_OTHER_STATUS=0 \
+    NO_COLOR=1 \
+    "$@" \
+    "${repository}/bin/virtdev-maintain" \
+      --yes --unfiltered --no-inventory >"${case_output}" 2>&1 \
+    || hook_case_status=$?
+}
+
+provision_hook="${config_home}/virtdev/maintenance/provision"
+printf "/usr/bin/head -c 65 /dev/zero | /usr/bin/tr '\\0' x\n" \
+  > "${provision_hook}"
+overflow_output="${test_tmp}/overflow-output"
+run_hook_case "${overflow_output}" "${test_tmp}/overflow-hooks" \
+  VIRTDEV_MAINTENANCE_HOOK_OUTPUT_MAX_BYTES=64
+if (( hook_case_status != 0 )) \
+    || ! grep -Fq 'stdout exceeded 64 bytes' "${overflow_output}"; then
+  printf 'bounded provision stdout did not fail non-fatally\n' >&2
+  cat "${overflow_output}" >&2
+  exit 1
+fi
+
+printf 'sleep 10\n' > "${provision_hook}"
+timeout_output="${test_tmp}/timeout-output"
+run_hook_case "${timeout_output}" "${test_tmp}/timeout-hooks" \
+  VIRTDEV_MAINTENANCE_HOOK_TIMEOUT=1 \
+  VIRTDEV_MAINTENANCE_HOOK_KILL_AFTER=1
+if (( hook_case_status != 0 )) \
+    || ! grep -Fq 'execution exceeded 1 seconds' "${timeout_output}"; then
+  printf 'timed provision hook did not fail non-fatally\n' >&2
+  cat "${timeout_output}" >&2
+  exit 1
+fi
+if find "${virtdev_home}/transactions" -mindepth 1 -maxdepth 1 \
+    -name 'maintain.*' -print -quit | grep -q .; then
+  printf 'bounded hook failures stranded a transaction\n' >&2
+  exit 1
+fi
+
+printf 'ok - maintenance hook stdout and execution time are bounded\n'
+
+oversize_home="${test_tmp}/oversize-virtdev"
+oversize_system="${oversize_home}/system"
+oversize_state="${test_tmp}/oversize-unit.state"
+oversize_output="${test_tmp}/oversize-output"
+oversize_submission="${test_tmp}/oversize-submission"
+mkdir -p "${oversize_system}" "${oversize_home}/projects" \
+  "${oversize_home}/ssh"
+for image in system.qcow2 home.qcow2 nvram; do
+  : > "${oversize_system}/${image}"
+done
+printf '0\n' > "${oversize_system}/generation"
+printf 'ssh-host-identity=1\n' > "${oversize_system}/guest-contract"
+printf 'test key\n' > "${oversize_home}/ssh/id"
+chmod 600 "${oversize_home}/ssh/id"
+printf 'inactive\n' > "${oversize_state}"
+truncate -s 1048577 -- "${provision_hook}"
+status=0
+PATH="${fixture_bin}:${PATH}" \
+  HOME="${test_tmp}" \
+  XDG_CONFIG_HOME="${config_home}" \
+  VIRTDEV_HOME="${oversize_home}" \
+  VIRTDEV_CACHE="${test_tmp}/oversize-cache" \
+  VIRTDEV_SSH_KEY="${oversize_home}/ssh/id" \
+  OVMF_CODE="${test_tmp}/OVMF_CODE.fd" \
+  SYSTEMCTL_STATE_FILE="${oversize_state}" \
+  SYSTEMD_RUN_MARKER="${oversize_submission}" \
+  NO_COLOR=1 \
+  "${repository}/bin/virtdev-maintain" \
+    --yes --unfiltered --no-inventory >"${oversize_output}" 2>&1 || status=$?
+if (( status != 35 )) || [[ -e "${oversize_submission}" ]] \
+    || [[ -e "${oversize_home}/maintenance" ]] \
+    || find "${oversize_home}/transactions" -mindepth 1 -maxdepth 1 \
+      -name 'maintain.*' -print -quit | grep -q .; then
+  printf 'oversized hook did not fail cleanly before staging/submission\n' >&2
+  cat "${oversize_output}" >&2
+  exit 1
+fi
+
+printf 'ok - oversized maintenance hooks fail before mutation\n'
+
+interrupt_marker="${test_tmp}/interrupt-hook-started"
+interrupt_output="${test_tmp}/interrupt-output"
+interrupt_captures="${test_tmp}/interrupt-hooks"
+printf '%s\n' ": > \"${interrupt_marker}\"" 'sleep 10' > "${provision_hook}"
+printf 'inactive\n' > "${state_file}"
+printf '0\n' > "${boot_count_file}"
+: > "${event_log}"
+: > "${qmp_pid_file}"
+mkdir -p -- "${interrupt_captures}"
+env \
+  PATH="${fixture_bin}:${PATH}" \
+  HOME="${test_tmp}" \
+  XDG_CONFIG_HOME="${config_home}" \
+  VIRTDEV_HOME="${virtdev_home}" \
+  VIRTDEV_CACHE="${test_tmp}/cache" \
+  VIRTDEV_SSH_KEY="${virtdev_home}/ssh/id" \
+  VIRTDEV_WAIT_TIMEOUT=5 \
+  VIRTDEV_STOP_TIMEOUT=5 \
+  VIRTDEV_MAINTENANCE_HOOK_TIMEOUT=2 \
+  VIRTDEV_MAINTENANCE_HOOK_KILL_AFTER=1 \
+  OVMF_CODE="${test_tmp}/OVMF_CODE.fd" \
+  SYSTEMCTL_STATE_FILE="${state_file}" \
+  MAINTENANCE_RUNTIME_DIRECTORY="${virtdev_home}/projects/maintenance" \
+  MAINTENANCE_SSH_MODE=ready \
+  MAINTENANCE_QMP_HANDLER="${fixture_bin}/qmp-maintenance-server" \
+  MAINTENANCE_QMP_SERVER_PID_FILE="${qmp_pid_file}" \
+  MAINTENANCE_QMP_EVENT_LOG="${event_log}" \
+  MAINTENANCE_BOOT_COUNT_FILE="${boot_count_file}" \
+  MAINTENANCE_EXECUTE_HOOKS=1 \
+  MAINTENANCE_HOOK_CAPTURE_DIRECTORY="${interrupt_captures}" \
+  QEMU_OTHER_STATUS=0 \
+  NO_COLOR=1 \
+  "${repository}/bin/virtdev-maintain" \
+    --yes --unfiltered --no-inventory >"${interrupt_output}" 2>&1 &
+maintain_pid=$!
+for (( attempt = 0; attempt < 200; attempt++ )); do
+  [[ ! -e "${interrupt_marker}" ]] || break
+  sleep 0.01
+done
+if [[ ! -e "${interrupt_marker}" ]]; then
+  printf 'interrupt fixture did not reach the provision hook\n' >&2
+  kill "${maintain_pid}" 2>/dev/null || true
+  wait "${maintain_pid}" 2>/dev/null || true
+  cat "${interrupt_output}" >&2
+  exit 1
+fi
+kill -TERM "${maintain_pid}"
+interrupt_status=0
+wait "${maintain_pid}" || interrupt_status=$?
+if (( interrupt_status != 143 )); then
+  printf 'expected interrupted maintenance status 143, got %d\n' \
+    "${interrupt_status}" >&2
+  cat "${interrupt_output}" >&2
+  exit 1
+fi
+if find "${virtdev_home}/transactions" -mindepth 1 -maxdepth 1 \
+    -name 'maintain.*' -print -quit | grep -q .; then
+  printf 'interrupted maintenance stranded its hook transaction\n' >&2
+  exit 1
+fi
+
+printf 'ok - maintenance interruption cleans bounded hook captures\n'
 
 # Boot 2 exit zero must not reuse Boot 1's proof.
 reject_home="${test_tmp}/reject-virtdev"
