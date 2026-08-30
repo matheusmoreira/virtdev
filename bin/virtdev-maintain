@@ -149,11 +149,15 @@ import error lock arguments ssh project confirm terminal port qemu firewall runt
 : "${OVMF_CODE:="/usr/share/edk2/x64/OVMF_CODE.4m.fd"}"
 
 for _timeout_var in VIRTDEV_WAIT_TIMEOUT VIRTDEV_STOP_TIMEOUT \
-    VIRTDEV_MAINTENANCE_HOOK_TIMEOUT VIRTDEV_MAINTENANCE_HOOK_KILL_AFTER; do
+    VIRTDEV_MAINTENANCE_HOOK_TIMEOUT; do
   if ! integer_is_bounded_positive "${!_timeout_var}" 86400; then
     error 64 <<<"Invalid ${_timeout_var}: must be an integer from 1 through 86400"
   fi
 done
+if ! integer_is_bounded_positive \
+    "${VIRTDEV_MAINTENANCE_HOOK_KILL_AFTER}" 60; then
+  error 64 <<<'Invalid VIRTDEV_MAINTENANCE_HOOK_KILL_AFTER: must be an integer from 1 through 60'
+fi
 if ! integer_is_bounded_positive \
     "${VIRTDEV_MAINTENANCE_HOOK_OUTPUT_MAX_BYTES}" 67108864; then
   error 64 <<<'Invalid VIRTDEV_MAINTENANCE_HOOK_OUTPUT_MAX_BYTES: must be an integer from 1 through 67108864'

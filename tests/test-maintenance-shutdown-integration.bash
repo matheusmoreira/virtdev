@@ -52,6 +52,18 @@ cp "${repository}/tests/fixtures/qmp-maintenance-server" \
 chmod +x "${fixture_bin}"/*
 
 status=0
+VIRTDEV_MAINTENANCE_HOOK_KILL_AFTER=61 \
+  "${repository}/bin/virtdev-maintain" >"${output}" 2>&1 || status=$?
+if (( status != 64 )) \
+    || ! grep -Fq 'must be an integer from 1 through 60' "${output}"; then
+  printf 'maintenance accepted an excessive hook termination grace\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+printf 'ok - maintenance bounds hook termination grace\n'
+
+status=0
 PATH="${fixture_bin}:${PATH}" \
   HOME="${test_tmp}" \
   XDG_CONFIG_HOME="${config_home}" \
