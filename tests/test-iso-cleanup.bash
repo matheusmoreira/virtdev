@@ -40,7 +40,20 @@ printf '%s\n' \
   '[[ -n "${output}" ]]' \
   ': > "${output}/fixture-x86_64.iso"' \
   > "${fixture_bin}/mkarchiso"
-chmod +x "${fixture_bin}/sudo" "${fixture_bin}/mkarchiso"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  '/usr/bin/cp "$@"' \
+  'if [[ "${ISO_TEST_MOUNT_AFTER_PROFILE_COPY:-0}" == 1 ]]; then' \
+  '  target="${!#}"' \
+  '  if [[ "${target%/}" == "${ISO_TEST_PROFILE_TARGET:?}" ]]; then' \
+  '    mkdir -p "${target%/}/grub"' \
+  '    mount --bind "${ISO_TEST_PROFILE_MOUNT_SOURCE:?}" "${target%/}/grub"' \
+  '  fi' \
+  'fi' \
+  > "${fixture_bin}/cp"
+chmod +x "${fixture_bin}/sudo" "${fixture_bin}/mkarchiso" \
+  "${fixture_bin}/cp"
 
 if ! unshare --user --map-root-user --mount true 2>/dev/null; then
   printf 'ISO cleanup test requires an unprivileged user/mount namespace\n' >&2
@@ -157,6 +170,33 @@ grep -Fq "${race_target}" "${ISO_TEST_TMP}/race.stderr"
 mountpoint -q "${race_target}"
 umount "${race_target}"
 : > "${ISO_TEST_SUDO_LOG}"
+
+# Catch mounts created while the profile is copied, before pruning it.
+profile_mount_source="${test_filesystem}/profile-mount-source"
+profile_mount_target="${cache}/profile/grub"
+mkdir -p "${profile_mount_source}"
+printf 'profile sentinel\n' > "${profile_mount_source}/sentinel"
+status=0
+ISO_TEST_MOUNT_AFTER_PROFILE_COPY=1 \
+ISO_TEST_PROFILE_TARGET="${cache}/profile" \
+ISO_TEST_PROFILE_MOUNT_SOURCE="${profile_mount_source}" \
+USER=untrusted-name \
+VIRTDEV_CACHE="${cache}" \
+VIRTDEV_HOME="${ISO_TEST_TMP}/home" \
+VIRTDEV_ISO_PROFILE="${ISO_TEST_REPOSITORY}/iso" \
+VIRTDEV_LOCK_DIRECTORY="${ISO_TEST_TMP}/locks" \
+  bash "${ISO_TEST_REPOSITORY}/bin/virtdev-iso" \
+    >"${ISO_TEST_TMP}/profile.stdout" 2>"${ISO_TEST_TMP}/profile.stderr" \
+    || status=$?
+if (( status != 12 )); then
+  printf 'ISO profile pruning missed a new mount (status %d)\n' \
+    "${status}" >&2
+  cat "${ISO_TEST_TMP}/profile.stderr" >&2
+  exit 1
+fi
+grep -Fq "${profile_mount_target}" "${ISO_TEST_TMP}/profile.stderr"
+[[ "$(< "${profile_mount_source}/sentinel")" == 'profile sentinel' ]]
+umount "${profile_mount_target}"
 
 USER=untrusted-name \
 VIRTDEV_CACHE="${cache}" \

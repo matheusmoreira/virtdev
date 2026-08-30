@@ -255,7 +255,8 @@ mkdir -p "${work_directory}" "${profile_directory}"
 
 printf >&2 "Copying profile: '%s'\n" "${profile}"
 cp -r "${profile}/." "${profile_directory}/"
-rm -rf "${profile_directory}/grub" \
+require_unmounted_tree "${profile_directory}"
+rm -rf --one-file-system -- "${profile_directory}/grub" \
        "${profile_directory}/syslinux" \
        "${profile_directory}/efiboot/loader/entries/"*.conf
 

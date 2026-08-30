@@ -65,7 +65,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments terminal ssh ip integer qemu
+import error lock arguments terminal ssh ip integer qemu mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
@@ -329,7 +329,15 @@ cleanup_partial_installation() {
 
   if (( children_terminal )); then
     if ! (( install_succeeded )); then
-      rm -rf -- "${installation_directory}"
+      local mount_path="" remove_status=0
+      mount_remove_tree "${installation_directory}" mount_path \
+        || remove_status=$?
+      case "${remove_status}" in
+        0) ;;
+        1) printf >&2 'warning: preserving partial installation with mounted subtree: %s\n' "${mount_path}" ;;
+        2) printf >&2 'warning: preserving partial installation because cleanup safety is indeterminate: %s\n' "${installation_directory}" ;;
+        *) printf >&2 'warning: could not remove partial installation safely: %s\n' "${installation_directory}" ;;
+      esac
     else
       rm -f -- "${install_sock:-}" "${console_sock:-}" \
         "${install_progress:-}" "${progress_fifo:-}" "${install_ssh_key:-}"

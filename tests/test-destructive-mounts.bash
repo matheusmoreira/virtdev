@@ -30,7 +30,40 @@ store="${test_home}/store"
 cache="${test_home}/cache"
 locks="${test_home}/locks"
 output="${DESTRUCTIVE_TEST_TMP}/output"
-export PATH="${DESTRUCTIVE_TEST_REPOSITORY}/tests/fixtures:${PATH}"
+fixture_bin="${DESTRUCTIVE_TEST_TMP}/bin"
+mkdir -p "${fixture_bin}"
+export PATH="${fixture_bin}:${DESTRUCTIVE_TEST_REPOSITORY}/tests/fixtures:${PATH}"
+
+# shellcheck disable=SC1090
+source "${DESTRUCTIVE_TEST_REPOSITORY}/lib/virtdev/mount"
+
+helper_source="${test_home}/helper source"
+helper_tree="${test_home}/helper tree"
+helper_mount="${helper_tree}/mounted"
+mkdir -p "${helper_source}" "${helper_mount}"
+printf 'outside helper tree\n' > "${helper_source}/sentinel"
+mount --bind "${helper_source}" "${helper_mount}"
+
+mount_path=""
+status=0
+mount_remove_tree "${helper_tree}" mount_path || status=$?
+if (( status != 1 )) || [[ "${mount_path}" != "${helper_mount}" ]] \
+    || [[ ! -f "${helper_source}/sentinel" ]]; then
+  printf 'mount-aware helper did not preserve a mounted tree (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+guidance="$(mount_cleanup_guidance "${helper_tree}")"
+printf -v quoted_helper_mount '%q' "${helper_mount}"
+if [[ "${guidance}" != *"umount -- ${quoted_helper_mount}"* \
+      || "${guidance}" == *'rm -rf'* ]]; then
+  printf 'mounted-tree guidance was destructive or incomplete\n%s\n' \
+    "${guidance}" >&2
+  exit 1
+fi
+umount "${helper_mount}"
+mount_remove_tree "${helper_tree}" mount_path
+[[ ! -e "${helper_tree}" && -f "${helper_source}/sentinel" ]]
 
 mkdir -p "${store}/projects/probe/mounted" "${cache}" "${locks}"
 printf 'project data\n' > "${store}/projects/probe/disk"
@@ -54,6 +87,52 @@ grep -Fq "${store}/projects/probe/mounted" "${output}"
 [[ -f "${store}/projects/probe/disk" \
    && -f "${store}/projects/probe/mounted/sentinel" ]]
 umount "${store}/projects/probe/mounted"
+
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'case "$*" in' \
+  '  "-u +%Y-%m-%d") printf "2026-08-29\\n" ;;' \
+  '  "-u +%H-%M-%S") printf "12-00-00\\n" ;;' \
+  '  *) exec /usr/bin/date "$@" ;;' \
+  'esac' > "${fixture_bin}/date"
+chmod +x "${fixture_bin}/date"
+
+printf 'data\n' > "${store}/projects/probe/manifest"
+printf '2222\n' > "${store}/projects/probe/port"
+printf '1\n' > "${store}/projects/probe/generation"
+printf 'test key\n' > "${test_home}/id"
+chmod 600 "${test_home}/id"
+backup_partial="${store}/backups/probe/2026-08-29/12-00-00.partial"
+backup_source="${test_home}/backup-source"
+backup_mount="${backup_partial}/mounted"
+mkdir -p "${backup_source}" "${backup_mount}"
+printf 'outside backup\n' > "${backup_source}/sentinel"
+mount --bind "${backup_source}" "${backup_mount}"
+
+status=0
+HOME="${test_home}" \
+VIRTDEV_HOME="${store}" \
+VIRTDEV_LOCK_DIRECTORY="${locks}" \
+VIRTDEV_SSH_KEY="${test_home}/id" \
+SYSTEMCTL_ACTIVE_STATE=active \
+NO_COLOR=1 \
+  "${DESTRUCTIVE_TEST_REPOSITORY}/bin/virtdev-backup" probe \
+    >"${output}" 2>&1 || status=$?
+if (( status != 10 )); then
+  printf 'backup accepted a stale partial snapshot (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+grep -Fq "umount -- ${backup_mount}" "${output}"
+if grep -Fq 'rm -rf' "${output}"; then
+  printf 'backup advised recursive removal of a mount-bearing partial\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
+[[ -f "${backup_source}/sentinel" ]]
+umount "${backup_mount}"
 
 bind_source="${test_home}/bind-source"
 bind_target="${cache}/mounted"
@@ -110,6 +189,40 @@ grep -Fq "${mount_target}" "${output}"
 [[ -f "${mount_source}/sentinel" && ! -e "${store}/maintenance" ]]
 umount "${mount_target}"
 
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'target="${!#}"' \
+  'project_directory="${target%/*}"' \
+  'mkdir -p "${project_directory}/mounted"' \
+  'mount --bind "${CREATE_MOUNT_SOURCE}" "${project_directory}/mounted"' \
+  'exit 99' > "${fixture_bin}/qemu-img"
+chmod +x "${fixture_bin}/qemu-img"
+
+create_source="${test_home}/create-source"
+create_project="${store}/projects/cleanup-probe"
+create_mount="${create_project}/mounted"
+mkdir -p "${create_source}"
+printf 'outside project\n' > "${create_source}/sentinel"
+status=0
+HOME="${test_home}" \
+VIRTDEV_HOME="${store}" \
+VIRTDEV_LOCK_DIRECTORY="${locks}" \
+CREATE_MOUNT_SOURCE="${create_source}" \
+NO_COLOR=1 \
+  "${DESTRUCTIVE_TEST_REPOSITORY}/bin/virtdev-create" cleanup-probe \
+    >"${output}" 2>&1 || status=$?
+if (( status != 99 )); then
+  printf 'create mount-injection fixture returned status %d\n' "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+grep -Fq "preserving partial project with mounted subtree: ${create_mount}" \
+  "${output}"
+[[ -d "${create_project}" && -f "${create_source}/sentinel" ]]
+umount "${create_mount}"
+mount_remove_tree "${create_project}" mount_path
+
 preserved_source="${test_home}/preserved-base"
 preserved_tree="${store}/maintenance"
 preserved_mount="${preserved_tree}/mounted"
@@ -162,6 +275,8 @@ fi
 NAMESPACE
 
 printf 'ok - destroy and nuke refuse nested filesystems and bind mounts\n'
+printf 'ok - staging cleanup preserves mount-bearing trees\n'
+printf 'ok - backup stale-partial guidance requires an explicit unmount\n'
 printf 'ok - maintenance refuses reseal trees containing mounts\n'
 printf 'ok - maintenance recovery never removes through preserved mounts\n'
 printf 'ok - mount-free maintenance removal stays on one filesystem\n'

@@ -56,3 +56,65 @@ mount_find_containing() {
   done
   [[ -n "${_mount_containing_ref}" ]] || return 2
 }
+
+# Remove one absolute, non-symlink directory only after a fresh mount check.
+# Returns 1 for a subordinate mount, 2 for an unsafe/indeterminate target, and
+# 3 when bounded removal itself fails. The mount path is returned by nameref.
+mount_remove_tree() {
+  local -r path="${1}"
+  local -n _mount_remove_ref="${2}"
+  local canonical before after found_mount="" status=0
+
+  _mount_remove_ref=""
+  [[ "${path}" == /* ]] || return 2
+  [[ -e "${path}" || -L "${path}" ]] || return 0
+  [[ -d "${path}" && ! -L "${path}" ]] || return 2
+  canonical="$(realpath -e -- "${path}" 2>/dev/null)" || return 2
+  before="$(stat -Lc '%d:%i:%u' -- "${canonical}" 2>/dev/null)" || return 2
+  mount_find_below "${canonical}" found_mount || status=$?
+  case "${status}" in
+    0)
+      _mount_remove_ref="${found_mount}"
+      return 1
+      ;;
+    1) ;;
+    *) return 2 ;;
+  esac
+  after="$(stat -Lc '%d:%i:%u' -- "${canonical}" 2>/dev/null)" || return 2
+  [[ "${after}" == "${before}" ]] || return 2
+  rm -rf --one-file-system -- "${canonical}" || return 3
+}
+
+mount_cleanup_guidance() {
+  local -r path="${1}"
+  local canonical mount_path="" quoted_path quoted_mount status=0
+
+  printf -v quoted_path '%q' "${path}"
+  if [[ "${path}" != /* || ! -d "${path}" || -L "${path}" ]]; then
+    printf 'Cleanup target is not a safe directory; preserve and inspect it: %s' \
+      "${quoted_path}"
+    return 0
+  fi
+  canonical="$(realpath -e -- "${path}" 2>/dev/null)" || {
+    printf 'Mount state is indeterminate; preserve and inspect: %s' \
+      "${quoted_path}"
+    return 0
+  }
+  mount_find_below "${canonical}" mount_path || status=$?
+  case "${status}" in
+    0)
+      printf -v quoted_mount '%q' "${mount_path}"
+      printf 'Mounted filesystem detected below the preserved tree: %s\n' \
+        "${mount_path}"
+      printf 'Unmount it first: umount -- %s' "${quoted_mount}"
+      ;;
+    1)
+      printf 'Remove it if stale: rm -rf --one-file-system -- %s' \
+        "${quoted_path}"
+      ;;
+    *)
+      printf 'Mount state is indeterminate; preserve and inspect: %s' \
+        "${quoted_path}"
+      ;;
+  esac
+}

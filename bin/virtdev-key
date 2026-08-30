@@ -30,7 +30,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error arguments lock ssh
+import error arguments lock ssh mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -67,7 +67,16 @@ public_key="${VIRTDEV_SSH_KEY}.pub"
 
 key_staging=''
 cleanup_key_staging() {
-  [[ -z "${key_staging}" ]] || rm -rf -- "${key_staging}"
+  local mount_path="" remove_status=0
+  if [[ -n "${key_staging}" ]]; then
+    mount_remove_tree "${key_staging}" mount_path || remove_status=$?
+    case "${remove_status}" in
+      0) ;;
+      1) printf >&2 'warning: preserving key staging with mounted subtree: %s\n' "${mount_path}" ;;
+      2) printf >&2 'warning: preserving key staging because cleanup safety is indeterminate: %s\n' "${key_staging}" ;;
+      *) printf >&2 'warning: could not remove key staging safely: %s\n' "${key_staging}" ;;
+    esac
+  fi
 }
 trap cleanup_key_staging EXIT
 

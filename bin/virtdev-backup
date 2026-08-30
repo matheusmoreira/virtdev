@@ -94,7 +94,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh snapshot manifest terminal port project integer
+import error validate arguments ssh snapshot manifest terminal port project integer mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -296,11 +296,12 @@ final="${day_dir}/${time}"
 mkdir -p -m 0700 "${day_dir}"
 
 if ! mkdir -m 0700 "${partial}" 2>/dev/null; then
+  partial_guidance="$(mount_cleanup_guidance "${partial}")"
   error 10 <<MESSAGE
 Partial snapshot already exists: ${partial}
 Either another backup is in progress, or a previous backup was
 killed (SIGKILL or similar) without its EXIT trap firing.
-Remove it if stale: rm -rf "${partial}"
+${partial_guidance}
 MESSAGE
 fi
 
@@ -308,7 +309,16 @@ backup_succeeded=0
 backup_preserve_partial=0
 ssh_wrapper=
 cleanup_partial() {
-  (( backup_succeeded || backup_preserve_partial )) || rm -rf "${partial}"
+  local mount_path="" remove_status=0
+  if (( ! backup_succeeded && ! backup_preserve_partial )); then
+    mount_remove_tree "${partial}" mount_path || remove_status=$?
+    case "${remove_status}" in
+      0) ;;
+      1) printf >&2 'warning: preserving partial backup with mounted subtree: %s\n' "${mount_path}" ;;
+      2) printf >&2 'warning: preserving partial backup because cleanup safety is indeterminate: %s\n' "${partial}" ;;
+      *) printf >&2 'warning: could not remove partial backup safely: %s\n' "${partial}" ;;
+    esac
+  fi
   [[ -n "${manifest_copy}" ]] && rm -f "${manifest_copy}"
   [[ -n "${ssh_wrapper}" ]] && rm -f "${ssh_wrapper}"
   # Preserve the status that entered the EXIT trap.
