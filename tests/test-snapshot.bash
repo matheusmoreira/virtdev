@@ -57,5 +57,37 @@ if [[ "${list_output}" != *'2026-08-26'* || "${list_output}" != *'12-00-00'* ]];
   exit 1
 fi
 
+mkdir -p "${VIRTDEV_HOME}/backups/empty" \
+  "${VIRTDEV_HOME}/backups/malformed/not-a-date/not-a-time"
+latest='stale'
+snapshot_latest_into latest empty
+if [[ -n "${latest}" ]]; then
+  printf 'empty snapshot inventory did not return a successful empty result\n' >&2
+  exit 1
+fi
+
+declare -a malformed_days=(stale)
+snapshot_list_days_into malformed_days malformed
+if (( ${#malformed_days[@]} != 0 )); then
+  printf 'malformed snapshot day leaked into a complete filtered inventory\n' >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2329  # shadows the command invoked by snapshot_list_into
+find() {
+  printf '2026-08-26/12-00-00\0'
+  return 7
+}
+declare -a failed_inventory=(stale)
+status=0
+snapshot_list_into failed_inventory probe || status=$?
+if (( status != 2 || ${#failed_inventory[@]} != 0 )); then
+  printf 'partial snapshot enumeration was accepted (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+unset -f find
+
 printf 'ok - snapshot selection skips empty days and retains directories\n'
 printf 'ok - list and latest discover backups after project removal\n'
+printf 'ok - snapshot inventory distinguishes emptiness from failure\n'

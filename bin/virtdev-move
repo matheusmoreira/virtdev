@@ -204,6 +204,7 @@ if [[ -d "${target_backups}" ]]; then
   declare -a snapshot_markers=()
   # shellcheck disable=SC2154  # imported from enumerate
   enumerate_nul_sorted snapshot_markers "${enumerate_max_bytes}" \
+    "${enumerate_max_records}" \
     find "${target_backups}" -mindepth 3 -maxdepth 3 -type f \
       -name project -print0 \
     || error 9 <<<'Could not completely enumerate moved snapshot markers; the move journal was preserved.'

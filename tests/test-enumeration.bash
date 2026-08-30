@@ -35,10 +35,32 @@ overflow_records() {
 
 declare -a records=()
 status=0
-enumerate_nul_sorted records 4 overflow_records || status=$?
+enumerate_nul_sorted records 4 4 overflow_records || status=$?
 if (( status != 3 || ${#records[@]} != 0 )); then
   printf 'oversized enumeration was accepted (status %d)\n' "${status}" >&2
   exit 1
 fi
 
-printf 'ok - strict enumeration rejects partial and oversized producers\n'
+too_many_records() {
+  printf 'a\0b\0c\0'
+}
+
+status=0
+enumerate_nul_sorted records 64 2 too_many_records || status=$?
+if (( status != 4 || ${#records[@]} != 0 )); then
+  printf 'record-heavy enumeration was accepted (status %d)\n' "${status}" >&2
+  exit 1
+fi
+
+incomplete_record() {
+  printf 'unterminated'
+}
+
+status=0
+enumerate_nul_sorted records 64 4 incomplete_record || status=$?
+if (( status != 2 || ${#records[@]} != 0 )); then
+  printf 'unterminated enumeration was accepted (status %d)\n' "${status}" >&2
+  exit 1
+fi
+
+printf 'ok - strict enumeration bounds bytes, records, and record framing\n'

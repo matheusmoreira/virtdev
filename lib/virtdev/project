@@ -33,6 +33,7 @@ project_list_into() {
   _project_list_result=()
   [[ -d "${projects_dir}" ]] || return 0
   enumerate_nul_sorted discovered "${enumerate_max_bytes}" \
+    "${enumerate_max_records}" \
     find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' \
     || return $?
   for name in "${discovered[@]}"; do
@@ -40,6 +41,7 @@ project_list_into() {
     [[ "${name}" == "maintenance" ]] && continue
     _project_list_result+=("${name}")
   done
+  return 0
 }
 
 project_list() {

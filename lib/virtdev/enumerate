@@ -5,18 +5,23 @@ set -euo pipefail
 
 # shellcheck disable=SC2034  # consumed by importing libraries and commands
 readonly enumerate_max_bytes=67108864
+# shellcheck disable=SC2034  # consumed by importing libraries and commands
+readonly enumerate_max_records=65536
 
 enumerate_nul_sorted() {
   local -n _enumerate_result="${1}"
-  local -r maximum_bytes="${2}"
-  shift 2
-  local output size producer_status consumer_status sort_status=0
+  local -r maximum_bytes="${2}" maximum_records="${3}"
+  shift 3
+  local output size records last_byte producer_status consumer_status
+  local sort_status=0
   local restore_errexit=0
   local -a pipeline_status=()
 
   _enumerate_result=()
   [[ "${maximum_bytes}" =~ ^[1-9][0-9]*$ ]] \
     && (( maximum_bytes <= 1073741824 )) || return 2
+  [[ "${maximum_records}" =~ ^[1-9][0-9]*$ ]] \
+    && (( maximum_records <= 10000000 )) || return 2
   output="$(mktemp)" || return 2
   [[ $- == *e* ]] && restore_errexit=1
   set +e
@@ -38,6 +43,28 @@ enumerate_nul_sorted() {
     rm -f -- "${output}"
     return 2
   fi
+  if (( size > 0 )); then
+    last_byte="$(tail -c 1 -- "${output}" | LC_ALL=C od -An -tu1)" || {
+      rm -f -- "${output}"
+      return 2
+    }
+    [[ "${last_byte//[[:space:]]/}" == 0 ]] || {
+      rm -f -- "${output}"
+      return 2
+    }
+  fi
+  records="$(LC_ALL=C tr -cd '\0' < "${output}" | wc -c)" || {
+    rm -f -- "${output}"
+    return 2
+  }
+  [[ "${records}" =~ ^[0-9]+$ ]] || {
+    rm -f -- "${output}"
+    return 2
+  }
+  if (( records > maximum_records )); then
+    rm -f -- "${output}"
+    return 4
+  fi
   LC_ALL=C sort -z --output="${output}" -- "${output}" \
     || sort_status=$?
   if (( sort_status != 0 )); then
@@ -46,4 +73,5 @@ enumerate_nul_sorted() {
   fi
   mapfile -d '' -t _enumerate_result < "${output}"
   rm -f -- "${output}"
+  return 0
 }

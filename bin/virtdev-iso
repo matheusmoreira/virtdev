@@ -299,6 +299,7 @@ sudo mkarchiso -v -w "${work_directory}" -o "${output_directory}" "${profile_dir
 declare -a built_isos=()
 # shellcheck disable=SC2154  # imported from enumerate
 enumerate_nul_sorted built_isos "${enumerate_max_bytes}" \
+  "${enumerate_max_records}" \
   find "${output_directory}" -maxdepth 1 -type f -name '*-x86_64.iso' -print0 \
   || error 8 <<<'Could not completely enumerate built ISO images'
 

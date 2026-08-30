@@ -136,6 +136,7 @@ if [[ -d "${backups_root}" ]]; then
   declare -a backup_projects=()
   # shellcheck disable=SC2154  # imported through project
   enumerate_nul_sorted backup_projects "${enumerate_max_bytes}" \
+    "${enumerate_max_records}" \
     find "${backups_root}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' \
     || error 3 <<<'Could not completely enumerate backup roots; nuke was refused.'
   if (( ${#backup_projects[@]} > 0 )); then

@@ -87,6 +87,7 @@ fi
 # can be stranded and system/ can never become partially populated.
 declare -a unexpected_entries=()
 enumerate_nul_sorted unexpected_entries "${enumerate_max_bytes}" \
+  "${enumerate_max_records}" \
   find "${installation_directory}" -mindepth 1 -maxdepth 1 \
     ! -name system.qcow2 ! -name home.qcow2 ! -name nvram \
     ! -name generation ! -name "${ssh_guest_contract_name}" -print0 \
