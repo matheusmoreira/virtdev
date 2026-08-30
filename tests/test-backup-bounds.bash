@@ -18,11 +18,25 @@ cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
+  'phase=' \
+  'verbose=0' \
   'for argument in "$@"; do' \
-  '  if [[ "${argument}" == --extract && -n "${BACKUP_EXTRACT_STARTED_FILE:-}" ]]; then' \
-  '    : > "${BACKUP_EXTRACT_STARTED_FILE}"' \
-  '  fi' \
+  '  case "${argument}" in' \
+  '    --extract)' \
+  '      phase=extraction' \
+  '      [[ -z "${BACKUP_EXTRACT_STARTED_FILE:-}" ]] || : > "${BACKUP_EXTRACT_STARTED_FILE}"' \
+  '      ;;' \
+  '    --list) [[ "${phase}" == extraction ]] || phase=path-listing ;;' \
+  '    --verbose) verbose=1 ;;' \
+  '  esac' \
   'done' \
+  'if [[ "${phase}" == path-listing && "${verbose}" == 1 ]]; then' \
+  '  phase=entry-accounting' \
+  'fi' \
+  'if [[ -n "${BACKUP_HOST_TAR_STDERR_PHASE:-}"' \
+  '    && "${BACKUP_HOST_TAR_STDERR_PHASE}" == "${phase}" ]]; then' \
+  '  head -c "${BACKUP_HOST_TAR_STDERR_BYTES:?}" /dev/zero | tr "\0" x >&2' \
+  'fi' \
   'exec /usr/bin/tar "$@"' \
   > "${fixture_bin}/tar"
 chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl" \
@@ -58,6 +72,28 @@ tar --format=pax -C "${test_tmp}/guest/data" \
   -cf "${test_tmp}/long-name.tar" \
   --transform="s|^other$|${long_name}|" other
 
+mkdir "${test_tmp}/verbose-source" "${test_tmp}/pax-source"
+for index in {000..099}; do
+  : > "${test_tmp}/verbose-source/member-${index}"
+done
+long_component=''
+for _ in {1..200}; do
+  long_component+='v'
+done
+verbose_prefix="${long_component}/${long_component}/${long_component}/${long_component}"
+tar --format=pax -C "${test_tmp}/verbose-source" \
+  -cf "${test_tmp}/verbose.tar" \
+  --transform="s|^|${verbose_prefix}/|" member-{000..099}
+verbose_archive_bytes="$(stat -c '%s' "${test_tmp}/verbose.tar")"
+
+for index in 1 2 3 4; do
+  : > "${test_tmp}/pax-source/member-${index}"
+done
+tar --format=pax --pax-option='foo:=guest-controlled-value' \
+  -C "${test_tmp}/pax-source" -cf "${test_tmp}/pax-warning.tar" \
+  member-{1..4}
+pax_archive_bytes="$(stat -c '%s' "${test_tmp}/pax-warning.tar")"
+
 ssh_key="${test_tmp}/id"
 printf 'test private key\n' > "${ssh_key}"
 chmod 600 "${ssh_key}"
@@ -82,6 +118,11 @@ prepare_home() {
 run_backup() {
   local -r home="${1}" max_bytes="${2}" max_entries="${3}" timeout_seconds="${4}"
   shift 4
+  local -a backup_options=()
+  if [[ "${1:-}" == --test-verbose ]]; then
+    backup_options+=(--verbose)
+    shift
+  fi
   PATH="${fixture_bin}:${PATH}" \
     NO_COLOR=1 \
     SYSTEMCTL_ACTIVE_STATE=active \
@@ -93,7 +134,7 @@ run_backup() {
     VIRTDEV_BACKUP_KILL_AFTER=1 \
     BACKUP_TAR_STREAM="${test_tmp}/capture.tar" \
     "$@" \
-    "${repository}/bin/virtdev-backup" probe
+    "${repository}/bin/virtdev-backup" "${backup_options[@]}" probe
 }
 
 success_home="${test_tmp}/success-home"
@@ -108,10 +149,95 @@ if (( status != 0 )); then
 fi
 if [[ ! -f "${snapshot}/tree/data/sub/file" \
       || "$(< "${snapshot}/tree/data/sub/file")" != payload \
-      || -e "${snapshot}/capture.tar" ]]; then
+      || -e "${snapshot}/capture.tar" \
+      || -e "${snapshot}/capture.stderr" \
+      || -e "${snapshot}/archive-summary" ]]; then
   printf 'bounded archive was not promoted as an ordinary snapshot tree\n' >&2
   exit 1
 fi
+
+verbose_home="${test_tmp}/verbose-home"
+verbose_command="${test_tmp}/verbose-command"
+prepare_home "${verbose_home}"
+status=0
+verbose_snapshot="$(run_backup "${verbose_home}" "${verbose_archive_bytes}" 200 10 \
+  --test-verbose env BACKUP_TAR_STREAM="${test_tmp}/verbose.tar" \
+    BACKUP_COMMAND_FILE="${verbose_command}" \
+    VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=64 \
+  2>"${test_tmp}/verbose.output")" || status=$?
+if (( status != 0 )) \
+    || ! grep -Fq "${verbose_prefix}/member-000" \
+      "${test_tmp}/verbose.output" \
+    || ! grep -Fq 'backup member listing truncated after 65536 bytes' \
+      "${test_tmp}/verbose.output" \
+    || grep -Fq -- '--verbose' "${verbose_command}" \
+    || [[ ! -f "${verbose_snapshot}/tree/${verbose_prefix}/member-099" ]] \
+    || find "${verbose_snapshot}" -maxdepth 1 \
+      \( -name '*.stderr' -o -name 'verbose-listing' \) -print -quit \
+      | grep -q .; then
+  printf 'verbose backup was not derived from a bounded local listing (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/verbose.output" >&2
+  exit 1
+fi
+
+pax_success_home="${test_tmp}/pax-success-home"
+prepare_home "${pax_success_home}"
+status=0
+pax_snapshot="$(run_backup "${pax_success_home}" "${pax_archive_bytes}" 10 10 \
+  env BACKUP_TAR_STREAM="${test_tmp}/pax-warning.tar" \
+    VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=256 \
+  2>"${test_tmp}/pax-success.output")" || status=$?
+if (( status != 0 )) \
+    || [[ ! -f "${pax_snapshot}/tree/member-4" ]] \
+    || ! grep -Fq "Ignoring unknown extended header keyword 'foo'" \
+      "${test_tmp}/pax-success.output"; then
+  printf 'bounded host tar warnings changed a valid backup result (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/pax-success.output" >&2
+  exit 1
+fi
+
+pax_overflow_home="${test_tmp}/pax-overflow-home"
+prepare_home "${pax_overflow_home}"
+status=0
+run_backup "${pax_overflow_home}" "${pax_archive_bytes}" 10 10 \
+  env BACKUP_TAR_STREAM="${test_tmp}/pax-warning.tar" \
+    VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=64 \
+  >"${test_tmp}/pax-overflow.output" 2>&1 || status=$?
+if (( status != 19 )) \
+    || ! grep -Fq 'output budget during backup path listing' \
+      "${test_tmp}/pax-overflow.output" \
+    || (( $(stat -c '%s' "${test_tmp}/pax-overflow.output") > 4096 )) \
+    || find "${pax_overflow_home}/backups" -mindepth 3 -print -quit \
+      | grep -q .; then
+  printf 'real PAX diagnostics escaped the host tar output bound (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/pax-overflow.output" >&2
+  exit 1
+fi
+
+for phase in path-listing entry-accounting extraction; do
+  phase_home="${test_tmp}/host-tar-${phase}-home"
+  prepare_home "${phase_home}"
+  status=0
+  run_backup "${phase_home}" "${archive_bytes}" 4 10 \
+    env VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=64 \
+      BACKUP_HOST_TAR_STDERR_PHASE="${phase}" \
+      BACKUP_HOST_TAR_STDERR_BYTES=1048576 \
+    >"${test_tmp}/host-tar-${phase}.output" 2>&1 || status=$?
+  if (( status != 19 )) \
+      || ! grep -Fq 'Host tar diagnostics exceeded their output budget' \
+        "${test_tmp}/host-tar-${phase}.output" \
+      || (( $(stat -c '%s' "${test_tmp}/host-tar-${phase}.output") > 4096 )) \
+      || find "${phase_home}/backups" -mindepth 3 -print -quit \
+        | grep -q .; then
+    printf 'host tar %s diagnostics escaped their bound (status %d)\n' \
+      "${phase}" "${status}" >&2
+    cat "${test_tmp}/host-tar-${phase}.output" >&2
+    exit 1
+  fi
+done
 
 boundary_home="${test_tmp}/boundary-home"
 prepare_home "${boundary_home}"
@@ -366,3 +492,5 @@ printf 'ok - backup capture enforces physical, logical, entry, and time budgets\
 printf 'ok - backup and restore agree at the logical-byte boundary\n'
 printf 'ok - backup publication is durable or preserves inspectable recovery state\n'
 printf 'ok - backup bounds and sanitizes guest diagnostics\n'
+printf 'ok - verbose backup listings are local, bounded, and non-fatal\n'
+printf 'ok - every host tar decoder has bounded sanitized diagnostics\n'

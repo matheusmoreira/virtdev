@@ -3,6 +3,9 @@
 set -euo pipefail
 
 [[ -n "${BACKUP_PID_FILE:-}" ]] && printf '%d\n' "$$" > "${BACKUP_PID_FILE}"
+if [[ -n "${BACKUP_COMMAND_FILE:-}" ]]; then
+  printf '%s\n' "$*" > "${BACKUP_COMMAND_FILE}"
+fi
 cat >/dev/null
 if [[ -n "${BACKUP_STREAM_DELAY:-}" ]]; then
   sleep "${BACKUP_STREAM_DELAY}"

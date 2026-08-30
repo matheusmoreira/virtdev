@@ -39,7 +39,7 @@
 #
 # Flags:
 #
-#   --verbose      Show archive member names.
+#   --verbose      Show a bounded archive member listing.
 #   --list         Print snapshots for the project. Does not create
 #                  a snapshot; does not require the VM to be running.
 #   --latest       Print the latest snapshot identifier
@@ -221,6 +221,7 @@ readonly backup_member_depth_max=128
 readonly backup_path_state_max_bytes=67108864
 readonly backup_extension_max_bytes=1048576
 readonly backup_archive_memory_kib=262144
+readonly backup_verbose_listing_max_bytes=65536
 
 backup_metadata_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
   .backup-metadata.XXXXXXXX)"
@@ -295,6 +296,25 @@ backup_memory_limited() {
     ulimit -v "${backup_archive_memory_kib}" || exit 70
     exec "$@"
   )
+}
+
+backup_tar_diagnostics_emit() {
+  local -r capture="${1}" phase="${2}"
+  local diagnostic_status=0
+
+  bounded_stderr_emit "${capture}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+  case "${diagnostic_status}" in
+    0)
+      rm -f -- "${capture}" \
+        || error 18 <<<"Could not retire host tar diagnostics after ${phase}"
+      ;;
+    2)
+      error 19 \
+        <<<"Host tar diagnostics exceeded their output budget during ${phase}"
+      ;;
+    *) error 18 <<<"Could not capture bounded host tar diagnostics during ${phase}" ;;
+  esac
 }
 
 if ! project_is_running "${project}"; then
@@ -445,7 +465,6 @@ free_archive_limit=$(( available_bytes - backup_free_space_reserve ))
 # The guest receives only normalized relative roots. The loop drops roots that
 # are already absent; tar then fails on unreadable data or a later race.
 remote_tar=$'set -o pipefail\ncd /home/dev || exit 1\nwhile IFS= read -r path || [[ -n "${path}" ]]; do\n  if [[ -e "${path}" || -L "${path}" ]]; then\n    printf "%s\\n" "${path}"\n  fi\ndone | /usr/bin/tar --create --file=- --one-file-system --sparse --verbatim-files-from --files-from=-'
-(( flags[verbose] )) && remote_tar+=' --verbose'
 printf -v remote_tar_quoted '%q' "${remote_tar}"
 
 printf >&2 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
@@ -509,17 +528,37 @@ esac
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Backup deadline expired before validation'
 archive_paths_summary_file="${partial}/archive-paths-summary"
+verbose_listing_file="${partial}/verbose-listing"
+path_tar_stderr="${partial}/path-list.stderr"
+path_tar_stderr_fifo="${partial}/path-list.stderr.fifo"
+if (( flags[verbose] )); then
+  ( set -o noclobber; : > "${verbose_listing_file}" ) \
+    || error 18 <<<'Could not initialize the bounded verbose listing'
+fi
 set +e
 # shellcheck disable=SC2016  # awk program is passed through timeout
-LC_ALL=C backup_memory_limited timeout --signal=TERM \
-    --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
-    "${remaining}" tar --quoting-style=escape --list --file="${archive}" \
+LC_ALL=C bounded_stderr_run "${path_tar_stderr}" \
+    "${path_tar_stderr_fifo}" "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+    backup_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+      "${remaining}" tar --quoting-style=escape --list --file="${archive}" \
   | LC_ALL=C backup_memory_limited timeout --signal=TERM \
       --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" "${remaining}" \
       awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" \
         -v maximum_path_bytes="${backup_member_path_max_bytes}" \
         -v maximum_path_depth="${backup_member_depth_max}" \
-        -v maximum_path_state="${backup_path_state_max_bytes}" '
+        -v maximum_path_state="${backup_path_state_max_bytes}" \
+        -v show_listing="${flags[verbose]}" \
+        -v listing_file="${verbose_listing_file}" \
+        -v listing_maximum="${backup_verbose_listing_max_bytes}" '
+        function append_listing(value, available) {
+          if (!show_listing || listing_bytes >= listing_maximum + 1) return
+          value = value ORS
+          available = listing_maximum + 1 - listing_bytes
+          if (length(value) > available) value = substr(value, 1, available)
+          printf "%s", value >> listing_file
+          listing_bytes += length(value)
+        }
         function add_component(parent, value, key) {
           key = parent SUBSEP value
           if (!(key in child_id)) {
@@ -540,6 +579,7 @@ LC_ALL=C backup_memory_limited timeout --signal=TERM \
         {
           members++
           if (members > maximum_entries) { entries_over = 1; exit }
+          append_listing($0)
           path = $0
           sub(/\/$/, "", path)
           if (substr(path, 1, 1) == "/") {
@@ -578,6 +618,7 @@ LC_ALL=C backup_memory_limited timeout --signal=TERM \
       ' > "${archive_paths_summary_file}"
 path_validation_status=("${PIPESTATUS[@]}")
 set -e
+backup_tar_diagnostics_emit "${path_tar_stderr}" 'backup path listing'
 case "${path_validation_status[1]}" in
   0) ;;
   42) error 19 <<<"Backup exceeded its ${VIRTDEV_BACKUP_MAX_ENTRIES}-entry extracted-tree budget" ;;
@@ -594,6 +635,7 @@ esac
 case "${path_validation_status[0]}" in
   0) ;;
   124|137) error 20 <<<'Backup path validation exceeded its wall-clock deadline' ;;
+  125) error 18 <<<'Could not supervise host tar during backup path listing' ;;
   *) error 18 <<<'Guest produced an invalid backup archive' ;;
 esac
 read -r members_listed extracted_entries extra_summary \
@@ -605,14 +647,19 @@ read -r members_listed extracted_entries extra_summary \
 
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Backup deadline expired before validation'
+archive_summary_file="${partial}/archive-summary"
+accounting_tar_stderr="${partial}/accounting-list.stderr"
+accounting_tar_stderr_fifo="${partial}/accounting-list.stderr.fifo"
 set +e
 # shellcheck disable=SC2016  # awk program is passed through timeout
-archive_summary="$({
-  LC_ALL=C backup_memory_limited timeout --signal=TERM \
-    --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
-    "${remaining}" tar --numeric-owner --quoting-style=escape \
-      --list --verbose --file="${archive}" \
-    | LC_ALL=C backup_memory_limited timeout --signal=TERM \
+LC_ALL=C bounded_stderr_run "${accounting_tar_stderr}" \
+    "${accounting_tar_stderr_fifo}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+    backup_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+      "${remaining}" tar --numeric-owner --quoting-style=escape \
+        --list --verbose --file="${archive}" \
+  | LC_ALL=C backup_memory_limited timeout --signal=TERM \
       --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" "${remaining}" \
       awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" \
         -v maximum_bytes="${VIRTDEV_BACKUP_MAX_BYTES}" '
@@ -643,27 +690,48 @@ archive_summary="$({
         if (bad_size) exit 45
         printf("%d %.0f\n", count, logical_bytes)
       }
-    '
-})"
-validation_status=$?
+      ' > "${archive_summary_file}"
+validation_status=("${PIPESTATUS[@]}")
 set -e
-case "${validation_status}" in
+backup_tar_diagnostics_emit "${accounting_tar_stderr}" \
+  'backup entry accounting'
+case "${validation_status[1]}" in
   0) ;;
   42) error 19 <<<"Backup exceeded its ${VIRTDEV_BACKUP_MAX_ENTRIES}-entry budget" ;;
   43) error 18 <<<'Backup archive contains an unsupported special file' ;;
   44) error 19 <<<"Backup exceeded its ${VIRTDEV_BACKUP_MAX_BYTES}-byte logical data budget" ;;
   45) error 18 <<<'Backup archive contains an invalid regular-file size' ;;
   124|137) error 20 <<<'Backup validation exceeded its wall-clock deadline' ;;
+  *) error 18 <<<'Could not account for backup archive entries' ;;
+esac
+case "${validation_status[0]}" in
+  0) ;;
+  124|137) error 20 <<<'Backup validation exceeded its wall-clock deadline' ;;
+  125) error 18 <<<'Could not supervise host tar during backup entry accounting' ;;
   *) error 18 <<<'Guest produced an invalid backup archive' ;;
 esac
 read -r entries_captured logical_bytes_captured extra_summary \
-  <<< "${archive_summary}"
+  < "${archive_summary_file}"
 [[ "${entries_captured}" =~ ^[0-9]+$ \
     && "${logical_bytes_captured}" =~ ^[0-9]+$ \
     && -z "${extra_summary}" ]] \
   || error 18 <<<'Could not summarize backup archive entries'
 (( entries_captured == members_listed )) \
   || error 18 <<<'Backup archive listings disagreed'
+
+if (( flags[verbose] )); then
+  verbose_listing_status=0
+  bounded_stderr_emit "${verbose_listing_file}" \
+    "${backup_verbose_listing_max_bytes}" || verbose_listing_status=$?
+  case "${verbose_listing_status}" in
+    0) ;;
+    2)
+      printf >&2 'warning: backup member listing truncated after %d bytes\n' \
+        "${backup_verbose_listing_max_bytes}"
+      ;;
+    *) error 18 <<<'Could not display the bounded backup member listing' ;;
+  esac
+fi
 
 available_extract_bytes=''
 available_inodes=''
@@ -685,22 +753,29 @@ fi
 
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Backup deadline expired before extraction'
+extraction_tar_stderr="${partial}/extraction.stderr"
+extraction_tar_stderr_fifo="${partial}/extraction.stderr.fifo"
 set +e
-backup_memory_limited timeout --signal=TERM \
-    --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
-    "${remaining}" tar --extract --file="${archive}" \
-      --directory="${partial}/tree" --no-same-owner --same-permissions \
-      --delay-directory-restore --sparse
+LC_ALL=C bounded_stderr_run "${extraction_tar_stderr}" \
+    "${extraction_tar_stderr_fifo}" "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+    backup_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+      "${remaining}" tar --extract --file="${archive}" \
+        --directory="${partial}/tree" --no-same-owner --same-permissions \
+        --delay-directory-restore --sparse \
+    > /dev/null
 extraction_status=$?
 set -e
-if (( extraction_status != 0 )); then
-  case "${extraction_status}" in
-    124|137) error 20 <<<'Backup extraction exceeded its wall-clock deadline' ;;
-    *) error 18 <<<"Backup extraction failed (exit ${extraction_status})" ;;
-  esac
-fi
+backup_tar_diagnostics_emit "${extraction_tar_stderr}" 'backup extraction'
+case "${extraction_status}" in
+  0) ;;
+  124|137) error 20 <<<'Backup extraction exceeded its wall-clock deadline' ;;
+  125) error 18 <<<'Could not supervise host tar during backup extraction' ;;
+  *) error 18 <<<"Backup extraction failed (exit ${extraction_status})" ;;
+esac
 
-rm -f "${archive}" "${archive_paths_summary_file}" "${files_from}"
+rm -f "${archive}" "${archive_paths_summary_file}" "${archive_summary_file}" \
+  "${verbose_listing_file}" "${capture_stderr}" "${files_from}"
 
 if (( entries_captured == 0 )); then
   error 11 <<MESSAGE
