@@ -120,6 +120,23 @@ for valid in -N -NT -vvv -L3000:localhost:3000 -R8022:localhost:22 \
   }
 done
 
+encoded_dollar='$'
+declare -a encoded_arguments=(
+  plain 'two words' '' "single'quote" 'double"quote' 'back\slash'
+  $'line\nbreak' '*?[abc]' '; command' "${encoded_dollar}(command)" -leading
+)
+encoded_command=''
+ssh_remote_command_encode encoded_command printf '%s\0' \
+  "${encoded_arguments[@]}"
+encoded_output="${test_tmp}/encoded-output"
+expected_encoded_output="${test_tmp}/expected-encoded-output"
+/bin/sh -c "${encoded_command}" > "${encoded_output}"
+printf '%s\0' "${encoded_arguments[@]}" > "${expected_encoded_output}"
+if ! cmp -s -- "${expected_encoded_output}" "${encoded_output}"; then
+  printf 'remote-command encoding did not preserve argv boundaries\n' >&2
+  exit 1
+fi
+
 effective="$({
   "${actual[@]}" -G dev@127.0.0.1
 } 2>/dev/null)"
@@ -221,6 +238,55 @@ exec {poll_input_fd}<&-
 if (( status != 0 )) || [[ "${poll_input_record}" != preserved ]]; then
   printf 'poll-mode SSH consumed caller stdin\n' >&2
   cat "${client_log}" >&2
+  exit 1
+fi
+
+printf '%s\n' "${live_port}" > "${VIRTDEV_HOME}/projects/alpha/port"
+live_config_home="${test_tmp}/live-config"
+mkdir -p "${live_config_home}"
+remote_marker="${test_tmp}/remote-command-executed"
+remote_injection="\$(touch -- '${remote_marker}')"
+declare -a boundary_arguments=(
+  "${remote_injection}" 'two words' '' "single'quote" 'double"quote'
+  'back\slash' $'line\nbreak' '*?[abc]' '; :' -leading
+)
+boundary_output="${test_tmp}/boundary-output"
+boundary_expected="${test_tmp}/boundary-expected"
+boundary_stderr="${test_tmp}/boundary-stderr"
+printf '%s\0' "${boundary_arguments[@]}" > "${boundary_expected}"
+status=0
+PATH="${repository}/tests/fixtures:${PATH}" \
+  SYSTEMCTL_ACTIVE_STATE=active XDG_CONFIG_HOME="${live_config_home}" \
+  "${repository}/bin/virtdev-ssh" alpha -- /usr/bin/bash -c \
+    'printf '\''%s\0'\'' "$@"' argv0 "${boundary_arguments[@]}" \
+    > "${boundary_output}" 2> "${boundary_stderr}" || status=$?
+if (( status != 0 )) || [[ -e "${remote_marker}" ]] \
+    || ! cmp -s -- "${boundary_expected}" "${boundary_output}"; then
+  printf 'live SSH did not preserve exact remote argv (status %d)\n' \
+    "${status}" >&2
+  cat "${boundary_stderr}" >&2
+  exit 1
+fi
+
+stdin_script="${test_tmp}/stdin-script"
+stdin_output="${test_tmp}/stdin-output"
+stdin_expected="${test_tmp}/stdin-expected"
+printf 'printf '\''%%s\\0'\'' "$@"\nprintf '\''stdin-ok\\n'\''\n' \
+  > "${stdin_script}"
+{
+  printf '%s\0' 'two words' ''
+  printf 'stdin-ok\n'
+} > "${stdin_expected}"
+status=0
+PATH="${repository}/tests/fixtures:${PATH}" \
+  SYSTEMCTL_ACTIVE_STATE=active XDG_CONFIG_HOME="${live_config_home}" \
+  "${repository}/bin/virtdev-ssh" alpha -- /usr/bin/bash -s -- \
+    'two words' '' < "${stdin_script}" > "${stdin_output}" \
+    2> "${test_tmp}/stdin-stderr" || status=$?
+if (( status != 0 )) || ! cmp -s -- "${stdin_expected}" "${stdin_output}"; then
+  printf 'live SSH did not preserve remote argv with script stdin (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/stdin-stderr" >&2
   exit 1
 fi
 
@@ -372,8 +438,11 @@ done
 [[ -n "${config_path}" && ! -e "${config_path}" ]]
 expected_cli=("${expected_base[@]:1}")
 expected_cli[1]="${config_path}"
+expected_cli_remote=''
+ssh_remote_command_encode expected_cli_remote \
+  --help -h --color=yes -dash 'two words' ''
 expected_cli+=(
-  -L3000:localhost:3000 -N dev@127.0.0.1 --help -h --color=yes -dash 'two words' ''
+  -L3000:localhost:3000 -N dev@127.0.0.1 "${expected_cli_remote}"
 )
 assert_argv cli_argv expected_cli
 
@@ -391,11 +460,11 @@ if (( status != 42 )); then
 fi
 mapfile -d '' -t leading_cli_argv < "${SSH_ARGV_FILE}"
 leading_count=${#leading_cli_argv[@]}
-if (( leading_count < 4 )) \
-    || [[ "${leading_cli_argv[leading_count - 4]}" != dev@127.0.0.1 \
-      || "${leading_cli_argv[leading_count - 3]}" != printf \
-      || "${leading_cli_argv[leading_count - 2]}" != %s \
-      || "${leading_cli_argv[leading_count - 1]}" != ok ]]; then
+leading_remote=''
+ssh_remote_command_encode leading_remote printf '%s' ok
+if (( leading_count < 2 )) \
+    || [[ "${leading_cli_argv[leading_count - 2]}" != dev@127.0.0.1 \
+      || "${leading_cli_argv[leading_count - 1]}" != "${leading_remote}" ]]; then
   printf 'SSH changed the leading-hyphen project command\n' >&2
   exit 1
 fi

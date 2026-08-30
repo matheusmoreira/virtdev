@@ -4,9 +4,10 @@
 # Host identity and policy-bound SSH transport helpers.
 #
 # The public API manages per-project host identities and guest contract markers,
-# validates keys/config/options, builds interactive/batch/poll argv and rsync
-# wrappers, and polls readiness (0 ready, 1 timeout, 2 unit exited). Options that
-# take values must be self-contained tokens. Callers own returned wrapper paths.
+# validates keys/config/options, encodes remote argv, builds
+# interactive/batch/poll argv and rsync wrappers, and polls readiness (0 ready,
+# 1 timeout, 2 unit exited). Options that take values must be self-contained
+# tokens. Callers own returned wrapper paths.
 #
 # Exits: 77 missing key; 78 unsafe key mode; 103 bad host identity;
 # 104 incompatible guest contract; 105 forbidden SSH config directive.
@@ -408,6 +409,24 @@ ssh_client_option_valid() {
   (( $# == 1 && ${#1} > 1 && ${#1} <= 4096 )) || return 1
   [[ "${1}" =~ ^-[46aCgknNqTtvXxYy]+$ \
       || "${1}" =~ ^-[DELR].+ ]]
+}
+
+ssh_remote_command_encode() {
+  (( $# >= 1 )) || return 2
+  local -r __ssh_remote_output_name="${1}"
+  [[ "${__ssh_remote_output_name}" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ \
+      && ${#__ssh_remote_output_name} -le 64 ]] || return 2
+  shift
+
+  local __ssh_remote_argument __ssh_remote_command='' __ssh_remote_separator=''
+  for __ssh_remote_argument in "$@"; do
+    __ssh_remote_argument="${__ssh_remote_argument//\'/\'\\\'\'}"
+    __ssh_remote_command+="${__ssh_remote_separator}'${__ssh_remote_argument}'"
+    __ssh_remote_separator=' '
+  done
+
+  local -n __ssh_remote_output="${__ssh_remote_output_name}"
+  __ssh_remote_output="${__ssh_remote_command}"
 }
 
 ssh_rsync_command() {

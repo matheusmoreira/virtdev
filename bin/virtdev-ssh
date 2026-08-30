@@ -5,8 +5,9 @@
 # Connects into a running project virtual machine
 # via SSH and as the dev user.
 #
-# Client options precede the destination; remote command arguments follow it.
-# Options that take a value must carry it in the same token.
+# Client options precede the destination. Remote arguments are encoded into one
+# shell command so the guest receives their original boundaries. Options that
+# take a value must carry it in the same token.
 #
 #     virtdev-ssh myproject --client-option=-L3000:localhost:3000 \
 #       --client-option=-N
@@ -224,7 +225,11 @@ declare -a ssh_argv=()
 ssh_transport_argv ssh_argv interactive "${project}" \
   "${VIRTDEV_SSH_KEY}" "${port}" "${config_file}"
 ssh_argv+=("${client_options[@]}" dev@127.0.0.1)
-ssh_argv+=("${remote_command[@]}")
+if (( ${#remote_command[@]} )); then
+  remote_command_encoded=''
+  ssh_remote_command_encode remote_command_encoded "${remote_command[@]}"
+  ssh_argv+=("${remote_command_encoded}")
+fi
 "${ssh_argv[@]}" || ssh_exit=$?
 
 exit "${ssh_exit}"
