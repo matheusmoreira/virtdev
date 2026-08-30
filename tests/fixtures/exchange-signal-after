@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: "${MAINTENANCE_REAL_EXCHANGE:?}"
+: "${MAINTENANCE_EXCHANGE_MARKER:?}"
+
+"${MAINTENANCE_REAL_EXCHANGE}" "$@"
+: > "${MAINTENANCE_EXCHANGE_MARKER}"
+kill -TERM "${PPID}"
+sleep 0.05

@@ -705,6 +705,8 @@ trap - EXIT
 maintenance_cleanup_phase=0
 maintenance_cleanup_signal_status=0
 maintenance_exchange_committed=0
+maintenance_exchange_classifying=0
+maintenance_exchange_signal_status=0
 
 # shellcheck disable=SC2329  # invoked via signal traps
 maintenance_cleanup_signal() {
@@ -712,6 +714,9 @@ maintenance_cleanup_signal() {
   if (( maintenance_cleanup_phase )); then
     (( maintenance_cleanup_signal_status )) \
       || maintenance_cleanup_signal_status="${status}"
+  elif (( maintenance_exchange_classifying )); then
+    (( maintenance_exchange_signal_status )) \
+      || maintenance_exchange_signal_status="${status}"
   else
     exit "${status}"
   fi
@@ -738,7 +743,8 @@ maintenance_exit_guard() {
   if (( maintenance_cleanup_signal_status )); then
     exit_status="${maintenance_cleanup_signal_status}"
   fi
-  if (( maintenance_exchange_committed && exit_status != 0 \
+  if (( (maintenance_exchange_committed || maintenance_exchange_classifying) \
+        && exit_status != 0 \
         && exit_status != 27 )); then
     printf >&2 'warning: failure occurred after the base namespace exchange; preserving both trees\n'
     exit_status=27
@@ -1199,13 +1205,22 @@ chmod 444 "${maintenance_directory}"/*
 
 printf >&2 '%s\n' "$(terminal_write bold "Resealing base system images to: '${system_directory}'" reset)"
 exchange_status=0
+maintenance_exchange_classifying=1
 "${virtdev_libexec_directory}/virtdev-exchange" \
   "${system_directory}" "${maintenance_directory}" || exchange_status=$?
 case "${exchange_status}" in
   0)
     maintenance_exchange_committed=1
+    maintenance_exchange_classifying=0
+    if (( maintenance_exchange_signal_status )); then
+      exit "${maintenance_exchange_signal_status}"
+    fi
     ;;
   1)
+    maintenance_exchange_classifying=0
+    if (( maintenance_exchange_signal_status )); then
+      exit "${maintenance_exchange_signal_status}"
+    fi
     error 19 <<MESSAGE
 Failed to swap the new images into place (virtdev-exchange).
 This needs renameat2(RENAME_EXCHANGE); system/ and maintenance/ must be
@@ -1214,6 +1229,8 @@ sealed base is unchanged. Staged images preserved: '${maintenance_directory}'
 MESSAGE
     ;;
   2)
+    maintenance_exchange_committed=1
+    maintenance_exchange_classifying=0
     error 27 <<MESSAGE
 The system/ and maintenance/ names were exchanged, but the durability sync
 failed. Both trees are preserved. Do not delete either one or start a project
@@ -1223,6 +1240,10 @@ until their generations/images are inspected and the filesystem is healthy:
 MESSAGE
     ;;
   *)
+    # An unrecognized or signalled helper status cannot prove whether the
+    # exchange syscall ran. Preserve both trees and classify conservatively.
+    maintenance_exchange_committed=1
+    maintenance_exchange_classifying=0
     error 27 <<<"virtdev-exchange returned unexpected status ${exchange_status}; both trees were preserved."
     ;;
 esac
