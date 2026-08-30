@@ -839,17 +839,25 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `error` | terminal failure helper used by every script (`error <code>` with message via stdin/heredoc) | none (caller-supplied) |
 | `validate` | input validation (`validate_project_name`) | 2 |
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`); universal `--help` and `--color` handling | 64 |
+| `integer` | canonical bounded-positive-decimal predicate (`integer_is_bounded_positive`) | none (predicate status) |
+| `ip` | IPv4/IPv6 literal predicate (`ip_literal_is_valid`) | none (predicate status) |
 | `lock` | canonical store/cache `flock(2)` domains, inherited composition, bounded diagnostics | 75, 76 |
 | `ssh` | Guest-contract checks, project host identities, strict shared transport argv, rsync wrapper, and bounded polling | 77, 78, 103, 104, 105 |
+| `diagnostic` | bounded, sanitized stderr capture and emission for guest-controlled transports (`bounded_stderr_run`, `bounded_stderr_emit`) | 1, 2, 125 (returned; otherwise child status) |
+| `enumerate` | strict bounded NUL-record capture and sorting (`enumerate_nul_sorted`) | 2, 3, 4 (returned) |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at explicit lifecycle points (`trigger_fire`); bounds execution and stdout before returning text through namerefs | 80 |
+| `trigger-runner` | internal bounded trigger pipeline and status reporting to its supervisor | none |
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
 | `manifest` | resolve and normalize backup manifests; reject parent escapes and intermediate restore symlinks | none (caller-supplied) |
+| `frozen-input` | bounded durable copies and digest revalidation for inputs crossing irreversible phases | 40, 41, 42, 43, 44 (returned) |
 | `mount` | locate containing and nested mounts before recursive operations | none (caller-supplied) |
 | `machine` | resolve project and maintenance machine targets into explicit kind, unit, data-root, and runtime-root descriptors; owns authoritative single-machine state mapping and fail-closed predicates | 2, 3 (returned) |
 | `project` | enumerate projects and enforce ordinary-project data operations (`project_require_ordinary`, batch state, generation and detached-state readers); compatibility state predicates delegate to `machine` | 3, 82 |
 | `runtime` | single source of truth for a machine's ephemeral host-side artifacts — the monitor/console/passt/qmp sockets, atomic `port` readiness signal, and `launch.phase` exit-provenance marker | none |
 | `lifecycle` | nonterminating machine lifecycle service: activation/QMP readiness with unit ownership checks, atomic readiness publication, terminal proof, and fail-closed runtime cleanup; callers map structured statuses to CLI exits | structured return statuses |
+| `recreate-result` | stable recreate results and phase/state mappings shared with orchestrators | 20–29 |
+| `stop-result` | shared stopped-with-incomplete-cleanup result | 7 |
 | `passt` | passt network backend constructor helpers (`passt_command`, `passt_socket_clean`); single source of truth for passt flags | 83, 84, 86 |
 | `qemu` | shared QEMU argv construction; the network-isolation security boundary keeping `start` and `maintain` flags byte-identical | none |
 | `qmp` | bounded, transport-only QMP client (`qmp_query_running_once`, `qmp_query_running`, `qmp_wait_shutdown`, `qmp_quit`); lifecycle ownership decisions remain outside the transport | none |
@@ -964,6 +972,7 @@ The public environment interface is:
 | `VIRTDEV_HOME` | `${XDG_DATA_HOME:-~/.local/share}/virtdev` | Data directory |
 | `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` | SSH private-key path |
 | `VIRTDEV_CACHE` | `${XDG_CACHE_HOME:-~/.cache}/virtdev` | Cache directory |
+| `VIRTDEV_LOCK_DIRECTORY` | `${XDG_RUNTIME_DIR}/virtdev/locks`, else `${XDG_STATE_HOME:-~/.local/state}/virtdev/locks` | Private store/cache lock directory override |
 | `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) | IANA timezone name |
 | `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) | Guest locale |
 | `VIRTDEV_KEYMAP` | host keymap (`us` fallback) | Guest console keymap |
@@ -1017,6 +1026,14 @@ ${XDG_RUNTIME_DIR}/virtdev/locks/
 
 ${VIRTDEV_HOME}/
   lock                  compatibility lock for firewall coordination
+  move.transaction      durable exact source/target journal for move recovery
+  move.transaction.tmp.<pid>  move-journal publication temporary
+  transactions/         private workflow transaction directories (mode 0700)
+    recreate.<project>.<random>/
+      provision         frozen provision input; preserved after some failures
+    upgrade.<random>/
+      <project>.provision  per-project frozen provision input
+    maintain.<random>/  frozen hook inputs and bounded output captures
   ssh/
     id                  ed25519 private key (mode 600)
     id.pub              ed25519 public key (injected at install time via fw_cfg)
@@ -1050,6 +1067,13 @@ ${VIRTDEV_HOME}/
       generation        copy of system/generation at create time
       guest-contract    copied at create time; independent after detach
       ssh-host/         private host key, public key, exact-alias known_hosts
+      .detach.transaction      identity-bound detach recovery journal
+      .detach.transaction.tmp  detach-journal publication temporary
+      system.qcow2.bak         journal-bound original system disk
+      home.qcow2.bak           journal-bound original home disk
+      system.qcow2.detach      uncommitted converted system disk
+      home.qcow2.detach        uncommitted converted home disk
+      generation.detach.tmp    detached-marker publication temporary
       port              SSH forwarding port (present while running)
       monitor.sock      QEMU HMP monitor socket (present while running)
       qmp.sock          QEMU QMP control socket (present while running)
@@ -1117,6 +1141,14 @@ ${XDG_CONFIG_HOME:-~/.config}/virtdev/
                         virtdev-nuke. Overridable per-invocation
                         with `virtdev-recreate --provision <path>`.
 ```
+
+Move and detach recovery is authorized only by a matching
+`move.transaction` or `.detach.transaction` journal. Detach additionally binds
+the original disk identities; a bare `.bak` file has no recovery authority.
+Workflow directories under `transactions/` are normally removed. Recreate and
+upgrade may preserve frozen provision inputs after failures in irreversible
+phases, and abrupt host loss can leave any in-flight transaction directory for
+inspection.
 
 `virtdev-iso` refuses cleanup when mountinfo contains a mount at or below
 `work/` or `profile/`. It atomically moves each tree to a root-owned quarantine

@@ -361,6 +361,7 @@ Environment variables (defaults shown):
 | `VIRTDEV_HOME` | `~/.local/share/virtdev` | Data directory |
 | `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` | SSH private-key path |
 | `VIRTDEV_CACHE` | `~/.cache/virtdev` | Cache directory |
+| `VIRTDEV_LOCK_DIRECTORY` | `${XDG_RUNTIME_DIR}/virtdev/locks`, else `${XDG_STATE_HOME:-~/.local/state}/virtdev/locks` | Private store/cache lock directory override |
 | `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) | IANA timezone name |
 | `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) | Guest locale |
 | `VIRTDEV_KEYMAP` | host keymap (`us` fallback) | Guest console keymap |
@@ -410,8 +411,10 @@ bytes, and caps its source-validation ledger at 512 MiB.
 (`${XDG_DATA_HOME}` and `${XDG_CACHE_HOME}` respectively).
 
 All commands support `--color=yes|no|auto` (default: auto). Auto enables
-color when stderr is a terminal, `NO_COLOR` is unset, and `TERM` is not
-`dumb`. Colors come from terminfo via `tput`, not hardcoded ANSI escapes.
+color when the stream receiving styled output is a terminal, `NO_COLOR` is
+unset, and `TERM` is not `dumb`. Most commands style stderr; `virtdev-list`
+and `virtdev-disk` style stdout and therefore probe stdout. Colors come from
+terminfo via `tput`, not hardcoded ANSI escapes.
 
 Output convention: user-facing messages go to stderr, machine-readable
 output (ports, paths, PIDs, status words) goes to stdout.
@@ -553,6 +556,12 @@ ${XDG_RUNTIME_DIR}/virtdev/locks/   (falls back to $XDG_STATE_HOME)
 
 ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
   lock                              compatibility lock for firewall coordination
+  move.transaction                  durable interrupted-move recovery journal
+  move.transaction.tmp.<pid>        move-journal publication temporary
+  transactions/                     private workflow transactions
+    recreate.<project>.<random>/provision  frozen provision input
+    upgrade.<random>/<project>.provision   per-project frozen provision input
+    maintain.<random>/              frozen hooks and bounded captures
   ssh/id, ssh/id.pub                SSH key pair
   system/                           sealed base (mode 444)
   maintenance/                      transient staging for virtdev-maintain
@@ -561,6 +570,11 @@ ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
     nvram, generation               UEFI state, base generation
     guest-contract                  guest/host SSH compatibility marker
     ssh-host/                        host-owned key and known-host state
+    .detach.transaction             identity-bound detach recovery journal
+    .detach.transaction.tmp         detach-journal publication temporary
+    system.qcow2.bak, home.qcow2.bak  journal-bound original disks
+    system.qcow2.detach, home.qcow2.detach  converted-disk temporaries
+    generation.detach.tmp           detached-marker publication temporary
     port, monitor.sock, qmp.sock, console.sock, network.sock  runtime (while running)
     manifest                     optional project-local manifest
   backups/<project>/<date>/<time>/
@@ -587,6 +601,11 @@ ${VIRTDEV_CACHE}/                   (~/.cache/virtdev)
     manifest                       canonical backup manifest (survives nuke)
     provision                         auto-run by virtdev-recreate
 ```
+
+Move and detach recovery is authorized only by a matching
+`move.transaction` or `.detach.transaction` journal. A bare `.bak` file has no
+recovery authority. Workflow directories under `transactions/` are normally
+removed, but may remain after abrupt host loss or a recovery-preserving failure.
 
 An interrupted ISO build can leave privileged mounts below `work/`.
 `virtdev iso` refuses to clean a mounted build tree; unmount the exact stale

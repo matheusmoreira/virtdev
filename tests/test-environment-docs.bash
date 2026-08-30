@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016  # documentation assertions are literal Markdown
 
 set -euo pipefail
 
@@ -8,7 +9,7 @@ public_variables="$({
   sed -n 's/.*${\(VIRTDEV_[A-Z0-9_]*\):=.*/\1/p' \
     "${repository}"/bin/virtdev-* "${repository}"/lib/virtdev/*
   printf '%s\n' VIRTDEV_DNS VIRTDEV_INVENTORY VIRTDEV_ISO_PROFILE \
-    VIRTDEV_PACKAGES VIRTDEV_SCRIPT
+    VIRTDEV_LOCK_DIRECTORY VIRTDEV_PACKAGES VIRTDEV_SCRIPT
 } | LC_ALL=C sort -u)"
 
 for document in README.md DESIGN.md; do
@@ -21,6 +22,18 @@ for document in README.md DESIGN.md; do
       exit 1
     fi
   done <<< "${public_variables}"
+done
+
+for document in README.md DESIGN.md; do
+  lock_row="$(grep -F '| `VIRTDEV_LOCK_DIRECTORY`' \
+    "${repository}/${document}")"
+  for contract in XDG_RUNTIME_DIR XDG_STATE_HOME store/cache; do
+    if [[ "${lock_row}" != *"${contract}"* ]]; then
+      printf '%s does not document VIRTDEV_LOCK_DIRECTORY %s\n' \
+        "${document}" "${contract}" >&2
+      exit 1
+    fi
+  done
 done
 
 while IFS='|' read -r variable accepted_range; do
