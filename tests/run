@@ -4,6 +4,7 @@ set -euo pipefail
 
 test_directory="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 test_lock_directory=""
+test_list_file=""
 
 if [[ -z "${VIRTDEV_LOCK_DIRECTORY:-}" ]]; then
   test_lock_directory="$(mktemp -d --tmpdir virtdev-tests.XXXXXXXXXX)"
@@ -12,15 +13,27 @@ fi
 
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 cleanup() {
+  [[ -z "${test_list_file}" ]] || rm -f -- "${test_list_file}"
   [[ -z "${test_lock_directory}" ]] \
     || rm -rf -- "${test_lock_directory}"
 }
 trap cleanup EXIT
 
 status=0
-mapfile -t test_files \
-  < <(find "${test_directory}" -maxdepth 1 -type f -name 'test-*.bash' \
-    -print | LC_ALL=C sort)
+test_list_file="$(mktemp --tmpdir virtdev-test-list.XXXXXXXXXX)" || {
+  printf 'Could not create the test discovery list\n' >&2
+  exit 1
+}
+if ! find "${test_directory}" -maxdepth 1 -type f -name 'test-*.bash' \
+    -print0 | LC_ALL=C sort -z > "${test_list_file}"; then
+  printf 'Could not discover tests under: %s\n' "${test_directory}" >&2
+  exit 1
+fi
+mapfile -d '' -t test_files < "${test_list_file}"
+if (( ${#test_files[@]} == 0 )); then
+  printf 'No tests found under: %s\n' "${test_directory}" >&2
+  exit 1
+fi
 
 for test_file in "${test_files[@]}"; do
   printf 'TEST %s\n' "$(basename "${test_file}")"
