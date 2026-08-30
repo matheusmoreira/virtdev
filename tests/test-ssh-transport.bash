@@ -308,6 +308,12 @@ printf '2222\n' > "${VIRTDEV_HOME}/projects/alpha/port"
 export SYSTEMCTL_ACTIVE_STATE=active
 export SSH_ARGV_FILE="${test_tmp}/cli.argv"
 export SSH_ARGV_STATUS=42
+config_home="${test_tmp}/config"
+mkdir -p "${config_home}/virtdev/projects/alpha"
+printf 'Host *\n    SendEnv PROJECT' \
+  > "${config_home}/virtdev/projects/alpha/ssh_config"
+printf '    SendEnv SYSTEM\n' > "${config_home}/virtdev/ssh_config"
+export SSH_CONFIG_COPY="${test_tmp}/generated-ssh-config"
 for help_args in '--help' '-h' 'alpha --help'; do
   read -r -a help_argv <<< "${help_args}"
   status=0
@@ -325,12 +331,15 @@ done
 
 status=0
 PATH="${fixture_bin}:${repository}/tests/fixtures:${PATH}" \
+  XDG_CONFIG_HOME="${config_home}" \
   "${repository}/bin/virtdev-ssh" --color=no alpha \
     --client-option=-L3000:localhost:3000 \
     --client-option=-N -- --help -h --color=yes -dash 'two words' '' \
     >/dev/null 2>"${test_tmp}/cli.stderr" || status=$?
 (( status == 42 ))
 mapfile -d '' -t cli_argv < "${SSH_ARGV_FILE}"
+grep -Fqx '    SendEnv PROJECT' "${SSH_CONFIG_COPY}"
+grep -Fqx '    SendEnv SYSTEM' "${SSH_CONFIG_COPY}"
 
 config_path=''
 for (( index = 0; index < ${#cli_argv[@]}; index++ )); do

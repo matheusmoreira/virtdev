@@ -3,4 +3,13 @@
 set -euo pipefail
 
 printf '%s\0' "$@" > "${SSH_ARGV_FILE:?}"
+if [[ -n "${SSH_CONFIG_COPY:-}" ]]; then
+  while (( $# )); do
+    if [[ "${1}" == -F && $# -ge 2 ]]; then
+      cp -- "${2}" "${SSH_CONFIG_COPY}"
+      break
+    fi
+    shift
+  done
+fi
 exit "${SSH_ARGV_STATUS:-0}"

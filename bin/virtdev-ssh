@@ -207,8 +207,14 @@ config_file="$(mktemp)"
 {
   [[ -n "${project_trigger_config}" ]] && printf '%s\n' "${project_trigger_config}"
   [[ -n "${system_trigger_config}" ]]  && printf '%s\n' "${system_trigger_config}"
-  [[ -f "${project_ssh_config}" ]]     && cat "${project_ssh_config}"
-  [[ -f "${system_ssh_config}" ]]      && cat "${system_ssh_config}"
+  if [[ -f "${project_ssh_config}" ]]; then
+    cat "${project_ssh_config}"
+    printf '\n'
+  fi
+  if [[ -f "${system_ssh_config}" ]]; then
+    cat "${system_ssh_config}"
+    printf '\n'
+  fi
 } > "${config_file}"
 
 declare -a ssh_argv=()

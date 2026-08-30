@@ -31,12 +31,15 @@ PATH="${test_tmp}:${PATH}" "${repository}/bin/virtdev" \
   probe-extension one two
 [[ "$(< "${apply_patch_marker}")" == 'one two' ]]
 
+rm -f -- "${apply_patch_marker}"
 for helper in copy-tree netexec exchange stop-acpi; do
+  ln -s "${extension}" "${test_tmp}/virtdev-${helper}"
   status=0
   PATH="${test_tmp}:${PATH}" "${repository}/bin/virtdev" "${helper}" \
     >"${test_tmp}/output" 2>&1 || status=$?
   (( status == 64 ))
 done
+[[ ! -e "${apply_patch_marker}" ]]
 
 status=0
 "${repository}/bin/virtdev-stop" --acpi-only probe \
