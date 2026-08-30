@@ -116,6 +116,11 @@ fi
 output_directory="${build_directory}"
 work_directory="${build_directory}"/work
 profile_directory="${build_directory}"/profile
+iso="${output_directory}/virtdev.iso"
+
+if [[ -d "${iso}" ]]; then
+  error 10 <<<"ISO output target is a directory: '${iso}'"
+fi
 
 build_root="$(realpath -m "${build_directory}")"
 for path in "${work_directory}" "${profile_directory}"; do
@@ -311,7 +316,10 @@ if [[ ${#built_isos[@]} -gt 1 ]]; then
   error 9 <<<"Multiple ISOs found in '${output_directory}'"
 fi
 
-iso="${output_directory}/virtdev.iso"
-mv "${built_isos[0]}" "${iso}"
+mv -T -- "${built_isos[0]}" "${iso}"
+sync -f -- "${iso}" \
+  || error 10 <<<"Could not make the published ISO durable: '${iso}'"
+sync -f -- "${output_directory}" \
+  || error 10 <<<"Could not make ISO publication durable: '${output_directory}'"
 
 printf >&2 "Created Arch Linux installation media: '%s'\n" "${iso}"

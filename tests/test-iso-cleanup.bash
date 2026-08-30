@@ -198,6 +198,47 @@ grep -Fq "${profile_mount_target}" "${ISO_TEST_TMP}/profile.stderr"
 [[ "$(< "${profile_mount_source}/sentinel")" == 'profile sentinel' ]]
 umount "${profile_mount_target}"
 
+rm -f -- "${cache}/virtdev.iso"
+mkdir "${cache}/virtdev.iso"
+status=0
+USER=untrusted-name \
+VIRTDEV_CACHE="${cache}" \
+VIRTDEV_HOME="${ISO_TEST_TMP}/home" \
+VIRTDEV_ISO_PROFILE="${ISO_TEST_REPOSITORY}/iso" \
+VIRTDEV_LOCK_DIRECTORY="${ISO_TEST_TMP}/locks" \
+  bash "${ISO_TEST_REPOSITORY}/bin/virtdev-iso" \
+    >"${ISO_TEST_TMP}/directory-target.stdout" \
+    2>"${ISO_TEST_TMP}/directory-target.stderr" || status=$?
+if (( status != 10 )); then
+  printf 'ISO build accepted a directory output target (status %d)\n' \
+    "${status}" >&2
+  cat "${ISO_TEST_TMP}/directory-target.stderr" >&2
+  exit 1
+fi
+rmdir "${cache}/virtdev.iso"
+
+iso_redirect="${test_filesystem}/iso-redirect"
+mkdir "${iso_redirect}"
+printf 'outside ISO sentinel\n' > "${iso_redirect}/sentinel"
+ln -s "${iso_redirect}" "${cache}/virtdev.iso"
+status=0
+USER=untrusted-name \
+VIRTDEV_CACHE="${cache}" \
+VIRTDEV_HOME="${ISO_TEST_TMP}/home" \
+VIRTDEV_ISO_PROFILE="${ISO_TEST_REPOSITORY}/iso" \
+VIRTDEV_LOCK_DIRECTORY="${ISO_TEST_TMP}/locks" \
+  bash "${ISO_TEST_REPOSITORY}/bin/virtdev-iso" \
+    >"${ISO_TEST_TMP}/symlink-target.stdout" \
+    2>"${ISO_TEST_TMP}/symlink-target.stderr" || status=$?
+if (( status != 10 )) \
+    || [[ "$(< "${iso_redirect}/sentinel")" != 'outside ISO sentinel' ]]; then
+  printf 'ISO build followed a directory symlink target (status %d)\n' \
+    "${status}" >&2
+  cat "${ISO_TEST_TMP}/symlink-target.stderr" >&2
+  exit 1
+fi
+rm "${cache}/virtdev.iso"
+
 USER=untrusted-name \
 VIRTDEV_CACHE="${cache}" \
 VIRTDEV_HOME="${ISO_TEST_TMP}/home" \
@@ -222,3 +263,4 @@ umount "${test_filesystem}"
 NAMESPACE
 
 printf 'ok - ISO cleanup quarantines trees and refuses stable or raced mounts\n'
+printf 'ok - ISO publication rejects directory-valued targets\n'
