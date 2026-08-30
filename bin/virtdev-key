@@ -23,6 +23,7 @@
 #   3   existing private key is invalid or is not ed25519
 #   4   public key path has an unsafe file type
 #   5   ssh-keygen is unavailable
+#   6   key publication or durability failure
 #   64  usage error
 
 set -euo pipefail
@@ -80,11 +81,32 @@ cleanup_key_staging() {
 }
 trap cleanup_key_staging EXIT
 
+key_publish_durable() {
+  local -r staged="${1}" destination="${2}" description="${3}"
+
+  if ! sync -f -- "${staged}"; then
+    error 6 <<<"Could not durably flush staged SSH ${description}: '${staged}'"
+  fi
+  if ! mv -T -- "${staged}" "${destination}"; then
+    error 6 <<<"Could not publish SSH ${description}: '${destination}'"
+  fi
+  if ! sync -f -- "${key_directory}"; then
+    error 6 <<MESSAGE
+SSH ${description} was published, but its directory durability is indeterminate:
+    '${destination}'
+The published file was preserved. Re-run virtdev-key.
+MESSAGE
+  fi
+}
+
+private_key_durable=0
 if [[ ! -e "${VIRTDEV_SSH_KEY}" && ! -L "${VIRTDEV_SSH_KEY}" ]]; then
   key_staging="$(mktemp -d "${key_directory}/.virtdev-key.XXXXXX")"
   ssh-keygen -q -t ed25519 -N '' -C 'virtdev' -f "${key_staging}/id"
   chmod 600 "${key_staging}/id"
-  mv -T -- "${key_staging}/id" "${VIRTDEV_SSH_KEY}"
+  key_publish_durable "${key_staging}/id" "${VIRTDEV_SSH_KEY}" \
+    'private key'
+  private_key_durable=1
   printf >&2 "SSH private key generated: '%s'\n" "${VIRTDEV_SSH_KEY}"
 fi
 
@@ -113,14 +135,29 @@ if [[ -f "${public_key}" ]]; then
 fi
 
 if [[ "${existing_public}" != "${derived_public}" ]]; then
+  if (( ! private_key_durable )) \
+      && ! sync -f -- "${VIRTDEV_SSH_KEY}"; then
+    error 6 <<MESSAGE
+Could not establish SSH private-key durability before publishing its public key:
+    '${VIRTDEV_SSH_KEY}'
+The private key was preserved. Re-run virtdev-key.
+MESSAGE
+  fi
   if [[ -z "${key_staging}" ]]; then
     key_staging="$(mktemp -d "${key_directory}/.virtdev-key.XXXXXX")"
   fi
   printf '%s virtdev\n' "${derived_public}" > "${key_staging}/id.pub"
   chmod 644 "${key_staging}/id.pub"
-  mv -T -- "${key_staging}/id.pub" "${public_key}"
+  key_publish_durable "${key_staging}/id.pub" "${public_key}" 'public key'
   printf >&2 "SSH public key created/repaired from the private key: '%s'\n" \
     "${public_key}"
 else
+  if ! sync -f -- "${key_directory}"; then
+    error 6 <<MESSAGE
+SSH key pair is valid, but its durability could not be confirmed:
+    '${VIRTDEV_SSH_KEY}'
+The key pair was preserved. Re-run virtdev-key.
+MESSAGE
+  fi
   printf >&2 "SSH key pair already valid: '%s'\n" "${VIRTDEV_SSH_KEY}"
 fi
