@@ -18,6 +18,7 @@ scripts := $(wildcard bin/virtdev bin/virtdev-*)
 compiled_helpers := libexec/virtdev/virtdev-copy-tree \
 	libexec/virtdev/virtdev-archive-gate \
 	libexec/virtdev/virtdev-exchange \
+	libexec/virtdev/virtdev-file-state \
 	libexec/virtdev/virtdev-publish \
 	libexec/virtdev/virtdev-remove-tree
 private_scripts := $(filter-out $(compiled_helpers),$(wildcard libexec/virtdev/*))
@@ -38,6 +39,9 @@ libexec/virtdev/virtdev-archive-gate: source/virtdev/archive-gate.c
 	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 libexec/virtdev/virtdev-exchange: source/virtdev/exchange.c
+	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+libexec/virtdev/virtdev-file-state: source/virtdev/file-state.c
 	$(CC) -std=c99 $(CFLAGS) $(LDFLAGS) -o $@ $<
 
 libexec/virtdev/virtdev-publish: source/virtdev/publish.c
