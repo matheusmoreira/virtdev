@@ -65,12 +65,18 @@ project_directory="${VIRTDEV_MACHINE_RUNTIME_DIR}"
 monitor_sock="$(runtime_monitor_sock "${project_directory}")"
 
 stop_finalize() {
-  local qemu_exit cleanup_status=0
-  qemu_exit="$(systemctl --user show "${unit}" --property=ExecMainStatus --value 2>/dev/null || true)"
+  local -r finalize_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+  local qemu_exit='' query_status=0 cleanup_status=0
+
+  lifecycle_deadline_capture qemu_exit "${finalize_deadline}" 1 \
+    systemctl --user show "${unit}" --property=ExecMainStatus --value \
+    2>/dev/null || query_status=$?
+  (( query_status == 0 )) || qemu_exit=''
   qemu_exit="${qemu_exit:-?}"
   # Maintain owns reset-failed because it still needs ExecMainStatus.
   if [[ "${VIRTDEV_MACHINE_KIND}" != "${machine_kind_maintenance}" ]]; then
-    systemctl --user reset-failed "${unit}" 2>/dev/null || true
+    lifecycle_deadline_run "${finalize_deadline}" 1 \
+      systemctl --user reset-failed "${unit}" 2>/dev/null || true
   fi
   # Full teardown: sockets + the port running-signal (lib/virtdev/runtime).
   lifecycle_clean_unowned "${project_directory}" || cleanup_status=$?
@@ -84,95 +90,89 @@ MESSAGE
   printf >&2 '%s\n' "$(terminal_write fg=green "Virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
 }
 
-# Transitional units must be driven to a terminal state; only a proven stopped
-# unit may short-circuit.
-if machine_is_stopped "${project}"; then
-  stop_finalize
-  exit 0
-fi
-
-# Empty ActiveState means the user manager is unreachable, so VM state is unknown.
-if machine_is_unreachable "${project}"; then
-  error 6 <<MESSAGE
+# A bounded initial probe may short-circuit only on a proven terminal unit.
+initial_status=0
+lifecycle_confirm_terminal "${unit}" 1 || initial_status=$?
+case "${initial_status}" in
+  "${lifecycle_stop_clean}")
+    stop_finalize
+    exit 0
+    ;;
+  "${lifecycle_stop_indeterminate}")
+    error 6 <<MESSAGE
 Cannot reach the user systemd manager to stop: ${project}
 Its state is indeterminate (no session bus — an unset/stale XDG_RUNTIME_DIR, or a
 login-less ssh/cron context). Ensure your user session is reachable, then retry.
 MESSAGE
-fi
+    ;;
+  "${lifecycle_stop_timeout}") ;;
+  *) error 5 <<<"Could not classify unit state for ${unit}" ;;
+esac
 
-if ! command -v socat &>/dev/null; then
-  printf >&2 '%s\n' "$(terminal_write fg=yellow 'socat not found, falling back to SIGTERM...' reset)"
-  systemctl --user stop "${unit}"
-  socat_deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
-  while :; do
-    socat_state="$(systemctl --user show "${unit}" --property=ActiveState --value 2>/dev/null || true)"
-    case "${socat_state}" in
-      inactive|failed) break ;;
-    esac
-    if (( SECONDS >= socat_deadline )); then
-      break
-    fi
-    sleep 0.2
-  done
-  case "${socat_state}" in
-    inactive|failed) ;;
+stop_result_or_error() {
+  local -r stop_status="${1}"
+
+  case "${stop_status}" in
+    "${lifecycle_stop_clean}") return 0 ;;
+    "${lifecycle_stop_indeterminate}")
+      error 6 <<MESSAGE
+Cannot reach the user systemd manager to confirm stop: ${project}
+The unit state is indeterminate. Ensure your user session is reachable, then retry.
+MESSAGE
+      ;;
     *)
       error 5 <<MESSAGE
-Unit ${unit} is in unexpected state after stop: '${socat_state}'.
-Expected 'inactive' or 'failed'. The virtual machine may still be running.
+Unit ${unit} did not reach 'inactive' or 'failed' state.
+Last state: '${VIRTDEV_LIFECYCLE_STOP_STATE}'. The virtual machine may still be running.
 Investigate: systemctl --user status ${unit}
 MESSAGE
       ;;
   esac
+}
+
+if ! command -v socat &>/dev/null; then
+  printf >&2 '%s\n' "$(terminal_write fg=yellow 'socat not found, falling back to SIGTERM...' reset)"
+  stop_status=0
+  lifecycle_stop_and_confirm "${unit}" "${VIRTDEV_STOP_TIMEOUT}" \
+    || stop_status=$?
+  stop_result_or_error "${stop_status}"
   stop_finalize
   exit 0
 fi
 
-# Prefer ACPI; fall back to SIGTERM. Every path joins the terminal-state wait.
+# Prefer ACPI, then give SIGTERM one fresh bounded stop phase.
+acpi_sent=0
+acpi_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
 if [[ -S "${monitor_sock}" ]]; then
   printf >&2 "Sending ACPI powerdown to: %s\n" "${project}"
-  # Unidirectional socat returns after the send instead of waiting for QEMU exit.
-  if ! echo 'system_powerdown' | socat -u - UNIX-CONNECT:"${monitor_sock}" &>/dev/null; then
-    printf >&2 '%s\n' "$(terminal_write fg=yellow 'Monitor send failed, falling back to SIGTERM...' reset)"
-    systemctl --user stop "${unit}"
+  acpi_status=0
+  lifecycle_deadline_run "${acpi_deadline}" 1 \
+    socat -u - UNIX-CONNECT:"${monitor_sock}" \
+    <<<'system_powerdown' &>/dev/null || acpi_status=$?
+  if (( acpi_status == 0 )); then
+    acpi_sent=1
+  else
+    printf >&2 '%s\n' "$(terminal_write fg=yellow 'Monitor send failed or timed out, falling back to SIGTERM...' reset)"
   fi
 else
   printf >&2 '%s\n' "$(terminal_write fg=yellow 'Monitor socket not found, falling back to SIGTERM...' reset)"
-  systemctl --user stop "${unit}"
 fi
 
-# `systemctl stop` may return before the unit settles. Allow one timeout for
-# ACPI and, after escalation, one timeout for SIGTERM.
-deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
-escalated=0
-while :; do
-  active_state="$(systemctl --user show "${unit}" --property=ActiveState --value 2>/dev/null || true)"
-  case "${active_state}" in
-    inactive|failed) break ;;
-  esac
-  if (( SECONDS >= deadline )); then
-    if (( ! escalated )); then
-      printf >&2 '%s\n' "$(terminal_write fg=yellow "Guest did not halt within ${VIRTDEV_STOP_TIMEOUT}s, falling back to SIGTERM..." reset)"
-      systemctl --user stop "${unit}"
-      escalated=1
-      deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
-      continue
-    fi
-    break
+stop_status=0
+if (( acpi_sent )); then
+  lifecycle_wait_terminal_until "${unit}" "${acpi_deadline}" \
+    || stop_status=$?
+  if (( stop_status != lifecycle_stop_clean )); then
+    printf >&2 '%s\n' "$(terminal_write fg=yellow \
+      "Guest did not reach a confirmed stop within ${VIRTDEV_STOP_TIMEOUT}s, falling back to SIGTERM..." reset)"
+    stop_status=0
+    lifecycle_stop_and_confirm "${unit}" "${VIRTDEV_STOP_TIMEOUT}" \
+      || stop_status=$?
   fi
-  sleep 0.2
-done
-
-# Success requires a terminal unit state.
-case "${active_state}" in
-  inactive|failed) ;;
-  *)
-    error 5 <<MESSAGE
-Unit ${unit} is in unexpected state after stop: '${active_state}'.
-Expected 'inactive' or 'failed'. The virtual machine may still be running.
-Investigate: systemctl --user status ${unit}
-MESSAGE
-    ;;
-esac
+else
+  lifecycle_stop_and_confirm "${unit}" "${VIRTDEV_STOP_TIMEOUT}" \
+    || stop_status=$?
+fi
+stop_result_or_error "${stop_status}"
 
 stop_finalize

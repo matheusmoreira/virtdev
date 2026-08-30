@@ -350,7 +350,9 @@ maintenance_boot() {
   ssh_host_identity_ensure maintenance
   local ssh_host_key
   ssh_host_key="$(ssh_host_identity_key maintenance)"
-  systemctl --user reset-failed "${unit}" 2>/dev/null || true
+  local reset_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+  lifecycle_deadline_run "${reset_deadline}" 1 \
+    systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
   # Disk and runtime roots differ; shared flags own the isolation boundary.
   local -a qemu_argv=()
@@ -410,7 +412,9 @@ maintenance_cleanup() {
   if ! ssh_host_identity_remove maintenance; then
     (( cleanup_status )) || cleanup_status=1
   fi
-  systemctl --user reset-failed "${unit}" 2>/dev/null || true
+  local reset_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+  lifecycle_deadline_run "${reset_deadline}" 1 \
+    systemctl --user reset-failed "${unit}" 2>/dev/null || true
   rmdir "${maintenance_project}" 2>/dev/null || true
   # Once terminal state is proven, a malformed runtime artifact does not keep
   # ownership of the disks. Clear the lifecycle flags, but propagate the local
@@ -480,27 +484,21 @@ maintenance_wait_ssh() {
 # process status never substitutes for QMP proof.
 maintenance_wait_exit() {
   local -r escalate="${1:-}"
-  local -r deadline=$(( SECONDS + VIRTDEV_STOP_TIMEOUT ))
-  while true; do
-    local unit_state
-    unit_state="$(systemctl --user show "${unit}" \
-      --property=ActiveState --value 2>/dev/null || true)"
-    case "${unit_state}" in
-      inactive|failed)
-        maintenance_terminal_proven=1
-        return 0
-        ;;
-      '') return 2 ;;
-    esac
-    if [[ "${escalate}" == "escalate" ]] && (( SECONDS >= deadline )); then
-      printf >&2 '%s\n' "$(terminal_write fg=yellow "Maintenance virtual machine did not halt within ${VIRTDEV_STOP_TIMEOUT:-60}s; forcing stop..." reset)"
-      if maintenance_stop_and_confirm; then
-        return 0
-      fi
-      return 1
-    fi
-    sleep 2
-  done
+  local -r deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+  local wait_status=0
+
+  lifecycle_wait_terminal_until "${unit}" "${deadline}" || wait_status=$?
+  if (( wait_status == lifecycle_stop_clean )); then
+    maintenance_terminal_proven=1
+    return 0
+  fi
+  (( wait_status != lifecycle_stop_indeterminate )) || return 2
+  if [[ "${escalate}" == escalate ]]; then
+    printf >&2 '%s\n' "$(terminal_write fg=yellow \
+      "Maintenance virtual machine did not halt within ${VIRTDEV_STOP_TIMEOUT}s; forcing stop..." reset)"
+    maintenance_stop_and_confirm && return 0
+  fi
+  return 1
 }
 
 # maintenance_wait_clean_shutdown <deadline-seconds>
@@ -763,8 +761,13 @@ maintenance_require_unmounted_tree "${system_directory}" 'the sealed base'
 # Check unit ownership before mentioning removal of old staging. A live or
 # indeterminate QEMU may still hold those images; advising rm first would turn
 # an interrupted session into unlinked, still-written disks.
-existing_maintenance_state="$(systemctl --user show virtdev-maintenance \
-  --property=ActiveState --value 2>/dev/null || true)"
+existing_state_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+existing_state_status=0
+existing_maintenance_state=''
+lifecycle_deadline_capture existing_maintenance_state \
+  "${existing_state_deadline}" 1 systemctl --user show virtdev-maintenance \
+  --property=ActiveState --value 2>/dev/null || existing_state_status=$?
+(( existing_state_status == 0 )) || existing_maintenance_state=''
 case "${existing_maintenance_state}" in
   inactive|failed)
     ;;
@@ -864,6 +867,9 @@ if [[ -n "${provision_source}" || -n "${inventory_source}" ]]; then
       "${frozen_input_result_timeout}")
         error 35 <<<"Maintenance provision hook copy exceeded its 10-second deadline: ${provision_source}"
         ;;
+      "${frozen_input_result_durability}")
+        error 35 <<<"Maintenance provision hook was frozen, but its durability could not be confirmed: ${provision_source}"
+        ;;
       *) error 35 <<<"Could not freeze maintenance provision hook: ${provision_source}" ;;
     esac
     exec {provision_fd}< "${provision_path}" \
@@ -885,6 +891,9 @@ if [[ -n "${provision_source}" || -n "${inventory_source}" ]]; then
       "${frozen_input_result_timeout}")
         error 35 <<<"Maintenance inventory hook copy exceeded its 10-second deadline: ${inventory_source}"
         ;;
+      "${frozen_input_result_durability}")
+        error 35 <<<"Maintenance inventory hook was frozen, but its durability could not be confirmed: ${inventory_source}"
+        ;;
       *) error 35 <<<"Could not freeze maintenance inventory hook: ${inventory_source}" ;;
     esac
     exec {inventory_before_fd}< "${inventory_path}" \
@@ -894,10 +903,16 @@ if [[ -n "${provision_source}" || -n "${inventory_source}" ]]; then
     rm -f -- "${inventory_path}" \
       || error 35 <<<"Could not seal frozen maintenance inventory hook: ${inventory_source}"
   fi
-  sync -f -- "${maintenance_hook_directory}" \
-    || error 35 <<<"Could not seal frozen maintenance hooks: ${maintenance_hook_directory}"
-  sync -f -- "${transaction_root}" \
-    || error 35 <<<"Could not durably publish frozen maintenance hooks: ${maintenance_hook_directory}"
+  hook_seal_deadline=$(( BASH_MONOSECONDS + 10 ))
+  hook_seal_status=0
+  _frozen_input_deadline_run "${hook_seal_deadline}" 1 \
+    sync -f -- "${maintenance_hook_directory}" || hook_seal_status=$?
+  (( hook_seal_status == 0 )) || error 35 \
+    <<<"Could not seal frozen maintenance hooks within 10 seconds: ${maintenance_hook_directory}"
+  _frozen_input_deadline_run "${hook_seal_deadline}" 1 \
+    sync -f -- "${transaction_root}" || hook_seal_status=$?
+  (( hook_seal_status == 0 )) || error 35 \
+    <<<"Could not durably seal frozen maintenance hooks within 10 seconds: ${maintenance_hook_directory}"
 fi
 
 mkdir -p "${maintenance_directory}"
@@ -1197,8 +1212,13 @@ MESSAGE
 fi
 
 # Capture exit status before reset-failed removes it.
-qemu_exit="$(systemctl --user show "${unit}" \
-    --property=ExecMainStatus --value 2>/dev/null || echo 1)"
+exit_query_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+exit_query_status=0
+qemu_exit=''
+lifecycle_deadline_capture qemu_exit "${exit_query_deadline}" 1 \
+  systemctl --user show "${unit}" --property=ExecMainStatus --value \
+  2>/dev/null || exit_query_status=$?
+(( exit_query_status == 0 )) || qemu_exit=unknown
 qemu_exit="${qemu_exit:-unknown}"
 
 maintenance_cleanup_or_error 'Boot 1 terminal cleanup'
@@ -1341,8 +1361,13 @@ Runtime controls and staging were preserved; resealing is refused.
 MESSAGE
       fi
     fi
-    boot2_exit="$(systemctl --user show "${unit}" \
-        --property=ExecMainStatus --value 2>/dev/null || echo 1)"
+    boot2_exit_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+    boot2_exit_status=0
+    boot2_exit=''
+    lifecycle_deadline_capture boot2_exit "${boot2_exit_deadline}" 1 \
+      systemctl --user show "${unit}" --property=ExecMainStatus --value \
+      2>/dev/null || boot2_exit_status=$?
+    (( boot2_exit_status == 0 )) || boot2_exit=unknown
     boot2_exit="${boot2_exit:-1}"
 
     # A submitted Boot 2 needs its own QMP proof and QEMU exit 0. qemu-img cannot

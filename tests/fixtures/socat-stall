@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+: > "${SOCAT_STALL_MARKER:?}"
+sleep "${SOCAT_STALL_DELAY:-30}"

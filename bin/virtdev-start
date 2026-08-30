@@ -249,10 +249,12 @@ esac
 unit=virtdev-"${project}"
 
 require_terminal_unit() {
-  local active_state status=0
+  local -r state_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+  local active_state='' status=0
 
-  active_state="$(systemctl --user show "${unit}" \
-    --property=ActiveState --value 2>/dev/null)" || status=$?
+  lifecycle_deadline_capture active_state "${state_deadline}" 1 \
+    systemctl --user show "${unit}" --property=ActiveState --value \
+    2>/dev/null || status=$?
   if (( status != 0 )) || [[ -z "${active_state}" ]]; then
     error 6 <<MESSAGE
 Cannot determine whether the project unit is stopped: ${unit}
@@ -353,7 +355,9 @@ fi
 # --collect (see below), a unit that exited with error persists as
 # 'failed' in systemd's state until explicitly reset, which would make
 # the name-in-use collision below block retries.
-systemctl --user reset-failed "${unit}" 2>/dev/null || true
+reset_deadline=$(( BASH_MONOSECONDS + VIRTDEV_STOP_TIMEOUT ))
+lifecycle_deadline_run "${reset_deadline}" 1 \
+  systemctl --user reset-failed "${unit}" 2>/dev/null || true
 
 if [[ "$(loginctl show-user "${USER}" --property=Linger --value 2>/dev/null)" != "yes" ]]; then
   printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: lingering is not enabled for user ${USER}" reset)"
@@ -472,6 +476,13 @@ ActiveState: ${state:-unknown}
 Launch phase: ${launch_phase}
 systemd-run reported success, but QEMU ownership was not confirmed.
 Investigate: systemctl --user status ${unit}
+MESSAGE
+    ;;
+  "${lifecycle_systemd_unreachable}")
+    error 16 <<MESSAGE
+The user systemd manager became unreachable while starting: ${unit}
+ActiveState could not be inspected within the activation deadline.
+Restore the user session bus, then inspect: systemctl --user status ${unit}
 MESSAGE
     ;;
   "${lifecycle_qmp_unready}")

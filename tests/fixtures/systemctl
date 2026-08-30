@@ -70,6 +70,7 @@ if [[ " $* " == *" list-units "* ]]; then
 fi
 
 if [[ " $* " == *" show "* ]]; then
+  [[ -z "${SYSTEMCTL_SHOW_DELAY:-}" ]] || sleep "${SYSTEMCTL_SHOW_DELAY}"
   if (( systemctl_wants_exec_main_status )); then
     printf '%s\n' "${SYSTEMCTL_EXEC_MAIN_STATUS:-0}"
   elif (( systemctl_wants_main_pid )); then
