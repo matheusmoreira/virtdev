@@ -4,13 +4,17 @@ set -euo pipefail
 
 mode="${TRANSFER_MUTATION_MODE:?}"
 case "${mode}" in
-  nested|replace|root-mtime-ns)
+  nested|nested-mtime-ns|replace|root-mtime-ns)
     if ( set -o noclobber; : > "${TRANSFER_MUTATION_MARKER:?}" ) \
         2>/dev/null; then
       case "${mode}" in
         nested)
           printf 'writer-update\n' > "${TRANSFER_MUTATION_TARGET:?}/keep"
           printf 'writer-added\n' > "${TRANSFER_MUTATION_TARGET}/writer-added"
+          ;;
+        nested-mtime-ns)
+          touch -d "${TRANSFER_MUTATION_MTIME:?}" -- \
+            "${TRANSFER_MUTATION_TARGET:?}/keep"
           ;;
         replace)
           mv -- "${TRANSFER_MUTATION_TARGET:?}" \

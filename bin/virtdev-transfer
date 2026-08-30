@@ -521,12 +521,19 @@ transfer_transaction_budget_checked() {
 }
 
 transfer_copy_tree_core() {
-  local -r source_tree="${1}" destination_parent="${2}"
+  local -r source_tree="${1}" destination_parent="${2}" policy="${3:-}"
   local remaining copy_status=0 diagnostic_status=0 budget_status=0
   local summary_entries summary_bytes summary_device summary_inode extra
   local summary="${destination_parent}/summary"
   local capture="${destination_parent}.stderr"
   local fifo="${destination_parent}.stderr.fifo"
+  local -a helper_options=(identity)
+
+  case "${policy}" in
+    '') ;;
+    reject-xattrs|strip-setid) helper_options+=("${policy}") ;;
+    *) return 3 ;;
+  esac
 
   TRANSFER_COPY_ENTRIES=''
   TRANSFER_COPY_BYTES=''
@@ -542,7 +549,7 @@ transfer_copy_tree_core() {
         "${source_tree}" "${destination_parent}" \
         "${VIRTDEV_TRANSFER_MAX_BYTES}" "${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
         "${transfer_free_space_reserve}" "${transfer_inode_reserve}" \
-        identity > "${summary}" || copy_status=$?
+        "${helper_options[@]}" > "${summary}" || copy_status=$?
   bounded_stderr_emit "${capture}" \
     "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
   case "${diagnostic_status}" in
@@ -555,6 +562,7 @@ transfer_copy_tree_core() {
     0) ;;
     47) return 1 ;;
     42|44|45|46|48) return 4 ;;
+    49) return 5 ;;
     124|137) return 2 ;;
     *) return 3 ;;
   esac
@@ -579,16 +587,19 @@ transfer_copy_tree_core() {
 }
 
 transfer_copy_tree() {
-  local -r source_tree="${1}" destination_parent="${2}" phase="${3}"
+  local -r source_tree="${1}" destination_parent="${2}" phase="${3}" \
+    policy="${4:-}"
   local copy_status=0
 
   transfer_copy_tree_core "${source_tree}" "${destination_parent}" \
+    "${policy}" \
     || copy_status=$?
   case "${copy_status}" in
     0) ;;
     1) error 14 <<<"${phase} changed while a stable copy was being constructed" ;;
     2) error 12 <<<"${phase} exceeded the transfer deadline" ;;
     4) error 11 <<<"${phase} exceeded a transfer resource or structure limit" ;;
+    5) error 15 <<<"${phase} contains extended attributes or ACLs that cannot be preserved" ;;
     *) error 11 <<<"Could not construct a stable tree during ${phase}" ;;
   esac
 }
@@ -652,7 +663,7 @@ transfer_file_state() {
 }
 
 transfer_copy_tree_for_validation() {
-  local -r source_tree="${1}" destination_parent="${2}"
+  local -r source_tree="${1}" destination_parent="${2}" policy="${3:-}"
   local copy_status=0
 
   TRANSFER_VALIDATION_ENTRIES=''
@@ -660,6 +671,7 @@ transfer_copy_tree_for_validation() {
   TRANSFER_VALIDATION_DEVICE=''
   TRANSFER_VALIDATION_INODE=''
   transfer_copy_tree_core "${source_tree}" "${destination_parent}" \
+    "${policy}" \
     || copy_status=$?
   (( copy_status == 0 )) || return "${copy_status}"
   TRANSFER_VALIDATION_ENTRIES="${TRANSFER_COPY_ENTRIES}"
@@ -689,11 +701,11 @@ transfer_directory_root_state() {
 transfer_trees_equal() {
   local -r expected="${1}" actual="${2}"
   local remaining rsync_status=0 head_status=0 diagnostic_status=0
-  local expected_root actual_root
+  local expected_root actual_root comparison
   local difference="${transfer_transaction}/tree-comparison"
   local capture="${transfer_transaction}/tree-comparison.stderr"
   local fifo="${transfer_transaction}/tree-comparison.stderr.fifo"
-  local -a statuses=()
+  local -a statuses=() rsync_options=()
 
   transfer_directory_root_state "${expected}" || return $?
   expected_root="${TRANSFER_DIRECTORY_ROOT_STATE}"
@@ -701,39 +713,52 @@ transfer_trees_equal() {
   actual_root="${TRANSFER_DIRECTORY_ROOT_STATE}"
   [[ "${expected_root}" == "${actual_root}" ]] || return 1
 
-  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return 2
-  set +e
-  LC_ALL=C bounded_stderr_run "${capture}" "${fifo}" \
-      "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
-      timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
-        "${remaining}" rsync -aHnc --numeric-ids --delete \
-          --itemize-changes --out-format=x -- "${expected}/" "${actual}/" \
-    | head -c 1 > "${difference}"
-  statuses=("${PIPESTATUS[@]}")
-  set -e
-  (( ${#statuses[@]} == 2 )) || return 3
-  rsync_status="${statuses[0]}"
-  head_status="${statuses[1]}"
-  bounded_stderr_emit "${capture}" \
-    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
-  case "${diagnostic_status}" in
-    0) ;;
-    2) return 4 ;;
-    *) return 3 ;;
-  esac
-  rm -f -- "${capture}" || return 3
-  (( head_status == 0 )) || return 3
-  case "${rsync_status}" in
-    0) ;;
-    124|137) return 2 ;;
-    141)
-      [[ -s "${difference}" ]] && return 1
-      return 3
-      ;;
-    *) return 3 ;;
-  esac
-  [[ ! -s "${difference}" ]] || return 1
+  for comparison in metadata content; do
+    case "${comparison}" in
+      metadata)
+        rsync_options=(-aHn --modify-window=-1 --numeric-ids)
+        ;;
+      content)
+        rsync_options=(-rlHnc)
+        ;;
+    esac
+    remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+    (( remaining > 0 )) || return 2
+    : > "${difference}" || return 3
+    statuses=()
+    diagnostic_status=0
+    set +e
+    LC_ALL=C bounded_stderr_run "${capture}" "${fifo}" \
+        "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+        timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+          "${remaining}" rsync "${rsync_options[@]}" --delete \
+            --itemize-changes --out-format=x -- "${expected}/" "${actual}/" \
+      | head -c 1 > "${difference}"
+    statuses=("${PIPESTATUS[@]}")
+    set -e
+    (( ${#statuses[@]} == 2 )) || return 3
+    rsync_status="${statuses[0]}"
+    head_status="${statuses[1]}"
+    bounded_stderr_emit "${capture}" \
+      "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+    case "${diagnostic_status}" in
+      0) ;;
+      2) return 4 ;;
+      *) return 3 ;;
+    esac
+    rm -f -- "${capture}" || return 3
+    (( head_status == 0 )) || return 3
+    case "${rsync_status}" in
+      0) ;;
+      124|137) return 2 ;;
+      141)
+        [[ -s "${difference}" ]] && return 1
+        return 3
+        ;;
+      *) return 3 ;;
+    esac
+    [[ ! -s "${difference}" ]] || return 1
+  done
 }
 
 transfer_publication_manifest_write() {
@@ -1100,7 +1125,8 @@ transfer_du_value_checked extracted_allocated "${payload}" extracted
 stable_parent="${transfer_transaction}/stable"
 TRANSFER_COPY_ENTRIES=''
 TRANSFER_COPY_BYTES=''
-transfer_copy_tree "${payload}" "${stable_parent}" 'download stabilization'
+transfer_copy_tree "${payload}" "${stable_parent}" 'download stabilization' \
+  strip-setid
 (( TRANSFER_COPY_ENTRIES == extracted_entries \
     && TRANSFER_COPY_BYTES == logical_bytes_captured )) \
   || error 14 <<<'Download changed between archive validation and stabilization'
@@ -1174,7 +1200,7 @@ if (( target_exists )); then
       || error 15 <<<"Cannot merge a non-directory download into: ${target}"
     baseline_parent="${transfer_transaction}/baseline"
     transfer_copy_tree "${target}" "${baseline_parent}" \
-      'existing destination stabilization'
+      'existing destination stabilization' reject-xattrs
     target_original_identity="${TRANSFER_COPY_DEVICE}:${TRANSFER_COPY_INODE}"
     target_original_entries="${TRANSFER_COPY_ENTRIES}"
     target_original_bytes="${TRANSFER_COPY_BYTES}"
@@ -1186,7 +1212,7 @@ if (( target_exists )); then
     transfer_remaining remaining
     overlay_status=0
     timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
-      "${remaining}" rsync -a --safe-links --delay-updates -- \
+      "${remaining}" rsync -aHS --safe-links --delay-updates -- \
       "${stable_item}/" "${clone_parent}/tree/" || overlay_status=$?
     case "${overlay_status}" in
       0) ;;
@@ -1239,6 +1265,10 @@ publish_status=0
   || publish_status=$?
 case "${publish_status}" in
   0) ;;
+  1)
+    transfer_preserve_transaction=0
+    error 15 <<<'Host publication failed before the target was changed'
+    ;;
   2)
     transfer_preserve_transaction=1
     transfer_publication_manifest_write "${transfer_transaction}" \
@@ -1296,6 +1326,7 @@ if (( target_exists )); then
       directory)
         displaced_parent="${transfer_transaction}/displaced"
         transfer_copy_tree_for_validation "${candidate}" "${displaced_parent}" \
+          reject-xattrs \
           || validation_status=$?
         if (( validation_status == 0 )) \
             && [[ "${TRANSFER_VALIDATION_DEVICE}:${TRANSFER_VALIDATION_INODE}" \

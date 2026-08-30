@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
+#include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -33,6 +34,7 @@ enum {
 	DEPTH_LIMIT = 46,
 	SOURCE_CHANGED = 47,
 	STATE_LIMIT = 48,
+	METADATA_UNSUPPORTED = 49,
 	USAGE_ERROR = 64,
 };
 
@@ -129,6 +131,8 @@ static dev_t source_device;
 static uint64_t source_mount_id;
 static int source_mount_initialized;
 static int destination_root_fd = -1;
+static int reject_source_xattrs;
+static int strip_setid;
 
 static int fail_errno(const char *operation, const char *path);
 static int fail_source_errno(const char *operation, const char *path);
@@ -210,6 +214,68 @@ static int fail_source_errno(const char *operation, const char *path)
 	    errno == ENOTDIR)
 		return source_changed(operation, path);
 	return fail_errno(operation, path);
+}
+
+static int xattrs_unsupported(const char *path)
+{
+	fprintf(stderr, "extended attributes or ACLs are unsupported at '%s'\n",
+		path);
+	return METADATA_UNSUPPORTED;
+}
+
+static int require_no_fd_xattrs(int fd, const char *path)
+{
+	ssize_t size;
+
+	if (!reject_source_xattrs)
+		return 0;
+	do {
+		size = flistxattr(fd, NULL, 0);
+	} while (size < 0 && errno == EINTR);
+	if (size < 0)
+		return fail_source_errno("cannot inspect extended attributes at", path);
+	return size ? xattrs_unsupported(path) : 0;
+}
+
+static int require_no_symlink_xattrs(int directory_fd, const char *name,
+				     const char *path)
+{
+	char descriptor_path[64];
+	char *proc_path;
+	size_t prefix_length;
+	size_t name_length;
+	ssize_t size;
+	int length;
+	int result = 0;
+
+	if (!reject_source_xattrs)
+		return 0;
+	length = snprintf(descriptor_path, sizeof(descriptor_path),
+			  "/proc/self/fd/%d/", directory_fd);
+	if (length < 0 || (size_t)length >= sizeof(descriptor_path)) {
+		errno = EOVERFLOW;
+		return fail_errno("cannot address source symlink at", path);
+	}
+	prefix_length = (size_t)length;
+	name_length = strlen(name);
+	if (name_length > SIZE_MAX - prefix_length - 1) {
+		errno = ENAMETOOLONG;
+		return fail_errno("cannot address source symlink at", path);
+	}
+	proc_path = malloc(prefix_length + name_length + 1);
+	if (!proc_path)
+		return fail_errno("cannot allocate source symlink path for", path);
+	memcpy(proc_path, descriptor_path, prefix_length);
+	memcpy(proc_path + prefix_length, name, name_length + 1);
+	do {
+		size = llistxattr(proc_path, NULL, 0);
+	} while (size < 0 && errno == EINTR);
+	if (size < 0)
+		result = fail_source_errno("cannot inspect symlink attributes at", path);
+	else if (size)
+		result = xattrs_unsupported(path);
+	free(proc_path);
+	return result;
 }
 
 static uint32_t rotate_right(uint32_t value, unsigned int count)
@@ -950,6 +1016,8 @@ static int capture_regular_digest(int directory_fd, const char *name,
 	if (!result && !source_metadata_equal(record, &opened))
 		result = source_changed("source changed during capture at", path);
 	if (!result)
+		result = require_no_fd_xattrs(fd, path);
+	if (!result)
 		result = digest_regular_fd(fd, opened.st_size, path,
 					   "cannot digest captured source at",
 					   "source changed while digesting",
@@ -1020,6 +1088,8 @@ static int capture_symlink_target(int directory_fd, const char *name,
 					      AT_SYMLINK_NOFOLLOW, path, 0);
 	if (!result && !source_metadata_equal(record, &after))
 		result = source_changed("symlink changed during capture at", path);
+	if (!result)
+		result = require_no_symlink_xattrs(directory_fd, name, path);
 	if (!result && !is_new &&
 	    (length != record->symlink_target_length ||
 	     memcmp(target, record->symlink_target, length) != 0))
@@ -1125,6 +1195,9 @@ static int capture_entry(int source_directory_fd, const char *name,
 	result = require_source_mount(child_fd, "", AT_EMPTY_PATH, path, 0);
 	if (result)
 		goto out;
+	result = require_no_fd_xattrs(child_fd, path);
+	if (result)
+		goto out;
 	result = capture_directory(child_fd, path, depth + 1, entry, record);
 
 out:
@@ -1181,6 +1254,7 @@ static int apply_fd_metadata(int fd, const struct source_record *record,
 			     const char *path)
 {
 	struct timespec times[2] = { record->atime, record->mtime };
+	mode_t mode = record->mode & 07777;
 
 	if (fd < 0) {
 		errno = EBADF;
@@ -1188,7 +1262,9 @@ static int apply_fd_metadata(int fd, const struct source_record *record,
 	}
 	if (fchown(fd, record->uid, record->gid))
 		return fail_errno("cannot preserve ownership on", path);
-	if (fchmod(fd, record->mode & 07777))
+	if (strip_setid)
+		mode &= ~06000;
+	if (fchmod(fd, mode))
 		return fail_errno("cannot preserve mode on", path);
 	if (futimens(fd, times))
 		return fail_errno("cannot preserve timestamps on", path);
@@ -1871,21 +1947,40 @@ int main(int argc, char *argv[])
 	struct stat source_status;
 	int source_root_fd = -1;
 	int destination_parent_fd = -1;
-	int identity_summary = argc == 8 && !strcmp(argv[7], "identity");
+	int identity_summary = 0;
 	int is_new = 0;
+	int option_index;
 	int result = COPY_ERROR;
 
-	if ((argc != 7 && !identity_summary) ||
+	if (argc < 7 || argc > 10 ||
 	    parse_u64(argv[3], &maximum_bytes) ||
 	    parse_u64(argv[4], &maximum_entries) ||
 	    parse_u64(argv[5], &reserve_bytes) ||
 	    parse_u64(argv[6], &reserve_inodes) || !maximum_entries) {
+		goto usage;
+	}
+	for (option_index = 7; option_index < argc; option_index++) {
+		if (!strcmp(argv[option_index], "identity") && !identity_summary)
+			identity_summary = 1;
+		else if (!strcmp(argv[option_index], "strip-setid") && !strip_setid)
+			strip_setid = 1;
+		else if (!strcmp(argv[option_index], "reject-xattrs") &&
+			 !reject_source_xattrs)
+			reject_source_xattrs = 1;
+		else
+			goto usage;
+	}
+	goto configured;
+
+usage:
 		fprintf(stderr,
 			"usage: %s source destination-parent max-bytes max-entries "
-			"reserve-bytes reserve-inodes [identity]\n",
+			"reserve-bytes reserve-inodes [identity] [strip-setid] "
+			"[reject-xattrs]\n",
 			argv[0]);
 		return USAGE_ERROR;
-	}
+
+configured:
 	result = configure_hash_seed();
 	if (result)
 		goto out;
@@ -1905,6 +2000,9 @@ int main(int argc, char *argv[])
 	}
 	result = require_source_mount(source_root_fd, "", AT_EMPTY_PATH,
 				      argv[1], 1);
+	if (result)
+		goto out;
+	result = require_no_fd_xattrs(source_root_fd, argv[1]);
 	if (result)
 		goto out;
 	source_device = source_status.st_dev;

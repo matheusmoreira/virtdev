@@ -235,8 +235,28 @@ printf 'ok - remote tar command captures exact trailing-slash contents\n'
 
 mkdir -p "${test_tmp}/directory-source/item"
 printf 'new\n' > "${test_tmp}/directory-source/item/new"
+printf 'linked\n' > "${test_tmp}/directory-source/item/hard-one"
+ln "${test_tmp}/directory-source/item/hard-one" \
+  "${test_tmp}/directory-source/item/hard-two"
+chmod 6755 "${test_tmp}/directory-source/item/hard-one"
+chmod 2775 "${test_tmp}/directory-source/item"
 tar -C "${test_tmp}/directory-source" -cf "${test_tmp}/directory.tar" \
   --transform='s,^item,payload/item,' item
+safe_mode_destination="${test_tmp}/safe-mode-destination"
+status=0
+run_transfer "${test_tmp}/directory.tar" remote-dir \
+  "${safe_mode_destination}" >"${test_tmp}/safe-mode.output" 2>&1 \
+  || status=$?
+if (( status != 0 )) \
+    || [[ "$(stat -c '%a' -- "${safe_mode_destination}")" != 775 \
+      || "$(stat -c '%a' -- "${safe_mode_destination}/hard-one")" != 755 \
+      || "$(stat -c '%i' -- "${safe_mode_destination}/hard-one")" \
+        != "$(stat -c '%i' -- "${safe_mode_destination}/hard-two")" ]]; then
+  printf 'download publication retained unsafe set-id modes or split hardlinks (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/safe-mode.output" >&2
+  exit 1
+fi
 merge_root="${test_tmp}/merge-root"
 merge_target="${merge_root}/remote-dir"
 mkdir -p "${merge_target}"
@@ -246,7 +266,9 @@ status=0
 run_transfer "${test_tmp}/directory.tar" remote-dir "${merge_root}" \
   >"${test_tmp}/merge.output" 2>&1 || status=$?
 if (( status != 0 )) || [[ "$(< "${merge_target}/keep")" != keep ]] \
-    || [[ "$(< "${merge_target}/new")" != new ]]; then
+    || [[ "$(< "${merge_target}/new")" != new \
+      || "$(stat -c '%i' -- "${merge_target}/hard-one")" \
+        != "$(stat -c '%i' -- "${merge_target}/hard-two")" ]]; then
   printf 'atomic existing-directory merge failed (status %d)\n' \
     "${status}" >&2
   cat "${test_tmp}/merge.output" >&2
@@ -279,6 +301,25 @@ if [[ ! -d "${merge_recovery_entry}" \
   exit 1
 fi
 rm -rf --one-file-system -- "${merge_recovery_directory}"
+
+xattr_root="${test_tmp}/xattr-root"
+xattr_target="${xattr_root}/remote-dir"
+mkdir -p "${xattr_target}"
+printf 'protected\n' > "${xattr_target}/protected"
+setfattr -n user.virtdev-test -v retained -- "${xattr_target}/protected"
+status=0
+run_transfer "${test_tmp}/directory.tar" remote-dir "${xattr_root}" \
+  >"${test_tmp}/xattr.output" 2>&1 || status=$?
+if (( status != 15 )) || [[ -e "${xattr_target}/new" ]] \
+    || [[ "$(getfattr --only-values -n user.virtdev-test -- \
+      "${xattr_target}/protected" 2>/dev/null)" != retained ]] \
+    || find "${xattr_root}" -maxdepth 1 -type d \
+      -name '.virtdev-transfer.*' -print -quit | grep -q .; then
+  printf 'merge did not reject unpreservable host access metadata (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/xattr.output" >&2
+  exit 1
+fi
 
 trailing_target="${test_tmp}/trailing-target"
 mkdir "${trailing_target}"
@@ -509,6 +550,35 @@ if (( status != 15 )) \
 fi
 rm -rf --one-file-system -- "${nanosecond_transaction}"
 
+nested_nanosecond_root="${test_tmp}/nested-nanosecond-race-root"
+nested_nanosecond_target="${nested_nanosecond_root}/remote-dir"
+nested_nanosecond_marker="${test_tmp}/nested-nanosecond-race.marker"
+mkdir -p "${nested_nanosecond_target}"
+printf 'keep\n' > "${nested_nanosecond_target}/keep"
+touch -d '@1700000000.100000000' -- "${nested_nanosecond_target}/keep"
+status=0
+run_transfer "${test_tmp}/directory.tar" remote-dir \
+  "${nested_nanosecond_root}" \
+  env PATH="${mutation_bin}:${fixture_bin}:${PATH}" \
+    TRANSFER_MUTATION_MODE=nested-mtime-ns \
+    TRANSFER_MUTATION_TARGET="${nested_nanosecond_target}" \
+    TRANSFER_MUTATION_MARKER="${nested_nanosecond_marker}" \
+    TRANSFER_MUTATION_MTIME='@1700000000.900000000' \
+  >"${test_tmp}/nested-nanosecond-race.output" 2>&1 || status=$?
+nested_nanosecond_transaction="$(find "${nested_nanosecond_root}" \
+  -maxdepth 1 -type d -name '.virtdev-transfer.*' -print -quit)"
+if (( status != 15 )) \
+    || [[ "$(stat -c '%y' -- "${nested_nanosecond_target}/keep")" \
+      != *'.900000000 '* \
+      || -e "${nested_nanosecond_target}/new" \
+      || -z "${nested_nanosecond_transaction}" ]]; then
+  printf 'nested same-second metadata race was not rolled back safely (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/nested-nanosecond-race.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${nested_nanosecond_transaction}"
+
 printf 'ok - existing-target races include nanosecond metadata changes\n'
 printf 'ok - existing-target races roll back without discarding writer data\n'
 
@@ -530,6 +600,32 @@ if (( status != 16 )) || [[ "$(< "${destination}")" != replacement ]] \
   exit 1
 fi
 rm -rf --one-file-system -- "${preserved_transaction}"
+
+pre_sync_fault="${test_tmp}/publish-pre-sync-fail.so"
+cc -std=c99 -shared -fPIC -Wall -Wextra -Wpedantic -Werror \
+  -o "${pre_sync_fault}" \
+  "${repository}/tests/support/publish-pre-sync-fail.c"
+for publication_kind in absent existing; do
+  pre_sync_destination="${test_tmp}/pre-sync-${publication_kind}"
+  if [[ "${publication_kind}" == existing ]]; then
+    printf 'unchanged\n' > "${pre_sync_destination}"
+  fi
+  status=0
+  run_transfer "${test_tmp}/replacement.tar" file \
+    "${pre_sync_destination}" LD_PRELOAD="${pre_sync_fault}" \
+    >"${test_tmp}/pre-sync-${publication_kind}.output" 2>&1 || status=$?
+  if (( status != 15 )) \
+      || [[ "${publication_kind}" == absent && -e "${pre_sync_destination}" ]] \
+      || [[ "${publication_kind}" == existing \
+        && "$(< "${pre_sync_destination}")" != unchanged ]] \
+      || find "${test_tmp}" -maxdepth 2 -type d \
+        -name '.virtdev-transfer.*' -print -quit | grep -q .; then
+    printf 'known-unpublished %s failure was misclassified (status %d)\n' \
+      "${publication_kind}" "${status}" >&2
+    cat "${test_tmp}/pre-sync-${publication_kind}.output" >&2
+    exit 1
+  fi
+done
 
 printf 'ok - committed publication sync failures preserve recovery state\n'
 
