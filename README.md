@@ -361,7 +361,7 @@ Environment variables (defaults shown):
 | `VIRTDEV_HOME` | `~/.local/share/virtdev` | Data directory |
 | `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` | SSH private-key path |
 | `VIRTDEV_CACHE` | `~/.cache/virtdev` | Cache directory |
-| `VIRTDEV_LOCK_DIRECTORY` | `${XDG_RUNTIME_DIR}/virtdev/locks`, else `${XDG_STATE_HOME:-~/.local/state}/virtdev/locks` | Private store/cache lock directory override |
+| `VIRTDEV_LOCK_DIRECTORY` | `${XDG_RUNTIME_DIR}/virtdev/locks`, else `${XDG_STATE_HOME:-~/.local/state}/virtdev/locks` | Private lock directory override for all lock domains |
 | `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) | IANA timezone name |
 | `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) | Guest locale |
 | `VIRTDEV_KEYMAP` | host keymap (`us` fallback) | Guest console keymap |
@@ -396,11 +396,12 @@ Environment variables (defaults shown):
 | `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
 | `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
 | `VIRTDEV_TRANSFER_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; download logical-data ceiling |
-| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; must cover logical data plus archive overhead |
+| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; per materialized tree; must also cover archive overhead |
+| `VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES` | `53687091200` bytes (50 GiB) | Integer `1..10995116277760`; aggregate host transaction cap |
 | `VIRTDEV_TRANSFER_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; download-tree entries |
 | `VIRTDEV_TRANSFER_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
 | `VIRTDEV_TRANSFER_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
-| `VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES` | `65536` bytes | Integer `1..1048576` bytes per guest command |
+| `VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES` | `65536` bytes | Integer `1..1048576`; bounded untrusted subprocess diagnostics for guest transport and host tar/rsync |
 | `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` | OVMF code-image path |
 | `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` | OVMF variables-template path |
 
@@ -544,8 +545,8 @@ cannot make its project identities invalid for management and recovery.
 
 Store mutations use a canonical-path-keyed lock outside `VIRTDEV_HOME`, so
 `virtdev-nuke` cannot unlink the rendezvous it holds. ISO builds and nuke also
-share a cache lock. Contention fails fast with exit 75 and prints the lock path
-and holder PID.
+share a cache lock. Downloads lock each canonical host publication target.
+Contention fails fast with exit 75 and prints the lock path and holder PID.
 
 ## Data layout
 
@@ -553,14 +554,28 @@ and holder PID.
 ${XDG_RUNTIME_DIR}/virtdev/locks/   (falls back to $XDG_STATE_HOME)
   store-<sha256>.lock                per-canonical-store rendezvous
   cache-<sha256>.lock                per-canonical-cache rendezvous
+  transfer-target-<sha256>.lock      per-canonical-host-target rendezvous
+
+<host-download-stage-parent>/
+  .virtdev-transfer.XXXXXXXX/        active transaction; preserved as ambiguous-publication evidence
+    publication                     NUL-delimited target, identity, and phase manifest
+    publication.tmp                 manifest publication temporary
+
+<host-target-parent>/
+  .virtdev-transfer-recovery.XXXXXXXX/  successful-overwrite recovery sibling
+    publication                      NUL-delimited target, identity, and phase manifest
+    publication.tmp                  manifest publication temporary
+    previous                         displaced target retained for open-handle safety
 
 ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
   lock                              compatibility lock for firewall coordination
   move.transaction                  durable interrupted-move recovery journal
   move.transaction.tmp.<pid>        move-journal publication temporary
   transactions/                     private workflow transactions
-    recreate.<project>.<random>/provision  frozen provision input
-    upgrade.<random>/<project>.provision   per-project frozen provision input
+    recreate.<project>.<random>/
+      provision                     frozen provision input
+    upgrade.<random>/
+      <project>.provision           per-project frozen provision input
     maintain.<random>/              frozen hooks and bounded captures
   ssh/id, ssh/id.pub                SSH key pair
   system/                           sealed base (mode 444)
@@ -572,8 +587,10 @@ ${VIRTDEV_HOME}/                    (~/.local/share/virtdev)
     ssh-host/                        host-owned key and known-host state
     .detach.transaction             identity-bound detach recovery journal
     .detach.transaction.tmp         detach-journal publication temporary
-    system.qcow2.bak, home.qcow2.bak  journal-bound original disks
-    system.qcow2.detach, home.qcow2.detach  converted-disk temporaries
+    system.qcow2.bak                 journal-bound original system disk
+    home.qcow2.bak                   journal-bound original home disk
+    system.qcow2.detach              converted-system-disk temporary
+    home.qcow2.detach                converted-home-disk temporary
     generation.detach.tmp           detached-marker publication temporary
     port, monitor.sock, qmp.sock, console.sock, network.sock  runtime (while running)
     manifest                     optional project-local manifest
@@ -606,6 +623,14 @@ Move and detach recovery is authorized only by a matching
 `move.transaction` or `.detach.transaction` journal. A bare `.bak` file has no
 recovery authority. Workflow directories under `transactions/` are normally
 removed, but may remain after abrupt host loss or a recovery-preserving failure.
+
+A successful transfer overwrite retains its recovery sibling so the previous
+target remains named for open handles. Remove that directory manually only
+after the new target is validated and all users or processes holding old
+handles have stopped. An active `.virtdev-transfer.XXXXXXXX/` retained after an
+ambiguous publication is evidence; inspect it and the target before any change.
+Exit 16 during retention can leave both the active transaction and a partial
+recovery sibling, whose manifests must be inspected together.
 
 An interrupted ISO build can leave privileged mounts below `work/`.
 `virtdev iso` refuses to clean a mounted build tree; unmount the exact stale

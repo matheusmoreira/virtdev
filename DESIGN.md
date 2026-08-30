@@ -770,21 +770,26 @@ relaunched — fail CLOSED; `recreate`/`upgrade` relaunch to migrate it.
 
 ## Concurrency and Locking
 
-Store locks live outside the data they protect:
+Locks live outside the data they protect:
 
 ```
 ${XDG_RUNTIME_DIR}/virtdev/locks/store-<sha256>.lock
+${XDG_RUNTIME_DIR}/virtdev/locks/cache-<sha256>.lock
+${XDG_RUNTIME_DIR}/virtdev/locks/transfer-target-<sha256>.lock
 ```
 
 The fallback is `${XDG_STATE_HOME:-~/.local/state}/virtdev/locks`; an
-explicit `VIRTDEV_LOCK_DIRECTORY` overrides both. The hash includes the
-canonical `VIRTDEV_HOME`, so aliases of one store collide while distinct
-stores remain independent. The stable file survives `virtdev-nuke`.
+explicit `VIRTDEV_LOCK_DIRECTORY` overrides both. Each hash includes its lock
+domain and canonical protected path, so aliases collide while distinct stores,
+caches, and host publication targets remain independent. Stable lock files
+survive deletion of the protected data.
 
 Store locks use fd 9. A compatibility lock on `${VIRTDEV_HOME}/lock` uses
 fd 7 so the current firewall apply path remains coordinated. Cache operations
-use fd 8 and a separately keyed `cache-<sha256>.lock`; `virtdev-iso` and
-`virtdev-nuke` therefore cannot mutate the same build tree concurrently.
+use fd 8. Download publication uses fd 6 and a per-canonical-target
+`transfer-target-<sha256>.lock`. `virtdev-iso` and `virtdev-nuke` therefore
+cannot mutate the same build tree concurrently, and two downloads cannot
+publish concurrently to one host target.
 
 `flock -n` fails immediately with exit 75. Setup failures use exit 76.
 Holder records are one bounded PID line, and maintenance detection reads at
@@ -799,7 +804,8 @@ inter-step boundary without self-deadlock.
 Store-lock users are install, seal, maintain, create, start, stop, destroy,
 detach, move, key, recreate, upgrade, and nuke. ISO uses only the cache lock;
 nuke takes store then cache. Direct list/status/SSH/wait/console/transfer/
-backup/restore commands do not acquire a store lock. `virtdev-stop
+backup/restore commands do not acquire a store lock; a download transfer does
+acquire its target lock. `virtdev-stop
 maintenance` keeps its explicit lock exception so it can stop the session
 whose parent holds the store lock.
 
@@ -841,9 +847,9 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`); universal `--help` and `--color` handling | 64 |
 | `integer` | canonical bounded-positive-decimal predicate (`integer_is_bounded_positive`) | none (predicate status) |
 | `ip` | IPv4/IPv6 literal predicate (`ip_literal_is_valid`) | none (predicate status) |
-| `lock` | canonical store/cache `flock(2)` domains, inherited composition, bounded diagnostics | 75, 76 |
+| `lock` | canonical store, cache, and transfer-target `flock(2)` domains, including `lock_acquire_transfer_target`, inherited composition, and bounded diagnostics | 75, 76 |
 | `ssh` | Guest-contract checks, project host identities, strict shared transport argv, rsync wrapper, and bounded polling | 77, 78, 103, 104, 105 |
-| `diagnostic` | bounded, sanitized stderr capture and emission for guest-controlled transports (`bounded_stderr_run`, `bounded_stderr_emit`) | 1, 2, 125 (returned; otherwise child status) |
+| `diagnostic` | bounded, sanitized stderr capture and emission for untrusted subprocesses, including guest transport and host tar/rsync (`bounded_stderr_run`, `bounded_stderr_emit`) | 1, 2, 125 (returned; otherwise child status) |
 | `enumerate` | strict bounded NUL-record capture and sorting (`enumerate_nul_sorted`) | 2, 3, 4 (returned) |
 | `snapshot` | enumerate, count, and select virtdev-backup snapshot directories (`snapshot_directory`, `snapshot_list*`, `snapshot_count`, `snapshot_any`, `snapshot_latest`, `snapshot_validate_format`) | 79 |
 | `trigger` | run user-supplied trigger scripts at explicit lifecycle points (`trigger_fire`); bounds execution and stdout before returning text through namerefs | 80 |
@@ -972,7 +978,7 @@ The public environment interface is:
 | `VIRTDEV_HOME` | `${XDG_DATA_HOME:-~/.local/share}/virtdev` | Data directory |
 | `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` | SSH private-key path |
 | `VIRTDEV_CACHE` | `${XDG_CACHE_HOME:-~/.cache}/virtdev` | Cache directory |
-| `VIRTDEV_LOCK_DIRECTORY` | `${XDG_RUNTIME_DIR}/virtdev/locks`, else `${XDG_STATE_HOME:-~/.local/state}/virtdev/locks` | Private store/cache lock directory override |
+| `VIRTDEV_LOCK_DIRECTORY` | `${XDG_RUNTIME_DIR}/virtdev/locks`, else `${XDG_STATE_HOME:-~/.local/state}/virtdev/locks` | Private lock directory override for all lock domains |
 | `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) | IANA timezone name |
 | `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) | Guest locale |
 | `VIRTDEV_KEYMAP` | host keymap (`us` fallback) | Guest console keymap |
@@ -1007,11 +1013,12 @@ The public environment interface is:
 | `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
 | `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
 | `VIRTDEV_TRANSFER_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; download logical-data ceiling |
-| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; must cover logical data plus archive overhead |
+| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; per materialized tree; must also cover archive overhead |
+| `VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES` | `53687091200` bytes (50 GiB) | Integer `1..10995116277760`; aggregate host transaction cap |
 | `VIRTDEV_TRANSFER_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; download-tree entries |
 | `VIRTDEV_TRANSFER_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
 | `VIRTDEV_TRANSFER_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
-| `VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES` | `65536` bytes | Integer `1..1048576` bytes per guest command |
+| `VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES` | `65536` bytes | Integer `1..1048576`; bounded untrusted subprocess diagnostics for guest transport and host tar/rsync |
 | `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` | OVMF code-image path |
 | `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` | OVMF variables-template path |
 
@@ -1023,6 +1030,18 @@ The public environment interface is:
 ${XDG_RUNTIME_DIR}/virtdev/locks/
   store-<sha256>.lock  canonical store lock (state-directory fallback)
   cache-<sha256>.lock  canonical cache lock (state-directory fallback)
+  transfer-target-<sha256>.lock  canonical host publication-target lock
+
+<host-download-stage-parent>/
+  .virtdev-transfer.XXXXXXXX/  active transaction; preserved as ambiguous-publication evidence
+    publication          NUL-delimited target, identity, and phase manifest
+    publication.tmp      manifest publication temporary
+
+<host-target-parent>/
+  .virtdev-transfer-recovery.XXXXXXXX/  successful-overwrite recovery sibling
+    publication          NUL-delimited target, identity, and phase manifest
+    publication.tmp      manifest publication temporary
+    previous             displaced target retained for open-handle safety
 
 ${VIRTDEV_HOME}/
   lock                  compatibility lock for firewall coordination
@@ -1149,6 +1168,14 @@ Workflow directories under `transactions/` are normally removed. Recreate and
 upgrade may preserve frozen provision inputs after failures in irreversible
 phases, and abrupt host loss can leave any in-flight transaction directory for
 inspection.
+
+A successful transfer overwrite retains its recovery sibling so the previous
+target remains named for open handles. Remove that directory manually only
+after the new target is validated and all users or processes holding old
+handles have stopped. An active `.virtdev-transfer.XXXXXXXX/` retained after an
+ambiguous publication is evidence; inspect it and the target before any change.
+Exit 16 during retention can leave both the active transaction and a partial
+recovery sibling, whose manifests must be inspected together.
 
 `virtdev-iso` refuses cleanup when mountinfo contains a mount at or below
 `work/` or `profile/`. It atomically moves each tree to a root-owned quarantine

@@ -11,9 +11,12 @@ actual_libraries="$(
 )"
 documented_libraries="$(
   awk '
-    /^### Current libraries$/ { in_table = 1; next }
-    in_table && /^Libraries are self-contained:/ { exit }
-    in_table && /^\| `/ { print }
+    /^### Current libraries$/ { in_section = 1; next }
+    in_section && /^#{1,6} / { exit }
+    in_section && /^\| Library \|/ { in_table = 1; next }
+    in_table && /^\|[-| ]+\|$/ { next }
+    in_table && /^\| `/ { print; next }
+    in_table { exit }
   ' "${repository}/DESIGN.md" \
     | sed -n 's/^| `\([^`]*\)` |.*/\1/p' \
     | LC_ALL=C sort
@@ -33,15 +36,37 @@ layout_section() {
   ' "${1}"
 }
 
+layout_entries() {
+  layout_section "${1}" | awk '
+    /^```/ {
+      if (in_code) exit
+      in_code = 1
+      next
+    }
+    in_code {
+      entry = $0
+      sub(/^[[:space:]]*/, "", entry)
+      sub(/[[:space:]].*$/, "", entry)
+      if (entry != "") print entry
+    }
+  '
+}
+
 for document in README.md DESIGN.md; do
   layout="$(layout_section "${repository}/${document}")"
+  entries="$(layout_entries "${repository}/${document}")"
   layout_flat="${layout//$'\n'/ }"
-  for artifact in move.transaction move.transaction.tmp. transactions/ \
+  for artifact in 'transfer-target-<sha256>.lock' \
+    '<host-download-stage-parent>/' '.virtdev-transfer.XXXXXXXX/' \
+    '<host-target-parent>/' '.virtdev-transfer-recovery.XXXXXXXX/' \
+    publication publication.tmp previous move.transaction \
+    'move.transaction.tmp.<pid>' \
+    transactions/ \
     'recreate.<project>.<random>/' 'upgrade.<random>/' 'maintain.<random>/' \
     .detach.transaction .detach.transaction.tmp system.qcow2.bak \
     home.qcow2.bak system.qcow2.detach home.qcow2.detach \
     generation.detach.tmp; do
-    if [[ "${layout}" != *"${artifact}"* ]]; then
+    if ! grep -Fxq -- "${artifact}" <<< "${entries}"; then
       printf '%s Data Layout does not document %s\n' \
         "${document}" "${artifact}" >&2
       exit 1
@@ -52,6 +77,15 @@ for document in README.md DESIGN.md; do
       "${document}" >&2
     exit 1
   fi
+  for contract in NUL-delimited 'open handles' \
+    'Remove that directory manually only' 'new target is validated' \
+    'old handles have stopped' 'ambiguous publication is evidence'; do
+    if [[ "${layout_flat}" != *"${contract}"* ]]; then
+      printf '%s Data Layout does not document transfer recovery contract %s\n' \
+        "${document}" "${contract}" >&2
+      exit 1
+    fi
+  done
 done
 
 color_contract="$(sed -n '/All commands support `--color=/,/^$/p' \
