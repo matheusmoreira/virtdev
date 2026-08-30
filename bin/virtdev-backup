@@ -336,9 +336,11 @@ Install it with: pacman -S tar
 MESSAGE
 fi
 archive_gate="${virtdev_libexec_directory}/virtdev-archive-gate"
-if [[ ! -x "${archive_gate}" ]]; then
-  error 18 <<<"virtdev-archive-gate not found: '${archive_gate}'. Run 'make' to compile it."
-fi
+publish_helper="${virtdev_libexec_directory}/virtdev-publish"
+for helper in "${archive_gate}" "${publish_helper}"; do
+  [[ -x "${helper}" ]] \
+    || error 18 <<<"Required backup helper is unavailable: '${helper}'. Run 'make'."
+done
 
 if ! manifest_path="$(manifest_resolve "${project}")"; then
   error 8 <<MESSAGE
@@ -787,7 +789,6 @@ Verify the manifest against the guest: virtdev-ssh ${project} -- ls -la
 MESSAGE
 fi
 
-# `mv -T` must fail rather than nest a partial under an existing snapshot.
 if [[ -e "${final}" ]]; then
   error 13 <<MESSAGE
 A snapshot already exists at this timestamp: ${final}
@@ -802,7 +803,51 @@ Could not durably flush the completed backup. The partial snapshot was preserved
 ${partial}
 MESSAGE
 fi
-mv -T -- "${partial}" "${final}"
+backup_preserve_partial=1
+remaining=$(( backup_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) || error 20 <<MESSAGE
+Backup deadline expired before snapshot publication. The completed partial was preserved:
+${partial}
+MESSAGE
+publish_status=0
+timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+  "${remaining}" "${publish_helper}" noreplace "${partial}" "${final}" \
+  || publish_status=$?
+case "${publish_status}" in
+  0) ;;
+  1)
+    error 18 <<MESSAGE
+Snapshot publication failed before rename. The completed partial was preserved:
+${partial}
+MESSAGE
+    ;;
+  2)
+    error 18 <<MESSAGE
+The snapshot was published, but its durability could not be confirmed. The final snapshot was preserved:
+${final}
+MESSAGE
+    ;;
+  3)
+    error 13 <<MESSAGE
+A snapshot appeared at this timestamp during publication: ${final}
+The completed partial was preserved: ${partial}
+MESSAGE
+    ;;
+  124|137)
+    error 20 <<MESSAGE
+Snapshot publication exceeded the backup deadline. Inspect both paths before retrying:
+${partial}
+${final}
+MESSAGE
+    ;;
+  *)
+    error 18 <<MESSAGE
+Snapshot publication returned status ${publish_status}. Inspect both paths before retrying:
+${partial}
+${final}
+MESSAGE
+    ;;
+esac
 if ! sync -f "${day_dir}"; then
   error 18 <<MESSAGE
 Could not durably publish the completed backup. The final snapshot was preserved:

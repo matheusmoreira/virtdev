@@ -544,6 +544,32 @@ if (( status != 18 )) || [[ "$(< "${post_sync_count}")" != 2 \
   exit 1
 fi
 
+publication_race_library="${test_tmp}/publish-race-target.so"
+cc -std=c99 -shared -fPIC -Wall -Wextra -Wpedantic -Werror \
+  -o "${publication_race_library}" \
+  "${repository}/tests/support/publish-race-target.c"
+for race_mode in empty nonempty; do
+  race_home="${test_tmp}/publication-race-${race_mode}"
+  prepare_home "${race_home}"
+  status=0
+  run_backup "${race_home}" 1048576 100 10 \
+    env LD_PRELOAD="${publication_race_library}" \
+      PUBLISH_RACE_TARGET="${race_mode}" \
+    >"${test_tmp}/publication-race-${race_mode}.output" 2>&1 || status=$?
+  race_partial="$(find "${race_home}/backups/probe" -mindepth 2 -maxdepth 2 \
+    -type d -name '*.partial' -print -quit 2>/dev/null || true)"
+  race_final="$(find "${race_home}/backups/probe" -mindepth 2 -maxdepth 2 \
+    -type d ! -name '*.partial' -print -quit 2>/dev/null || true)"
+  if (( status != 13 )) || [[ ! -f "${race_partial}/tree/data/sub/file" \
+        || ! -d "${race_final}" ]] \
+      || [[ "${race_mode}" == nonempty && ! -f "${race_final}/intruder" ]]; then
+    printf 'backup %s publication race was not no-replace safe (status %d)\n' \
+      "${race_mode}" "${status}" >&2
+    cat "${test_tmp}/publication-race-${race_mode}.output" >&2
+    exit 1
+  fi
+done
+
 printf 'ok - backup capture enforces physical, logical, entry, and time budgets\n'
 printf 'ok - backup and restore agree at the logical-byte boundary\n'
 printf 'ok - backup publication is durable or preserves inspectable recovery state\n'
