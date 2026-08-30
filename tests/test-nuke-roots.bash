@@ -17,6 +17,8 @@ printf 'nuke\n' | HOME="${test_home}" \
   VIRTDEV_HOME="${test_home}/data-link" \
   VIRTDEV_CACHE="${test_home}/cache" \
   NO_COLOR=1 \
+  PATH="${repository}/tests/fixtures:${PATH}" \
+  SYSTEMCTL_ACTIVE_STATE=inactive \
   "${repository}/bin/virtdev-nuke" >"${output}" 2>&1 || status=$?
 
 if (( status != 3 )); then
@@ -36,11 +38,32 @@ printf 'delete data\n' > "${test_home}/storage/virtdev/sentinel"
 printf 'delete cache\n' > "${test_home}/canonical-cache/sentinel"
 ln -s storage "${test_home}/storage-alias"
 
+state_sequence="${test_tmp}/maintenance.sequence"
+printf 'inactive\nactive\n' > "${state_sequence}"
 status=0
 printf 'nuke\n' | HOME="${test_home}" \
   VIRTDEV_HOME="${test_home}/storage-alias/virtdev" \
   VIRTDEV_CACHE="${test_home}/canonical-cache" \
   NO_COLOR=1 \
+  PATH="${repository}/tests/fixtures:${PATH}" \
+  SYSTEMCTL_ACTIVE_SEQUENCE_FILE="${state_sequence}" \
+  "${repository}/bin/virtdev-nuke" >"${output}" 2>&1 || status=$?
+if (( status != 4 )) \
+    || [[ ! -f "${test_home}/storage/virtdev/sentinel" \
+      || ! -f "${test_home}/canonical-cache/sentinel" ]]; then
+  printf 'nuke ignored maintenance state changed after confirmation (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+status=0
+printf 'nuke\n' | HOME="${test_home}" \
+  VIRTDEV_HOME="${test_home}/storage-alias/virtdev" \
+  VIRTDEV_CACHE="${test_home}/canonical-cache" \
+  NO_COLOR=1 \
+  PATH="${repository}/tests/fixtures:${PATH}" \
+  SYSTEMCTL_ACTIVE_STATE=inactive \
   "${repository}/bin/virtdev-nuke" >"${output}" 2>&1 || status=$?
 
 if (( status != 0 )); then
@@ -60,3 +83,4 @@ if [[ ! -L "${test_home}/storage-alias" \
 fi
 
 printf 'ok - nuke rejects link roots and deletes exact canonical roots\n'
+printf 'ok - nuke re-proves maintenance terminal before deletion\n'

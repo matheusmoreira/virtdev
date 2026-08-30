@@ -106,6 +106,20 @@ require_unmounted_roots() {
 
 require_unmounted_roots
 
+require_maintenance_stopped() {
+  if ! project_is_stopped maintenance; then
+    error 4 <<MESSAGE
+Maintenance virtual machine is running or has indeterminate state.
+Stop and verify it before nuking:
+    virtdev-stop maintenance
+    systemctl --user status virtdev-maintenance
+All virtual machines must be stopped before nuking.
+MESSAGE
+  fi
+}
+
+require_maintenance_stopped
+
 # Skip owner-added directories whose names are not valid project names.
 projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
@@ -164,7 +178,9 @@ if ! confirm_word "nuke"; then
   error 5 <<<"Aborted."
 fi
 
-# Revalidate each root and its mount boundary immediately before deletion.
+# Revalidate machine state, then each root and mount boundary immediately
+# before deletion.
+require_maintenance_stopped
 for path in "${nuke_roots[@]}"; do
   current="$(realpath -m -- "${path}")"
   if [[ -L "${path}" || "${current}" != "${path}" \
