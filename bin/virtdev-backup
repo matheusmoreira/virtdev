@@ -341,6 +341,9 @@ archive="${partial}/capture.tar"
 backup_deadline=$(( BASH_MONOSECONDS + VIRTDEV_BACKUP_TIMEOUT ))
 readonly backup_free_space_reserve=536870912
 readonly backup_inode_reserve=4096
+readonly backup_member_path_max_bytes=4095
+readonly backup_member_depth_max=128
+readonly backup_path_state_max_bytes=67108864
 
 available_bytes="$(df -B1 --output=avail -- "${partial}" 2>/dev/null \
   | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
@@ -403,16 +406,26 @@ LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
     "${remaining}" tar --quoting-style=escape --list --file="${archive}" \
   | LC_ALL=C timeout --signal=TERM \
       --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" "${remaining}" \
-      awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" '
-        function add_path(path) {
-          if (!(path in seen_path)) {
-            seen_path[path] = 1
+      awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" \
+        -v maximum_path_bytes="${backup_member_path_max_bytes}" \
+        -v maximum_path_depth="${backup_member_depth_max}" \
+        -v maximum_path_state="${backup_path_state_max_bytes}" '
+        function add_component(parent, value, key) {
+          key = parent SUBSEP value
+          if (!(key in child_id)) {
+            path_state_bytes += length(value) + 32
+            if (path_state_bytes > maximum_path_state) {
+              path_over = 1
+              exit
+            }
             extracted_entries++
             if (extracted_entries > maximum_entries) {
               entries_over = 1
               exit
             }
+            child_id[key] = extracted_entries
           }
+          return child_id[key]
         }
         {
           members++
@@ -423,23 +436,33 @@ LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
             invalid_path = 1
             exit
           }
+          if (length(path) > maximum_path_bytes) {
+            path_over = 1
+            exit
+          }
           while (substr(path, 1, 2) == "./") path = substr(path, 3)
           if (path == "" || path == ".") next
           count = split(path, component, "/")
-          prefix = ""
+          parent = 0
+          depth = 0
           for (i = 1; i <= count; i++) {
             if (component[i] == "" || component[i] == ".") continue
             if (component[i] == "..") {
               invalid_path = 1
               exit
             }
-            prefix = (prefix == "" ? component[i] : prefix "/" component[i])
-            add_path(prefix)
+            depth++
+            if (depth > maximum_path_depth) {
+              path_over = 1
+              exit
+            }
+            parent = add_component(parent, component[i])
           }
         }
         END {
           if (entries_over) exit 42
           if (invalid_path) exit 43
+          if (path_over) exit 44
           printf("%d %d\n", members, extracted_entries)
         }
       ' > "${archive_paths_summary_file}"
@@ -449,6 +472,12 @@ case "${path_validation_status[1]}" in
   0) ;;
   42) error 19 <<<"Backup exceeded its ${VIRTDEV_BACKUP_MAX_ENTRIES}-entry extracted-tree budget" ;;
   43) error 18 <<<'Backup archive contains an unsafe member path' ;;
+  44) error 19 <<MESSAGE
+Backup archive paths exceeded a validation budget: ${backup_member_path_max_bytes}
+bytes per member, ${backup_member_depth_max} components per member, or
+${backup_path_state_max_bytes} bytes of retained component state.
+MESSAGE
+      ;;
   124|137) error 20 <<<'Backup path validation exceeded its wall-clock deadline' ;;
   *) error 18 <<<'Could not validate backup archive paths' ;;
 esac

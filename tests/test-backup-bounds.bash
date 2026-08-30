@@ -41,6 +41,12 @@ tar -C "${test_tmp}/guest/data" -cf "${test_tmp}/escape.tar" \
   --transform='s|^other$|../escaped|' other
 tar -C "${test_tmp}/guest/data" -cf "${test_tmp}/deep.tar" \
   --transform='s|^other$|a/b/c/other|' other
+deep_prefix=''
+for _ in {1..129}; do
+  deep_prefix+='a/'
+done
+tar -C "${test_tmp}/guest/data" -cf "${test_tmp}/too-deep.tar" \
+  --transform="s|^other$|${deep_prefix}other|" other
 
 ssh_key="${test_tmp}/id"
 printf 'test private key\n' > "${ssh_key}"
@@ -187,6 +193,22 @@ if (( status != 19 )) || [[ -e "${parents_extract_started}" ]] \
     || find "${parents_home}/backups" -name '*.partial' -print -quit \
       | grep -q .; then
   printf 'implicit archive parents escaped the entry budget (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
+depth_home="${test_tmp}/depth-home"
+depth_extract_started="${test_tmp}/depth-extract-started"
+prepare_home "${depth_home}"
+status=0
+run_backup "${depth_home}" 1048576 1000 10 \
+  env BACKUP_TAR_STREAM="${test_tmp}/too-deep.tar" \
+    BACKUP_EXTRACT_STARTED_FILE="${depth_extract_started}" \
+  >"${test_tmp}/output" 2>&1 || status=$?
+if (( status != 19 )) || [[ -e "${depth_extract_started}" ]] \
+    || find "${depth_home}/backups" -name '*.partial' -print -quit \
+      | grep -q .; then
+  printf 'archive path depth escaped its validation budget (status %d)\n' \
     "${status}" >&2
   exit 1
 fi
