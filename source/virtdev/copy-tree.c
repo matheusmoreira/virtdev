@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Private helper for bounded, mutation-detecting restore staging. The
-// destination parent must already exist; this program creates "tree" below it.
+// Bounded, mutation-detecting private tree copier. The destination parent must
+// already exist; this program creates "tree" below it.
 
 #define _GNU_SOURCE
 

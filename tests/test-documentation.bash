@@ -88,6 +88,24 @@ for document in README.md DESIGN.md; do
   done
 done
 
+for document in README.md DESIGN.md; do
+  product_contract="$(< "${repository}/${document}")"
+  for contract in 'preventive aggregate host transaction cap' \
+    'bounded recovery window' 'guest set-id bits' 'hardlink groups' \
+    'nanosecond metadata' 'extended attributes or ACLs'; do
+    if [[ "${product_contract}" != *"${contract}"* ]]; then
+      printf '%s does not document transfer contract %s\n' \
+        "${document}" "${contract}" >&2
+      exit 1
+    fi
+  done
+  if [[ "${product_contract}" != *'Snapshot publication is atomic no-replace'* ]]; then
+    printf '%s does not document atomic backup publication\n' \
+      "${document}" >&2
+    exit 1
+  fi
+done
+
 color_contract="$(sed -n '/All commands support `--color=/,/^$/p' \
   "${repository}/README.md")"
 for contract in 'stream receiving styled output' '`virtdev-list`' \

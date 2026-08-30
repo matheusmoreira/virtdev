@@ -46,9 +46,8 @@
 #                  (YYYY-MM-DD/HH-MM-SS) to stdout. Machine-readable.
 #                  Prints nothing if no snapshots exist.
 #
-# The project's virtual machine must be running (SSH over the
-# host-forwarded port). Concurrent same-project backups at the same
-# second are prevented by mkdir EEXIST on the partial directory.
+# The virtual machine must be running. A private partial and atomic
+# no-replace publication protect same-second snapshot names.
 #
 # Configuration via environment variables:
 #

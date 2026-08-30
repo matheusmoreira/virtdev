@@ -1013,14 +1013,21 @@ The public environment interface is:
 | `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
 | `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
 | `VIRTDEV_TRANSFER_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; download logical-data ceiling |
-| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; per materialized tree; must also cover archive overhead |
-| `VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES` | `53687091200` bytes (50 GiB) | Integer `1..10995116277760`; aggregate host transaction cap |
+| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; preventive per-tree cap; must also cover archive overhead |
+| `VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES` | `53687091200` bytes (50 GiB) | Integer `1..10995116277760`; preventive aggregate host transaction cap |
 | `VIRTDEV_TRANSFER_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; download-tree entries |
 | `VIRTDEV_TRANSFER_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
 | `VIRTDEV_TRANSFER_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
 | `VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES` | `65536` bytes | Integer `1..1048576`; bounded untrusted subprocess diagnostics for guest transport and host tar/rsync |
 | `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` | OVMF code-image path |
 | `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` | OVMF variables-template path |
+
+Downloads reserve transaction capacity before capture, extraction, copying,
+and merging. Their total timeout covers symlink streaming, manifests, and
+publication; a committed target gets one bounded recovery window if validation
+uses the deadline. Host publication strips guest set-id bits, preserves
+hardlink groups and nanosecond metadata, and rejects an existing-directory
+merge containing extended attributes or ACLs that cannot be preserved.
 
 ---
 
@@ -1293,8 +1300,10 @@ there is no silent shadowing when both files exist.
   or implicit output path. `virtdev-restore` counts unique regular-file bytes
   and entries before transfer, rejects nested mounts and intermediate symlinks,
   and gives rsync the same filesystem boundary. Every snapshot owns its inodes
-  independently, so editing one restore point cannot rewrite
-  another. Not planned: compression, encryption at rest, automated
+  independently, so editing one restore point cannot rewrite another.
+  Snapshot publication is atomic no-replace and preserves the completed partial or
+  committed final when publication cannot be confirmed. Not planned:
+  compression, encryption at rest, automated
   retention or rotation policy, cross-project restore, system-disk
   backup, or glob/brace expansion in manifests. Per `DESIGN.md`'s threat model the host is trusted, so
   encryption adds complexity without matching a real adversary. The

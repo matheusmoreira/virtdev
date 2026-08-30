@@ -201,6 +201,9 @@ virtdev restore myproject 2026-04-25/14-30-22  # restore a specific one
 Backups survive `virtdev-destroy` but are removed by `virtdev-nuke`.
 A project-local manifest at `${VIRTDEV_HOME}/projects/myproject/manifest`
 takes precedence when present (for one-off experiments; discarded with the VM).
+Snapshot publication is atomic no-replace. A racing final name is never
+overwritten, and a completed partial or committed final is retained whenever
+publication cannot be confirmed.
 
 ### Recreate
 
@@ -396,8 +399,8 @@ Environment variables (defaults shown):
 | `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
 | `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
 | `VIRTDEV_TRANSFER_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; download logical-data ceiling |
-| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; per materialized tree; must also cover archive overhead |
-| `VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES` | `53687091200` bytes (50 GiB) | Integer `1..10995116277760`; aggregate host transaction cap |
+| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; preventive per-tree cap; must also cover archive overhead |
+| `VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES` | `53687091200` bytes (50 GiB) | Integer `1..10995116277760`; preventive aggregate host transaction cap |
 | `VIRTDEV_TRANSFER_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; download-tree entries |
 | `VIRTDEV_TRANSFER_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
 | `VIRTDEV_TRANSFER_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
@@ -407,6 +410,13 @@ Environment variables (defaults shown):
 
 Restore staging accepts at most 128 path components and 4095 relative-path
 bytes, and caps its source-validation ledger at 512 MiB.
+
+Downloads reserve transaction capacity before capture, extraction, copying,
+and merging. Their total timeout covers symlink streaming, manifests, and
+publication; a committed target gets one bounded recovery window if validation
+uses the deadline. Host publication strips guest set-id bits, preserves
+hardlink groups and nanosecond metadata, and rejects an existing-directory
+merge containing extended attributes or ACLs that cannot be preserved.
 
 `VIRTDEV_HOME` and `VIRTDEV_CACHE` follow XDG defaults
 (`${XDG_DATA_HOME}` and `${XDG_CACHE_HOME}` respectively).
