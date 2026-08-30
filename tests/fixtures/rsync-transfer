@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [[ -n "${RSYNC_ARGV_FILE:-}" ]]; then
+  printf '%s\0' "$@" > "${RSYNC_ARGV_FILE}"
+fi
+if [[ -n "${RSYNC_PID_FILE:-}" ]]; then
+  printf '%d\n' "${BASHPID}" > "${RSYNC_PID_FILE}"
+fi
+if (( ${RSYNC_STDERR_BYTES:-0} > 0 )); then
+  head -c "${RSYNC_STDERR_BYTES}" /dev/zero | tr '\0' x >&2
+fi
+if [[ "${RSYNC_IGNORE_TERM:-0}" == 1 ]]; then
+  trap '' TERM
+fi
+if (( ${RSYNC_DELAY:-0} > 0 )); then
+  sleep "${RSYNC_DELAY}"
+fi
+exit "${RSYNC_STATUS:-0}"

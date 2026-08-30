@@ -46,9 +46,9 @@
 #   8   rsync not found
 #   9   neither source nor destination is a remote path
 #   10  both source and destination are remote paths
-#   11  download resource, structure, or capacity limit exceeded
-#   12  download deadline exceeded
-#   13  guest transport or archive capture failed
+#   11  transfer resource, structure, output, or capacity limit exceeded
+#   12  transfer deadline exceeded
+#   13  guest transport, upload, or archive capture failed
 #   14  guest produced an unsafe or malformed archive
 #   15  host publication target is unsafe or incompatible
 #   16  publication committed but its durability status is indeterminate
@@ -176,15 +176,67 @@ MESSAGE
 fi
 
 remote="dev@127.0.0.1"
+transfer_deadline=$(( BASH_MONOSECONDS + VIRTDEV_TRANSFER_TIMEOUT ))
+
+transfer_remaining() {
+  local -n _transfer_remaining_result="${1}"
+  _transfer_remaining_result=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( _transfer_remaining_result > 0 )) \
+    || error 12 <<<'Transfer wall-clock deadline expired'
+}
 
 if (( dest_is_remote )); then
   printf >&2 'Copying to %s...\n' "${project}"
+  upload_diagnostic_directory="$(mktemp -d \
+    --tmpdir virtdev-transfer-upload.XXXXXXXXXX)" \
+    || error 11 <<<'Could not create a private upload diagnostic directory'
+  upload_stderr="${upload_diagnostic_directory}/rsync.stderr"
+  upload_stderr_fifo="${upload_diagnostic_directory}/rsync.stderr.fifo"
   ssh_command=""
   rsync_wrapper=""
+
+  # shellcheck disable=SC2329  # invoked by the EXIT trap
+  cleanup_upload() {
+    local -r cleanup_status=$?
+
+    trap - EXIT
+    set +e
+    [[ -z "${rsync_wrapper}" ]] || rm -f -- "${rsync_wrapper}"
+    rm -f -- "${upload_stderr_fifo}" "${upload_stderr}"
+    rmdir -- "${upload_diagnostic_directory}" 2>/dev/null || true
+    exit "${cleanup_status}"
+  }
+  trap cleanup_upload EXIT
+
   ssh_rsync_command ssh_command rsync_wrapper "${project}" \
     "${VIRTDEV_SSH_KEY}" "${port}"
-  trap 'rm -f -- "${rsync_wrapper}"' EXIT
-  rsync -a -e "${ssh_command}" -- "${src}" "${remote}:${dest#:}"
+  remaining=''
+  transfer_remaining remaining
+  upload_status=0
+  bounded_stderr_run "${upload_stderr}" "${upload_stderr_fifo}" \
+      "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+      timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+        "${remaining}" rsync -a --quiet -e "${ssh_command}" -- \
+        "${src}" "${remote}:${dest#:}" >/dev/null || upload_status=$?
+
+  diagnostic_status=0
+  bounded_stderr_emit "${upload_stderr}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+  case "${diagnostic_status}" in
+    0) ;;
+    2) error 11 <<<'Upload diagnostics exceeded their output budget' ;;
+    *) error 13 <<<'Could not capture bounded upload diagnostics' ;;
+  esac
+  case "${upload_status}" in
+    0) ;;
+    124|137) error 12 <<<'Upload exceeded the transfer deadline' ;;
+    *)
+      error 13 <<MESSAGE
+Upload failed (rsync or transport exit ${upload_status}).
+The guest destination may contain a partial update.
+MESSAGE
+      ;;
+  esac
   exit 0
 fi
 
@@ -285,7 +337,6 @@ fi
 [[ -d "${transaction_parent}" && ! -L "${transaction_parent}" ]] \
   || error 15 <<<"Unsafe publication parent: ${transaction_parent}"
 
-transfer_deadline=$(( BASH_MONOSECONDS + VIRTDEV_TRANSFER_TIMEOUT ))
 transfer_transaction="$(mktemp -d \
   --tmpdir="${transaction_parent}" '.virtdev-transfer.XXXXXXXX')" \
   || error 11 <<<"Could not create a private download stage in ${transaction_parent}"
@@ -313,13 +364,6 @@ cleanup_transfer() {
   exit "${cleanup_status}"
 }
 trap cleanup_transfer EXIT
-
-transfer_remaining() {
-  local -n _transfer_remaining_result="${1}"
-  _transfer_remaining_result=$(( transfer_deadline - BASH_MONOSECONDS ))
-  (( _transfer_remaining_result > 0 )) \
-    || error 12 <<<'Transfer wall-clock deadline expired'
-}
 
 transfer_df_value() {
   local -n _transfer_df_result="${1}"
@@ -455,7 +499,6 @@ effective_archive_limit=$(( available_bytes - transfer_free_space_reserve ))
   || effective_archive_limit="${transfer_archive_limit}"
 
 remote_tar=$'set -euo pipefail\nIFS= read -r -d "" path || exit 64\ntrailing=0\nif [[ "${path}" != / && "${path}" == */ ]]; then\n  trailing=1\n  while [[ "${path}" != / && "${path}" == */ ]]; do path="${path%/}"; done\nfi\n[[ "${path}" != / ]] || exit 65\nbase="${path##*/}"\nparent="${path%/*}"\n[[ -n "${parent}" ]] || parent=/\n[[ -n "${base}" && "${base}" != . && "${base}" != .. ]] || exit 65\ncd -- "${parent}" || exit 66\n[[ -e "${base}" || -L "${base}" ]] || exit 67\nif (( trailing )) && { [[ ! -d "${base}" ]] || [[ -L "${base}" ]]; }; then exit 68; fi\nif [[ ! -d "${base}" && ! -f "${base}" && ! -L "${base}" ]]; then exit 69; fi\nprintf "%s\\0" "${base}" | /usr/bin/tar --create --file=- --one-file-system --null --verbatim-files-from --files-from=- --transform="flags=rh;s,^[^/]*,payload/item,"'
-printf -v remote_tar_quoted '%q' "${remote_tar}"
 
 remaining=''
 transfer_remaining remaining
@@ -465,7 +508,7 @@ LC_ALL=C bounded_stderr_run "${capture_stderr}" "${capture_stderr_fifo}" \
     "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
     timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
       "${remaining}" "${virtdev_bin_directory}/virtdev-ssh" \
-      "${project}" -- bash -c "${remote_tar_quoted}" \
+      "${project}" -- bash -c "${remote_tar}" \
     < "${request}" \
   | head -c "$(( effective_archive_limit + 1 ))" > "${archive}"
 capture_status=("${PIPESTATUS[@]}")
