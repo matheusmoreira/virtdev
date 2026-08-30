@@ -14,6 +14,19 @@ LDFLAGS := $(LDFLAGS)
 SCDOC ?= scdoc
 SCDOC := $(SCDOC)
 
+PREFIX ?= /usr
+DESTDIR ?=
+bindir ?= $(PREFIX)/bin
+libdir ?= $(PREFIX)/lib/virtdev
+libexecdir ?= $(PREFIX)/libexec/virtdev
+datadir ?= $(PREFIX)/share
+docdir ?= $(datadir)/doc/virtdev
+licensedir ?= $(datadir)/licenses/virtdev
+mandir ?= $(datadir)/man
+profiledir ?= $(datadir)/virtdev/profile
+systemdsystemunitdir ?= /usr/lib/systemd/system
+systemduserunitdir ?= /usr/lib/systemd/user
+
 scripts := $(wildcard bin/virtdev bin/virtdev-*)
 compiled_helpers := libexec/virtdev/virtdev-copy-tree \
 	libexec/virtdev/virtdev-archive-gate \
@@ -53,6 +66,29 @@ libexec/virtdev/virtdev-remove-tree: source/virtdev/remove-tree.c
 man/%: man/%.scd
 	$(SCDOC) < $< > $@
 
+install: all
+	install -d "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libdir)" \
+		"$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(profiledir)"
+	install -m 0755 $(scripts) "$(DESTDIR)$(bindir)"
+	install -m 0755 $(compiled_helpers) $(private_scripts) \
+		"$(DESTDIR)$(libexecdir)"
+	install -m 0644 $(libraries) "$(DESTDIR)$(libdir)"
+	install -Dm0644 systemd/virtdev-firewall.service \
+		"$(DESTDIR)$(systemdsystemunitdir)/virtdev-firewall.service"
+	sed -i 's|/usr/bin/virtdev-firewall|$(bindir)/virtdev-firewall|g' \
+		"$(DESTDIR)$(systemdsystemunitdir)/virtdev-firewall.service"
+	install -Dm0644 systemd/virtdev-firewall-pin@.service \
+		"$(DESTDIR)$(systemduserunitdir)/virtdev-firewall-pin@.service"
+	cp -a --no-preserve=ownership -- iso/. "$(DESTDIR)$(profiledir)/"
+	install -Dm0644 README.md "$(DESTDIR)$(docdir)/README.md"
+	install -Dm0644 DESIGN.md "$(DESTDIR)$(docdir)/DESIGN.md"
+	install -Dm0644 LICENSE.AGPLv3 "$(DESTDIR)$(licensedir)/LICENSE"
+	@for page in $(manpages); do \
+		section=$${page##*.}; \
+		install -Dm0644 "$${page}" \
+			"$(DESTDIR)$(mandir)/man$${section}/$${page##*/}"; \
+	done
+
 clean:
 	rm -f $(compiled_helpers) $(manpages)
 
@@ -64,4 +100,4 @@ check: $(compiled_helpers)
 	cargo build --manifest-path network/Cargo.toml --workspace --locked --offline
 	cargo test --manifest-path network/Cargo.toml --all-targets --locked --offline
 
-.PHONY: all clean check
+.PHONY: all install clean check

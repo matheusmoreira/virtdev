@@ -46,15 +46,16 @@ From the AUR (`virtdev-git`):
 yay -S virtdev-git
 ```
 
-From source — scripts auto-detect the layout, and `make` builds the private C
-helpers used for bounded restore staging and atomic maintenance exchange (needs
-a C toolchain, e.g. `base-devel`):
+From source (build requirements: `base-devel` and `scdoc`):
 
 ```
 git clone https://github.com/matheusmoreira/virtdev.git
 cd virtdev
 make
+sudo make install
 ```
+
+The install defaults to `/usr`; `PREFIX` and `DESTDIR` may be overridden.
 
 ### One-time setup
 

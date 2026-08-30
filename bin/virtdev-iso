@@ -45,7 +45,7 @@ fi
 # Resolve ISO profile directory:
 #   1. Explicit override via VIRTDEV_ISO_PROFILE
 #   2. Adjacent to script (git checkout: bin/../iso)
-#   3. Installed system path (package: /usr/share/virtdev/profile)
+#   3. Installed profile under the command's prefix
 #
 script_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 if [[ -n "${VIRTDEV_ISO_PROFILE:-}" ]]; then
@@ -53,7 +53,7 @@ if [[ -n "${VIRTDEV_ISO_PROFILE:-}" ]]; then
 elif [[ -f "${script_dir}/../iso/profiledef.sh" ]]; then
   iso_profile="$(cd "${script_dir}/../iso" && pwd -P)"
 else
-  iso_profile="/usr/share/virtdev/profile"
+  iso_profile="$(realpath -m -- "${script_dir}/../share/virtdev/profile")"
 fi
 
 if [[ ! -f "${iso_profile}/profiledef.sh" ]]; then
