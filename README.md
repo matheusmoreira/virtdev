@@ -243,11 +243,12 @@ Optional hooks in `~/.config/virtdev/maintenance/`:
 
 Flags: `--yes`/`-y`, `--no-provision`, `--no-inventory`.
 
-After resealing, existing project VMs refuse to boot (generation mismatch).
-Recreate them:
+Before standalone maintenance, back up every coupled project. After resealing,
+those projects refuse to boot against the changed base. Rebuild each from its
+verified snapshot:
 
 ```bash
-virtdev recreate myproject
+virtdev recreate --no-backup --snapshot YYYY-MM-DD/HH-MM-SS myproject
 ```
 
 Or use `virtdev upgrade` to do everything in one command — back up all
@@ -257,8 +258,7 @@ projects, maintain the base, and rebuild them all on the new base:
 virtdev upgrade
 ```
 
-Flags: `--only=a,b`, `--except=c,d`, `--skip-outdated`, `--yes`/`-y`,
-`--verbose`/`-v`.
+Flags: `--only=a,b`, `--except=c,d`, `--yes`/`-y`, `--verbose`/`-v`.
 
 The host tools and guest control helpers are a matched contract. A base made by
 an older installer lacks the strict SSH host-identity marker, so current

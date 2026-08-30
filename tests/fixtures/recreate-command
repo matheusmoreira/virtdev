@@ -6,6 +6,17 @@ command_name="${0##*/}"
 phase="${command_name#virtdev-}"
 project="${!#}"
 
+if [[ "${phase}" == recreate ]]; then
+  if [[ -n "${UPGRADE_RECREATE_ARGS_FILE:-}" ]]; then
+    printf '%s\0' "$@" > "${UPGRADE_RECREATE_ARGS_FILE}"
+  fi
+  recreate_status="${UPGRADE_RECREATE_STATUS:-0}"
+  if (( recreate_status == 23 )); then
+    rm -rf -- "${VIRTDEV_HOME:?}/projects/${project}"
+  fi
+  exit "${recreate_status}"
+fi
+
 if [[ "${RECREATE_FAIL_STEP:-}" == "${phase}" ]]; then
   exit 1
 fi
@@ -35,7 +46,7 @@ case "${phase}" in
       printf '%s\0' "$@" > "${RECREATE_SSH_ARGS_FILE}"
     fi
     ;;
-  start|stop|wait) ;;
+  maintain|start|stop|wait) ;;
   *)
     printf 'unexpected recreate fixture command: %s\n' "${command_name}" >&2
     exit 64

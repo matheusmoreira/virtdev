@@ -46,6 +46,47 @@ printf '1\n' > "${system_directory}/generation"
 printf '1\n' > "${project_directory}/generation"
 printf 'ssh-host-identity=1\n' > "${project_directory}/guest-contract"
 
+rm -f -- "${project_directory}/generation"
+status=0
+SYSTEMCTL_ACTIVE_STATE=inactive \
+SYSTEMD_RUN_MARKER="${marker}" \
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_LOCK_DIRECTORY="${lock_directory}" \
+OVMF_CODE="${firmware}" \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-start" --unfiltered probe \
+    >"${output}" 2>&1 || status=$?
+if (( status != 10 )) || grep -Fq 'virtdev-destroy' "${output}" \
+    || ! grep -Fq 'Do not destroy' "${output}"; then
+  printf 'missing-generation recovery risked project data (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+printf '0\n' > "${project_directory}/generation"
+status=0
+SYSTEMCTL_ACTIVE_STATE=inactive \
+SYSTEMD_RUN_MARKER="${marker}" \
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_LOCK_DIRECTORY="${lock_directory}" \
+OVMF_CODE="${firmware}" \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-start" --unfiltered probe \
+    >"${output}" 2>&1 || status=$?
+if (( status != 11 )) || grep -Fq 'virtdev-destroy' "${output}" \
+    || ! grep -Fq 'virtdev-recreate --no-backup --snapshot' "${output}"; then
+  printf 'generation-mismatch recovery risked project data (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+printf '1\n' > "${project_directory}/generation"
+
 declare -a controls=(
   monitor.sock console.sock network.sock passt.sock qmp.sock
   port port.tmp launch.phase launch.phase.tmp

@@ -208,9 +208,10 @@ fi
 if [[ ! -f "${project_generation_file}" ]]; then
   error 10 <<MESSAGE
 Project generation file missing: '${project_generation_file}'
-Recreate this project on top of the current base:
-
-    virtdev-destroy ${project} && virtdev-create ${project}
+Compatibility with the current base cannot be proven. Do not destroy this
+project if its disks contain needed data. Recover or back it up with the base
+and virtdev version known to match it, then recreate from that verified
+snapshot on the current base.
 MESSAGE
 fi
 
@@ -225,9 +226,11 @@ Base system has changed since this project was created.
 	Project generation: ${project_generation}
 
 Starting this project may cause filesystem corruption.
-Transfer data and recreate it on top of the new base system:
+Do not destroy it: that can erase the only remaining project data. Use the
+previous base and matching virtdev version to take a backup, or recover the
+disks offline. After verifying a snapshot, rebuild with:
 
-    virtdev-destroy ${project} && virtdev-create ${project}
+    virtdev-recreate --no-backup --snapshot <YYYY-MM-DD/HH-MM-SS> ${project}
 MESSAGE
 fi
 

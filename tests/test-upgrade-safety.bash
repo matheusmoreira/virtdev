@@ -67,3 +67,142 @@ if ! grep -Fq 'Excluded detached projects must be stopped before upgrade' "${out
 fi
 
 printf 'ok - upgrade preflights running excluded projects before Phase 1\n'
+
+upgrade_root="${test_tmp}/upgrade-root"
+upgrade_bin="${upgrade_root}/bin"
+upgrade_fixtures="${test_tmp}/upgrade-fixtures"
+mkdir -p "${upgrade_bin}" "${upgrade_root}/libexec/virtdev" \
+  "${upgrade_fixtures}"
+cp -a "${repository}/lib" "${upgrade_root}/lib"
+cp "${repository}/bin/virtdev-upgrade" "${upgrade_bin}/virtdev-upgrade"
+cp "${repository}/tests/fixtures/systemctl" "${upgrade_fixtures}/systemctl"
+chmod 0755 "${upgrade_fixtures}/systemctl"
+for command_name in backup start wait stop maintain recreate create restore ssh; do
+  ln -s "${repository}/tests/fixtures/recreate-command" \
+    "${upgrade_bin}/virtdev-${command_name}"
+done
+
+prepare_upgrade_home() {
+  local -r home="${1}" generation="${2:-1}"
+  rm -rf -- "${home}"
+  mkdir -p "${home}/system" "${home}/projects/probe"
+  printf '1\n' > "${home}/system/generation"
+  printf 'ssh-host-identity=1\n' > "${home}/system/guest-contract"
+  printf '%s\n' "${generation}" > "${home}/projects/probe/generation"
+  printf 'data\n' > "${home}/projects/probe/manifest"
+}
+
+recovery_home="${test_tmp}/recovery-home"
+recovery_config="${test_tmp}/recovery config"
+recovery_snapshot='2026-08-29/12-00-00'
+recovery_snapshot_path="${recovery_home}/backups/probe/${recovery_snapshot}"
+provision_path="${recovery_config}/virtdev/projects/probe/provision"
+prepare_upgrade_home "${recovery_home}"
+mkdir -p "$(dirname "${provision_path}")"
+printf 'true\n' > "${provision_path}"
+recovery_output="${test_tmp}/upgrade-create-recovery.output"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+RECREATE_SNAPSHOT_PATH="${recovery_snapshot_path}" \
+UPGRADE_RECREATE_STATUS=23 \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${recovery_config}" \
+VIRTDEV_HOME="${recovery_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/recovery-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes --verbose \
+    >"${recovery_output}" 2>&1 || status=$?
+if (( status != 40 )); then
+  printf 'upgrade did not report recreate create failure (status %d)\n' \
+    "${status}" >&2
+  cat "${recovery_output}" >&2
+  exit 1
+fi
+mapfile -t recovery_commands < <(sed -n \
+  's/^        \(virtdev-.*\)$/\1/p' "${recovery_output}")
+if (( ${#recovery_commands[@]} != 5 )) \
+    || [[ "${recovery_commands[0]}" != 'virtdev-create probe' \
+      || "${recovery_commands[1]}" != 'virtdev-start --unfiltered probe' \
+      || "${recovery_commands[2]}" != 'virtdev-wait probe' \
+      || "${recovery_commands[3]}" != virtdev-ssh\ probe\ --\ bash\ -s\ \<* \
+      || "${recovery_commands[4]}" != \
+        "virtdev-restore --verbose probe ${recovery_snapshot}" ]]; then
+  printf 'upgrade create recovery was incomplete or out of order\n' >&2
+  printf '    %s\n' "${recovery_commands[@]}" >&2
+  exit 1
+fi
+restore_args_file="${test_tmp}/upgrade-restore.args"
+ssh_args_file="${test_tmp}/upgrade-ssh.args"
+for recovery_command in "${recovery_commands[@]}"; do
+  PATH="${upgrade_bin}:${PATH}" \
+  RECREATE_RESTORE_ARGS_FILE="${restore_args_file}" \
+  RECREATE_SSH_ARGS_FILE="${ssh_args_file}" \
+  VIRTDEV_HOME="${recovery_home}" \
+    bash -c "${recovery_command}"
+done
+mapfile -d '' -t restore_args < "${restore_args_file}"
+mapfile -d '' -t ssh_args < "${ssh_args_file}"
+[[ "${restore_args[*]}" == "--verbose probe ${recovery_snapshot}" ]]
+[[ "${ssh_args[*]}" == 'probe -- bash -s' ]]
+
+indeterminate_home="${test_tmp}/indeterminate-home"
+prepare_upgrade_home "${indeterminate_home}"
+indeterminate_output="${test_tmp}/upgrade-indeterminate.output"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+RECREATE_FAIL_STEPS=wait,stop \
+RECREATE_SNAPSHOT_PATH="${indeterminate_home}/backups/probe/${recovery_snapshot}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${indeterminate_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/indeterminate-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes \
+    >"${indeterminate_output}" 2>&1 || status=$?
+if (( status != 20 )) \
+    || ! grep -Fq 'Virtual machines whose stop could not be proven:' \
+      "${indeterminate_output}" \
+    || grep -Fq 'Virtual machines stopped during this phase:' \
+      "${indeterminate_output}"; then
+  printf 'upgrade mislabeled a failed cleanup stop (status %d)\n' \
+    "${status}" >&2
+  cat "${indeterminate_output}" >&2
+  exit 1
+fi
+
+outdated_home="${test_tmp}/outdated-home"
+prepare_upgrade_home "${outdated_home}" 0
+outdated_output="${test_tmp}/upgrade-outdated.output"
+status=0
+PATH="${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${outdated_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/outdated-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes \
+    >"${outdated_output}" 2>&1 || status=$?
+if (( status != 7 )) || grep -Fq -- '--skip-outdated' "${outdated_output}" \
+    || ! grep -Fq 'Do not exclude or destroy them' "${outdated_output}"; then
+  printf 'outdated upgrade did not fail with data-safe guidance (status %d)\n' \
+    "${status}" >&2
+  cat "${outdated_output}" >&2
+  exit 1
+fi
+status=0
+PATH="${upgrade_fixtures}:${PATH}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${outdated_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/outdated-locks-flag" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --skip-outdated --unfiltered --yes \
+    >"${test_tmp}/upgrade-removed-flag.output" 2>&1 || status=$?
+(( status == 64 ))
+
+printf 'ok - upgrade emits executable phase-specific recovery\n'
+printf 'ok - upgrade distinguishes failed stops from stopped machines\n'
+printf 'ok - outdated projects fail closed without an impossible skip path\n'

@@ -340,10 +340,11 @@ content identity — QEMU would silently compose the delta against the new
 base, which may produce filesystem corruption. `virtdev-start` detects this
 via a generation counter (`system/generation` vs `projects/<name>/generation`)
 and refuses to boot a project VM whose generation does not match the current
-base. Always destroy and recreate delta-mode project VMs after resealing.
-Detached projects (see `virtdev-detach`) are exempt — their standalone
-images have no backing file dependency and `virtdev-start` skips the
-generation check for them.
+base. Back up coupled projects before resealing, then recreate them from those
+exact snapshots; `virtdev-upgrade` performs that sequence. Never destroy a
+mismatched project when its disks are the only remaining copy of needed data.
+Detached projects (see `virtdev-detach`) are exempt — their standalone images
+have no backing file dependency and `virtdev-start` skips the generation check.
 
 **Note on NVRAM:** each project VM owns a copy of `nvram` taken from
 `system/nvram` at `virtdev-create` time. A subsequent `virtdev-maintain`

@@ -2,7 +2,7 @@
 # shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
 # virtdev-upgrade [--only=project,...] [--except=project,...]
-#                 [--skip-outdated] [--yes] [--verbose]
+#                 [--yes] [--verbose]
 #
 # Orchestrates the full base-system-update-and-project-rebuild lifecycle:
 #
@@ -21,8 +21,8 @@
 # in the summary with per-project resume commands.
 #
 # Resealing replaces the one path every coupled qcow2 delta uses as its
-# backing file. Therefore --only, --except, and --skip-outdated may exclude
-# detached projects only. Leaving a coupled project out would discard the
+# backing file. Therefore --only and --except may exclude detached projects
+# only. Leaving a coupled project out would discard the
 # exact old base bytes its delta still requires, so the audit fails closed
 # before backup or maintenance begins.
 #
@@ -35,7 +35,7 @@
 #   4   --only and --except both specified
 #   5   project named in --only or --except does not exist
 #   6   audit failure (missing or empty manifest)
-#   7   audit failure (outdated projects without --skip-outdated)
+#   7   audit failure (a stopped project already mismatches the base)
 #   8   user aborted at confirmation prompt
 #   9   base system generation file missing
 #   10  no projects found
@@ -69,7 +69,6 @@ declare -A spec=(
   [except]=value
   [zone]=value
   [unfiltered]=bool
-  [skip-outdated]=bool
   [yes]=bool
   [verbose]=bool
 )
@@ -231,7 +230,6 @@ included=("${included_after_detach[@]}")
 # ── Audit ───────────────────────────────────────────────────────────
 
 declare -a audit_failures=()
-declare -a skipped_outdated=()
 
 for p in "${included[@]}"; do
   if ! manifest_resolve "${p}" >/dev/null; then
@@ -271,13 +269,7 @@ for p in "${included[@]}"; do
     excluded+=("${p}")
     excluded_reasons["${p}"]="corrupt generation file"
   elif (( outdated_status == 0 )) && ! project_is_running "${p}"; then
-    if (( flags[skip-outdated] )); then
-      skipped_outdated+=("${p}")
-      excluded+=("${p}")
-      excluded_reasons["${p}"]="already outdated, --skip-outdated"
-    else
-      outdated_blocked+=("${p}")
-    fi
+    outdated_blocked+=("${p}")
   else
     included_after_skip+=("${p}")
   fi
@@ -290,7 +282,8 @@ if [[ ${#outdated_blocked[@]} -gt 0 ]]; then
     for p in "${outdated_blocked[@]}"; do
       printf '    %s\n' "${p}"
     done
-    printf '\nExclude them with --except or pass --skip-outdated.\n'
+    printf '\nDo not exclude or destroy them: each still contains data tied to its previous base.\n'
+    printf 'Recover with the matching base and virtdev version, take and verify a snapshot, then retry.\n'
   } >&2
   error 7 <<<"Aborting."
 fi
@@ -392,6 +385,7 @@ fi
 
 total_phases=4
 declare -a stopped_projects=()
+declare -a indeterminate_projects=()
 declare -A backup_snapshots=()
 
 # Capture each running machine's zone BEFORE Phase 1 stops it (the Slice
@@ -412,29 +406,101 @@ abort_backup() {
       done
       printf '\nRestart them with: virtdev-start <project>\n'
     fi
+    if [[ ${#indeterminate_projects[@]} -gt 0 ]]; then
+      printf '\nVirtual machines whose stop could not be proven:\n'
+      for s in "${indeterminate_projects[@]}"; do
+        printf '    %s\n' "${s}"
+      done
+      printf '\nInspect each with systemctl --user status virtdev-<project>, then run virtdev-stop <project>.\n'
+    fi
     printf 'Base is unchanged. Backups taken so far are preserved.\n'
   } >&2
   error 20 <<<"Aborting."
 }
 
-# The recreate resume hint for a failed rebuild, carrying the zone this upgrade used
-# for that project (explicit --zone, else the machine's captured zone) so a
-# copy-pasted resume rebuilds into the SAME zone, not whatever the project zone file
-# now resolves to. Mirrors virtdev-recreate's own resume hints.
+cleanup_started_project() {
+  local -r p="${1}"
+  if "${virtdev_bin_directory}/virtdev-stop" "${p}"; then
+    stopped_projects+=("${p}")
+  else
+    indeterminate_projects+=("${p}")
+  fi
+}
+
+command_render() {
+  local -r first="${1}"
+  shift
+  printf '%q' "${first}"
+  (( $# )) && printf ' %q' "$@"
+}
+
+upgrade_start_resume() {
+  local -r p="${1}"
+  local -a command=(virtdev-start)
+  local restore_zone=""
+
+  if [[ -n "${zone_arg}" ]]; then
+    command+=(--zone "${zone_arg}")
+  elif [[ -n "${prior_slices[${p}]:-}" ]]; then
+    restore_zone="$(firewall_zone_to_restore "${prior_slices[${p}]}")"
+    [[ -z "${restore_zone}" ]] || command+=(--zone "${restore_zone}")
+  fi
+  (( flags[unfiltered] )) && command+=(--unfiltered)
+  command+=("${p}")
+  command_render "${command[@]}"
+}
+
 upgrade_resume() {
   local -r p="${1}"
-  local h="virtdev-recreate --no-backup"
+  local -a command=(virtdev-recreate --no-backup)
   if [[ -n "${backup_snapshots[${p}]:-}" ]]; then
-    h+=" --snapshot ${backup_snapshots[${p}]}"
+    command+=(--snapshot "${backup_snapshots[${p}]}")
   fi
+  if [[ -n "${provision_paths[${p}]:-}" ]]; then
+    command+=(--provision "${provision_paths[${p}]}")
+  else
+    command+=(--no-provision)
+  fi
+  (( flags[verbose] )) && command+=(--verbose)
   if [[ -n "${zone_arg}" ]]; then
-    h+=" --zone ${zone_arg}"
+    command+=(--zone "${zone_arg}")
   elif [[ -n "${prior_slices[${p}]:-}" ]]; then
-    local rz; rz="$(firewall_zone_to_restore "${prior_slices[${p}]}")"
-    [[ -n "${rz}" ]] && h+=" --zone ${rz}"
+    local restore_zone
+    restore_zone="$(firewall_zone_to_restore "${prior_slices[${p}]}")"
+    [[ -z "${restore_zone}" ]] || command+=(--zone "${restore_zone}")
   fi
-  (( flags[unfiltered] )) && h+=" --unfiltered"
-  printf '%s %s' "${h}" "${p}"
+  (( flags[unfiltered] )) && command+=(--unfiltered)
+  command+=("${p}")
+  command_render "${command[@]}"
+}
+
+upgrade_create_recovery() {
+  local -r p="${1}"
+  local -a restore_command=(virtdev-restore)
+
+  command_render virtdev-create "${p}"
+  printf '\n%s\n' "$(upgrade_start_resume "${p}")"
+  command_render virtdev-wait "${p}"
+  printf '\n'
+  if [[ -n "${provision_paths[${p}]:-}" ]]; then
+    command_render virtdev-ssh "${p}" -- bash -s
+    printf ' < '
+    printf '%q\n' "${provision_paths[${p}]}"
+  fi
+  (( flags[verbose] )) && restore_command+=(--verbose)
+  restore_command+=("${p}" "${backup_snapshots[${p}]}")
+  command_render "${restore_command[@]}"
+  printf '\n'
+}
+
+upgrade_recovery() {
+  local -r p="${1}" result="${2}"
+  if (( result == recreate_result_create_failed )); then
+    upgrade_create_recovery "${p}"
+  else
+    upgrade_resume "${p}"
+    printf '\n'
+  fi
 }
 
 printf '\n%s\n' "$(terminal_write bold "[Phase 1/${total_phases}] Backing up project virtual machines..." reset)" >&2
@@ -453,8 +519,7 @@ for p in "${included[@]}"; do
       abort_backup "Backup failed: could not start ${p}."
     fi
     if ! "${virtdev_bin_directory}/virtdev-wait" "${p}"; then
-      "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
-      stopped_projects+=("${p}")
+      cleanup_started_project "${p}"
       abort_backup "Backup failed: SSH did not come up for ${p}."
     fi
   fi
@@ -465,15 +530,13 @@ for p in "${included[@]}"; do
   if ! backup_path="$("${virtdev_bin_directory}/virtdev-backup" \
       "${backup_opts[@]}" "${p}")"; then
     if (( ! was_running )); then
-      "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
-      stopped_projects+=("${p}")
+      cleanup_started_project "${p}"
     fi
     abort_backup "Backup failed for ${p}."
   fi
   if ! backup_snapshots["${p}"]="$(snapshot_id_from_path "${p}" "${backup_path}")"; then
     if (( ! was_running )); then
-      "${virtdev_bin_directory}/virtdev-stop" "${p}" 2>/dev/null || true
-      stopped_projects+=("${p}")
+      cleanup_started_project "${p}"
     fi
     abort_backup "Backup returned an invalid snapshot path for ${p}: ${backup_path}"
   fi
@@ -481,7 +544,7 @@ for p in "${included[@]}"; do
 
   printf '    Stopping...\n' >&2
   if ! "${virtdev_bin_directory}/virtdev-stop" "${p}"; then
-    stopped_projects+=("${p}")
+    indeterminate_projects+=("${p}")
     abort_backup "Failed to stop ${p} after backup."
   fi
   stopped_projects+=("${p}")
@@ -521,6 +584,11 @@ for p in "${included[@]}"; do
   printf '\n  Recreating %s...\n' "${p}" >&2
   recreate_opts=(--no-backup --yes --snapshot "${backup_snapshots[${p}]}")
   (( flags[verbose] )) && recreate_opts+=(--verbose)
+  if [[ -n "${provision_paths[${p}]:-}" ]]; then
+    recreate_opts+=(--provision "${provision_paths[${p}]}")
+  else
+    recreate_opts+=(--no-provision)
+  fi
   # Restore each machine's prior zone across the rebuild (it is already stopped,
   # so recreate cannot recapture it). Precedence mirrors recreate/start: an
   # explicit upgrade --zone wins; else a machine that WAS running is restored to
@@ -593,7 +661,9 @@ if [[ ${#failed[@]} -gt 0 ]]; then
     printf >&2 '    Failed at: %s\n' "${fail_reasons[${p}]}"
     printf >&2 '    Exit code: %s\n' "${fail_codes[${p}]}"
     printf >&2 '    Resume with:\n'
-    printf >&2 '        %s\n' "$(upgrade_resume "${p}")"
+    while IFS= read -r recovery_command; do
+      printf >&2 '        %s\n' "${recovery_command}"
+    done < <(upgrade_recovery "${p}" "${fail_codes[${p}]}")
     printf >&2 '\n'
   done
 fi
