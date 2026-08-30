@@ -26,7 +26,7 @@ readonly -a public_commands=(
   list log maintain monitor move nuke path pid port recreate restore seal ssh
   stale start status stop transfer upgrade wait
 )
-readonly -a private_commands=(archive-gate copy-tree exchange netexec remove-tree stop-acpi)
+readonly -a private_commands=(archive-gate copy-tree exchange netexec publish remove-tree stop-acpi)
 
 command_in() {
   local -r needle="${1}"
