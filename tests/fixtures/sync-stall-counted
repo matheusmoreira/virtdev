@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+count=0
+[[ ! -f "${SYNC_COUNT_FILE:?}" ]] || count="$(< "${SYNC_COUNT_FILE}")"
+(( ++count ))
+printf '%d\n' "${count}" > "${SYNC_COUNT_FILE}"
+if (( count == ${SYNC_STALL_CALL:?} )); then
+  [[ -z "${SYNC_STALL_MARKER:-}" ]] || : > "${SYNC_STALL_MARKER}"
+  sleep "${SYNC_STALL_DELAY:-30}"
+fi
+exec /usr/bin/sync "$@"

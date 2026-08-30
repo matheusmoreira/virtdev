@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+previous=
+for argument in "$@"; do
+  if [[ "${previous}" == -type && "${argument}" == l \
+      && -n "${TRANSFER_FIND_DELAY:-}" ]]; then
+    [[ -z "${TRANSFER_FIND_MARKER:-}" ]] || : > "${TRANSFER_FIND_MARKER}"
+    sleep "${TRANSFER_FIND_DELAY}"
+  fi
+  previous="${argument}"
+done
+
+exec /usr/bin/find "$@"

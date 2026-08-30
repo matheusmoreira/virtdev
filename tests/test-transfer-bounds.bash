@@ -20,10 +20,12 @@ fixture_bin="${test_tmp}/bin"
 command_fixture_bin="${test_tmp}/command-bin"
 mutation_bin="${test_tmp}/mutation-bin"
 stat_bin="${test_tmp}/stat-bin"
+find_bin="${test_tmp}/find-bin"
+sync_stall_bin="${test_tmp}/sync-stall-bin"
 virtdev_home="${test_tmp}/virtdev"
 ssh_key="${test_tmp}/id"
 mkdir -p "${fixture_bin}" "${command_fixture_bin}" "${mutation_bin}" \
-  "${stat_bin}" \
+  "${stat_bin}" "${find_bin}" "${sync_stall_bin}" \
   "${virtdev_home}/projects/probe" \
   "${test_tmp}/archive-source"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
@@ -41,6 +43,9 @@ printf '%s\n' \
   '    --verbose) verbose=1 ;;' \
   '  esac' \
   'done' \
+  'if [[ "${phase}" == extraction && -n "${TRANSFER_EXTRACT_STARTED_FILE:-}" ]]; then' \
+  '  : > "${TRANSFER_EXTRACT_STARTED_FILE}"' \
+  'fi' \
   'if [[ "${phase}" == path-listing && "${verbose}" == 1 ]]; then' \
   '  phase=entry-accounting' \
   'fi' \
@@ -67,7 +72,11 @@ cp "${repository}/tests/fixtures/rsync-mutate-target" \
   "${mutation_bin}/rsync"
 chmod 755 "${mutation_bin}/rsync"
 cp "${repository}/tests/fixtures/stat-hang-displaced" "${stat_bin}/stat"
-chmod 755 "${stat_bin}/stat"
+cp "${repository}/tests/fixtures/find-transfer" "${find_bin}/find"
+cp "${repository}/tests/fixtures/sync-stall-counted" \
+  "${sync_stall_bin}/sync"
+chmod 755 "${stat_bin}/stat" "${find_bin}/find" \
+  "${sync_stall_bin}/sync"
 printf '2222\n' > "${virtdev_home}/projects/probe/port"
 printf 'ssh-host-identity=1\n' \
   > "${virtdev_home}/projects/probe/guest-contract"
@@ -627,6 +636,36 @@ for publication_kind in absent existing; do
   fi
 done
 
+publish_stall="${test_tmp}/publish-stall.so"
+cc -std=c99 -shared -fPIC -Wall -Wextra -Wpedantic -Werror \
+  -o "${publish_stall}" "${repository}/tests/support/publish-stall.c"
+for stall_mode in before after; do
+  stall_root="${test_tmp}/publish-stall-${stall_mode}"
+  stall_destination="${stall_root}/destination"
+  stall_marker="${test_tmp}/publish-stall-${stall_mode}.marker"
+  mkdir "${stall_root}"
+  status=0
+  run_transfer "${test_tmp}/replacement.tar" file "${stall_destination}" \
+    env LD_PRELOAD="${publish_stall}" \
+      PUBLISH_STALL_MODE="${stall_mode}" \
+      PUBLISH_STALL_MARKER="${stall_marker}" \
+      VIRTDEV_TRANSFER_TIMEOUT=3 \
+    >"${test_tmp}/publish-stall-${stall_mode}.output" 2>&1 || status=$?
+  stall_transaction="$(find "${stall_root}" -maxdepth 1 -type d \
+    -name '.virtdev-transfer.*' -print -quit)"
+  if (( status != 16 )) || [[ ! -e "${stall_marker}" \
+        || -z "${stall_transaction}" ]] \
+      || [[ "${stall_mode}" == before && -e "${stall_destination}" ]] \
+      || [[ "${stall_mode}" == after \
+        && "$(< "${stall_destination}")" != replacement ]]; then
+    printf '%s-rename publisher stall lost uncertainty (status %d)\n' \
+      "${stall_mode}" "${status}" >&2
+    cat "${test_tmp}/publish-stall-${stall_mode}.output" >&2
+    exit 1
+  fi
+  rm -rf --one-file-system -- "${stall_transaction}"
+done
+
 printf 'ok - committed publication sync failures preserve recovery state\n'
 
 exchange_exit_fault="${test_tmp}/publish-exchange-then-exit.so"
@@ -711,16 +750,36 @@ if (( status != 11 )) || [[ "$(< "${destination}")" != unchanged ]]; then
 fi
 
 transaction_limit_destination="${test_tmp}/transaction-limit-destination"
+transaction_capture_pid="${test_tmp}/transaction-limit-capture.pid"
 status=0
 run_transfer "${test_tmp}/file.tar" file "${transaction_limit_destination}" \
   VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES=4096 \
+  BACKUP_PID_FILE="${transaction_capture_pid}" \
   >"${test_tmp}/transaction-limit.output" 2>&1 || status=$?
 if (( status != 11 )) || [[ -e "${transaction_limit_destination}" ]] \
+    || [[ -e "${transaction_capture_pid}" ]] \
     || ! grep -Fq 'aggregate byte budget' \
       "${test_tmp}/transaction-limit.output"; then
   printf 'aggregate transaction overflow published data (status %d)\n' \
     "${status}" >&2
   cat "${test_tmp}/transaction-limit.output" >&2
+  exit 1
+fi
+
+extraction_limit_destination="${test_tmp}/extraction-limit-destination"
+extraction_started="${test_tmp}/extraction-limit.started"
+status=0
+run_transfer "${test_tmp}/file.tar" file "${extraction_limit_destination}" \
+  VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES=160000 \
+  TRANSFER_EXTRACT_STARTED_FILE="${extraction_started}" \
+  >"${test_tmp}/extraction-limit.output" 2>&1 || status=$?
+if (( status != 11 )) || [[ -e "${extraction_limit_destination}" \
+      || -e "${extraction_started}" ]] \
+    || ! grep -Fq 'extraction would exceed the aggregate' \
+      "${test_tmp}/extraction-limit.output"; then
+  printf 'aggregate extraction budget was not enforced before writing (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/extraction-limit.output" >&2
   exit 1
 fi
 
@@ -800,6 +859,25 @@ if (( status != 14 )) || [[ -e "${unsafe_destination}" ]]; then
   exit 1
 fi
 
+find_timeout_root="${test_tmp}/find-timeout-root"
+find_timeout_destination="${find_timeout_root}/destination"
+find_timeout_marker="${test_tmp}/find-timeout.marker"
+mkdir "${find_timeout_root}"
+status=0
+run_transfer "${test_tmp}/internal-link.tar" tree \
+  "${find_timeout_destination}" \
+  env PATH="${find_bin}:${fixture_bin}:${PATH}" \
+    TRANSFER_FIND_DELAY=30 TRANSFER_FIND_MARKER="${find_timeout_marker}" \
+    VIRTDEV_TRANSFER_TIMEOUT=3 \
+  >"${test_tmp}/find-timeout.output" 2>&1 || status=$?
+if (( status != 12 )) || [[ ! -e "${find_timeout_marker}" \
+      || -e "${find_timeout_destination}" ]]; then
+  printf 'symlink enumeration escaped the total deadline (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/find-timeout.output" >&2
+  exit 1
+fi
+
 mkdir -p "${test_tmp}/special-source/item"
 mkfifo "${test_tmp}/special-source/item/fifo"
 tar -C "${test_tmp}/special-source" -cf "${test_tmp}/special.tar" \
@@ -863,6 +941,28 @@ if (( status != 13 )) || [[ -e "${unsafe_destination}" ]]; then
   printf 'remote tar failure published a valid-looking archive (status %d)\n' \
     "${status}" >&2
   cat "${test_tmp}/remote-failure.output" >&2
+  exit 1
+fi
+
+manifest_timeout_root="${test_tmp}/manifest-timeout-root"
+manifest_timeout_destination="${manifest_timeout_root}/destination"
+manifest_timeout_marker="${test_tmp}/manifest-timeout.marker"
+manifest_sync_count="${test_tmp}/manifest-sync.count"
+mkdir "${manifest_timeout_root}"
+status=0
+run_transfer "${test_tmp}/file.tar" file "${manifest_timeout_destination}" \
+  env PATH="${sync_stall_bin}:${fixture_bin}:${PATH}" \
+    SYNC_COUNT_FILE="${manifest_sync_count}" SYNC_STALL_CALL=1 \
+    SYNC_STALL_MARKER="${manifest_timeout_marker}" \
+    VIRTDEV_TRANSFER_TIMEOUT=3 \
+  >"${test_tmp}/manifest-timeout.output" 2>&1 || status=$?
+if (( status != 12 )) || [[ ! -e "${manifest_timeout_marker}" \
+      || -e "${manifest_timeout_destination}" ]] \
+    || find "${manifest_timeout_root}" -maxdepth 1 -type d \
+      -name '.virtdev-transfer.*' -print -quit | grep -q .; then
+  printf 'manifest publication escaped the total deadline (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/manifest-timeout.output" >&2
   exit 1
 fi
 

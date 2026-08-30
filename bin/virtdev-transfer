@@ -69,7 +69,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import diagnostic enumerate error integer lock mount validate arguments ssh port project
+import diagnostic error integer lock mount validate arguments ssh port project
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -104,6 +104,9 @@ readonly transfer_member_path_max_bytes=4095
 readonly transfer_member_depth_max=128
 readonly transfer_extension_max_bytes=1048576
 readonly transfer_archive_memory_kib=262144
+readonly transfer_stage_overhead=$((
+  VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES + transfer_archive_fixed_overhead + 65536
+))
 
 transfer_archive_limit=$(( VIRTDEV_TRANSFER_MAX_BYTES \
   + VIRTDEV_TRANSFER_MAX_ENTRIES * transfer_archive_entry_overhead \
@@ -189,6 +192,48 @@ transfer_remaining() {
   _transfer_remaining_result=$(( transfer_deadline - BASH_MONOSECONDS ))
   (( _transfer_remaining_result > 0 )) \
     || error 12 <<<'Transfer wall-clock deadline expired'
+}
+
+transfer_deadline_run() {
+  local remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+
+  (( remaining > 0 )) || return 124
+  timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+    "${remaining}" "$@"
+}
+
+transfer_deadline_capture() {
+  local -n _transfer_deadline_capture_result="${1}"
+  shift
+  local status=0
+
+  _transfer_deadline_capture_result="$(transfer_deadline_run "$@")" \
+    || status=$?
+  return "${status}"
+}
+
+transfer_recovery_begin() {
+  transfer_recovery_deadline=$((
+    BASH_MONOSECONDS + VIRTDEV_TRANSFER_KILL_AFTER
+  ))
+}
+
+transfer_recovery_run() {
+  local remaining=$(( transfer_recovery_deadline - BASH_MONOSECONDS ))
+
+  (( remaining > 0 )) || return 124
+  timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+    "${remaining}" "$@"
+}
+
+transfer_recovery_capture() {
+  local -n _transfer_recovery_capture_result="${1}"
+  shift
+  local status=0
+
+  _transfer_recovery_capture_result="$(transfer_recovery_run "$@")" \
+    || status=$?
+  return "${status}"
 }
 
 if (( dest_is_remote )); then
@@ -352,6 +397,8 @@ transfer_preserve_transaction=0
 transfer_df_counter=0
 transfer_du_counter=0
 transfer_file_state_counter=0
+candidate_identity=''
+transfer_recovery_deadline=0
 
 cleanup_transfer() {
   local -r cleanup_status=$?
@@ -520,9 +567,38 @@ transfer_transaction_budget_checked() {
   esac
 }
 
+transfer_transaction_remaining() {
+  local -n _transfer_transaction_remaining_result="${1}"
+  local -r phase="${2}"
+  local allocated='' status=0
+
+  transfer_du_value allocated "${transfer_transaction}" \
+    "transaction-${phase}" || status=$?
+  (( status == 0 )) || return "${status}"
+  (( allocated < VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES )) || return 1
+  _transfer_transaction_remaining_result=$((
+    VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES - allocated
+  ))
+}
+
+transfer_transaction_remaining_checked() {
+  local -r result_name="${1}" phase="${2}"
+  local status=0
+
+  transfer_transaction_remaining "${result_name}" "${phase}" || status=$?
+  case "${status}" in
+    0) ;;
+    1) error 11 <<<"Transfer transaction exhausted its aggregate byte budget during ${phase}" ;;
+    2) error 12 <<<"Transfer transaction accounting timed out during ${phase}" ;;
+    *) error 11 <<<"Could not account for the transfer transaction during ${phase}" ;;
+  esac
+}
+
 transfer_copy_tree_core() {
   local -r source_tree="${1}" destination_parent="${2}" policy="${3:-}"
   local remaining copy_status=0 diagnostic_status=0 budget_status=0
+  local source_allocated='' transaction_remaining='' copy_ceiling
+  local preflight_status=0
   local summary_entries summary_bytes summary_device summary_inode extra
   local summary="${destination_parent}/summary"
   local capture="${destination_parent}.stderr"
@@ -534,6 +610,29 @@ transfer_copy_tree_core() {
     reject-xattrs|strip-setid) helper_options+=("${policy}") ;;
     *) return 3 ;;
   esac
+
+  transfer_du_value source_allocated "${source_tree}" \
+    'tree-copy-source' || preflight_status=$?
+  case "${preflight_status}" in
+    0) ;;
+    2) return 2 ;;
+    *) return 3 ;;
+  esac
+  preflight_status=0
+  transfer_transaction_remaining transaction_remaining \
+    'tree-copy-preflight' || preflight_status=$?
+  case "${preflight_status}" in
+    0) ;;
+    1) return 4 ;;
+    2) return 2 ;;
+    *) return 3 ;;
+  esac
+  copy_ceiling=$(( source_allocated + transfer_stage_overhead ))
+  if [[ "${policy}" == reject-xattrs ]]; then
+    copy_ceiling="${VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES}"
+  fi
+  (( copy_ceiling <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES \
+      && copy_ceiling <= transaction_remaining )) || return 4
 
   TRANSFER_COPY_ENTRIES=''
   TRANSFER_COPY_BYTES=''
@@ -763,45 +862,65 @@ transfer_trees_equal() {
 
 transfer_publication_manifest_write() {
   local -r directory="${1}" phase="${2}" entry="${3}" recovery="${4}"
+  local -r operation_deadline="${5:-${transfer_deadline}}"
   local -r manifest="${directory}/publication" \
     temporary="${directory}/publication.tmp"
+  local remaining=$(( operation_deadline - BASH_MONOSECONDS )) status=0
 
-  rm -f -- "${temporary}" || return 1
-  if ! ( set -o noclobber; umask 077; printf '%s\0' \
+  (( remaining > 0 )) || return 2
+  # shellcheck disable=SC2016  # child script receives values as positional args
+  timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+    "${remaining}" bash -c '
+      set -euo pipefail
+      temporary=$1
+      manifest=$2
+      directory=$3
+      shift 3
+      rm -f -- "${temporary}"
+      ( set -o noclobber
+        umask 077
+        printf "%s\0" "$@" > "${temporary}"
+      )
+      chmod 0600 -- "${temporary}"
+      sync -f -- "${temporary}"
+      mv -T -- "${temporary}" "${manifest}"
+      sync -f -- "${directory}"
+    ' _ "${temporary}" "${manifest}" "${directory}" \
       'version=1' "phase=${phase}" "target=${target}" \
       "entry=${entry}" "candidate_identity=${candidate_identity}" \
       "previous_type=${target_original_type}" \
       "previous_identity=${target_original_identity}" \
-      "recovery=${recovery}" > "${temporary}" ); then
-    return 1
-  fi
-  chmod 0600 -- "${temporary}" \
-    && sync -f -- "${temporary}" \
-    && mv -T -- "${temporary}" "${manifest}" \
-    && sync -f -- "${directory}"
+      "recovery=${recovery}" || status=$?
+  case "${status}" in
+    0) return 0 ;;
+    124|137) return 2 ;;
+    *) return 1 ;;
+  esac
 }
 
 transfer_retain_previous_target() {
   local retained_identity
   local -r candidate_parent="${candidate%/*}"
 
-  TRANSFER_RECOVERY_DIRECTORY="$(mktemp -d --tmpdir="${target_parent}" \
-    '.virtdev-transfer-recovery.XXXXXXXX')" || return 1
-  chmod 0700 -- "${TRANSFER_RECOVERY_DIRECTORY}" \
-    && sync -f -- "${target_parent}" || return 1
+  transfer_deadline_capture TRANSFER_RECOVERY_DIRECTORY mktemp -d \
+    --tmpdir="${target_parent}" '.virtdev-transfer-recovery.XXXXXXXX' \
+    || return 1
+  transfer_deadline_run chmod 0700 -- "${TRANSFER_RECOVERY_DIRECTORY}" \
+    && transfer_deadline_run sync -f -- "${target_parent}" || return 1
   TRANSFER_RECOVERY_ENTRY="${TRANSFER_RECOVERY_DIRECTORY}/previous"
   transfer_publication_manifest_write "${TRANSFER_RECOVERY_DIRECTORY}" \
     retaining "${TRANSFER_RECOVERY_ENTRY}" "${TRANSFER_RECOVERY_DIRECTORY}" \
     || return 1
-  mv -T -- "${candidate}" "${TRANSFER_RECOVERY_ENTRY}" || return 1
-  sync -f -- "${TRANSFER_RECOVERY_DIRECTORY}" \
-    && sync -f -- "${candidate_parent}" || return 1
-  retained_identity="$(stat -c '%d:%i' -- "${TRANSFER_RECOVERY_ENTRY}" \
-    2>/dev/null)" || return 1
+  transfer_deadline_run mv -T -- "${candidate}" "${TRANSFER_RECOVERY_ENTRY}" \
+    || return 1
+  transfer_deadline_run sync -f -- "${TRANSFER_RECOVERY_DIRECTORY}" \
+    && transfer_deadline_run sync -f -- "${candidate_parent}" || return 1
+  transfer_deadline_capture retained_identity stat -c '%d:%i' -- \
+    "${TRANSFER_RECOVERY_ENTRY}" 2>/dev/null || return 1
   [[ "${retained_identity}" == "${target_original_identity}" ]] || return 1
   transfer_publication_manifest_write "${TRANSFER_RECOVERY_DIRECTORY}" \
     retained "${TRANSFER_RECOVERY_ENTRY}" "${TRANSFER_RECOVERY_DIRECTORY}" \
-    && sync -f -- "${target_parent}"
+    && transfer_deadline_run sync -f -- "${target_parent}"
 }
 
 printf >&2 'Capturing a bounded download from %s...\n' "${project}"
@@ -811,6 +930,12 @@ capture_stderr="${transfer_transaction}/capture.stderr"
 capture_stderr_fifo="${transfer_transaction}/capture.stderr.fifo"
 printf '%s\0' "${remote_request_path}" > "${request}"
 
+transaction_remaining=''
+transfer_transaction_remaining_checked transaction_remaining \
+  'archive capture preflight'
+(( transaction_remaining > transfer_stage_overhead )) \
+  || error 11 <<<'Transfer transaction has no bounded archive allowance'
+transaction_archive_limit=$(( transaction_remaining - transfer_stage_overhead ))
 available_bytes=''
 transfer_df_value available_bytes avail "${transfer_transaction}" \
   'archive capture preflight'
@@ -820,6 +945,8 @@ fi
 effective_archive_limit=$(( available_bytes - transfer_free_space_reserve ))
 (( effective_archive_limit <= transfer_archive_limit )) \
   || effective_archive_limit="${transfer_archive_limit}"
+(( effective_archive_limit <= transaction_archive_limit )) \
+  || effective_archive_limit="${transaction_archive_limit}"
 
 remote_tar=$'set -euo pipefail\nIFS= read -r -d "" path || exit 64\ntrailing=0\nif [[ "${path}" != / && "${path}" == */ ]]; then\n  trailing=1\n  while [[ "${path}" != / && "${path}" == */ ]]; do path="${path%/}"; done\nfi\n[[ "${path}" != / ]] || exit 65\nbase="${path##*/}"\nparent="${path%/*}"\n[[ -n "${parent}" ]] || parent=/\n[[ -n "${base}" && "${base}" != . && "${base}" != .. ]] || exit 65\ncd -- "${parent}" || exit 66\n[[ -e "${base}" || -L "${base}" ]] || exit 67\nif (( trailing )) && { [[ ! -d "${base}" ]] || [[ -L "${base}" ]]; }; then exit 68; fi\nif [[ ! -d "${base}" && ! -f "${base}" && ! -L "${base}" ]]; then exit 69; fi\nprintf "%s\\0" "${base}" | /usr/bin/tar --create --file=- --one-file-system --null --verbatim-files-from --files-from=- --transform="flags=rh;s,^[^/]*,payload/item,"'
 
@@ -1036,6 +1163,12 @@ extraction_ceiling=$(( logical_bytes_captured \
   + extracted_entries * transfer_archive_entry_overhead ))
 (( extraction_ceiling <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
   || error 11 <<<'Download exceeds its allocated-byte ceiling'
+transaction_remaining=''
+transfer_transaction_remaining_checked transaction_remaining \
+  'archive extraction preflight'
+(( transaction_remaining > transfer_stage_overhead \
+    && extraction_ceiling <= transaction_remaining - transfer_stage_overhead )) \
+  || error 11 <<<'Download extraction would exceed the aggregate transaction budget'
 available_extract_bytes=''
 available_inodes=''
 transfer_df_value available_extract_bytes avail "${transfer_transaction}" \
@@ -1081,41 +1214,64 @@ if find "${extract_directory}" -mindepth 1 -maxdepth 1 \
   error 14 <<<'Download archive produced data outside its payload root'
 fi
 
-declare -a transfer_symlinks=()
 if [[ -L "${source_item}" ]]; then
   error 14 <<<'A downloaded root symlink cannot be confined after publication'
 elif [[ -d "${source_item}" ]]; then
   symlink_root="${source_item}"
-  # shellcheck disable=SC2154  # provided by the enumerate library
-  enumerate_nul_sorted transfer_symlinks "${enumerate_max_bytes}" \
-    "${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
-    find -P "${symlink_root}" -mindepth 1 -type l -print0 \
-    || error 14 <<<'Could not completely enumerate downloaded symlinks'
-fi
-resolved_link_file="${transfer_transaction}/resolved-link"
-for link_path in "${transfer_symlinks[@]}"; do
+  resolved_link_file="${transfer_transaction}/resolved-link"
   remaining=''
   transfer_remaining remaining
   set +e
-  timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
-    "${remaining}" realpath -m -z -- "${link_path}" \
-    > "${resolved_link_file}"
-  link_status=$?
+  LC_ALL=C timeout --signal=TERM \
+      --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+      find -P "${symlink_root}" -mindepth 1 -type l -print0 \
+    | (
+      set -euo pipefail
+      symlink_count=0
+      while IFS= read -r -d '' link_path; do
+        (( ++symlink_count <= VIRTDEV_TRANSFER_MAX_ENTRIES )) \
+          || error 11 <<<'Downloaded symlink count exceeded its entry budget'
+        (( ${#link_path} <= ${#symlink_root} \
+            + transfer_member_path_max_bytes + 1 )) \
+          || error 11 <<<'Downloaded symlink path exceeded its byte budget'
+        remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+        (( remaining > 0 )) \
+          || error 12 <<<'Symlink validation exceeded the transfer deadline'
+        link_status=0
+        timeout --signal=TERM \
+          --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+          realpath -m -z -- "${link_path}" > "${resolved_link_file}" \
+          || link_status=$?
+        case "${link_status}" in
+          0) ;;
+          124|137) error 12 <<<'Symlink validation exceeded the transfer deadline' ;;
+          *) error 14 <<<"Could not resolve downloaded symlink: ${link_path}" ;;
+        esac
+        mapfile -d '' -t resolved_links < "${resolved_link_file}"
+        (( ${#resolved_links[@]} == 1 )) \
+          || error 14 <<<"Could not parse downloaded symlink: ${link_path}"
+        resolved_link="${resolved_links[0]}"
+        if [[ "${resolved_link}" != "${symlink_root}" \
+            && "${resolved_link}" != "${symlink_root}/"* ]]; then
+          error 14 <<<"Downloaded symlink escapes the transfer root: ${link_path}"
+        fi
+      done
+    )
+  symlink_status=("${PIPESTATUS[@]}")
   set -e
-  case "${link_status}" in
+  (( ${#symlink_status[@]} == 2 )) \
+    || error 14 <<<'Could not supervise downloaded symlink validation'
+  case "${symlink_status[1]}" in
     0) ;;
-    124|137) error 12 <<<'Symlink validation exceeded the transfer deadline' ;;
-    *) error 14 <<<"Could not resolve downloaded symlink: ${link_path}" ;;
+    11|12|14) exit "${symlink_status[1]}" ;;
+    *) error 14 <<<'Could not validate downloaded symlinks' ;;
   esac
-  mapfile -d '' -t resolved_links < "${resolved_link_file}"
-  (( ${#resolved_links[@]} == 1 )) \
-    || error 14 <<<"Could not parse downloaded symlink: ${link_path}"
-  resolved_link="${resolved_links[0]}"
-  if [[ "${resolved_link}" != "${symlink_root}" \
-      && "${resolved_link}" != "${symlink_root}/"* ]]; then
-    error 14 <<<"Downloaded symlink escapes the transfer root: ${link_path}"
-  fi
-done
+  case "${symlink_status[0]}" in
+    0) ;;
+    124|137) error 12 <<<'Symlink enumeration exceeded the transfer deadline' ;;
+    *) error 14 <<<'Could not completely enumerate downloaded symlinks' ;;
+  esac
+fi
 
 extracted_allocated=''
 transfer_du_value_checked extracted_allocated "${payload}" extracted
@@ -1175,10 +1331,24 @@ target_parent="${target%/*}"
 
 lock_acquire_transfer_target "${target}"
 
-transaction_device="$(stat -c '%d' -- "${transfer_transaction}")" \
-  || error 15 <<<'Could not inspect transfer-stage filesystem'
-target_parent_device="$(stat -c '%d' -- "${target_parent}")" \
-  || error 15 <<<'Could not inspect publication filesystem'
+transaction_device=''
+target_parent_device=''
+stat_status=0
+transfer_deadline_capture transaction_device stat -c '%d' -- \
+  "${transfer_transaction}" || stat_status=$?
+case "${stat_status}" in
+  0) ;;
+  124|137) error 12 <<<'Transfer-stage filesystem inspection exceeded the deadline' ;;
+  *) error 15 <<<'Could not inspect transfer-stage filesystem' ;;
+esac
+stat_status=0
+transfer_deadline_capture target_parent_device stat -c '%d' -- \
+  "${target_parent}" || stat_status=$?
+case "${stat_status}" in
+  0) ;;
+  124|137) error 12 <<<'Publication filesystem inspection exceeded the deadline' ;;
+  *) error 15 <<<'Could not inspect publication filesystem' ;;
+esac
 [[ "${transaction_device}" == "${target_parent_device}" ]] \
   || error 15 <<<'Atomic download publication cannot cross filesystems'
 
@@ -1208,6 +1378,19 @@ if (( target_exists )); then
     clone_parent="${transfer_transaction}/clone"
     transfer_copy_tree "${target_baseline}" "${clone_parent}" \
       'existing destination clone'
+    clone_allocated=''
+    transfer_du_value_checked clone_allocated "${clone_parent}/tree" clone
+    merge_ceiling=$((
+      clone_allocated + stable_allocated + transfer_stage_overhead
+    ))
+    (( merge_ceiling <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
+      || error 11 <<<'Private destination merge would exceed its allocated-byte ceiling'
+    transaction_remaining=''
+    transfer_transaction_remaining_checked transaction_remaining \
+      'destination merge preflight'
+    overlay_ceiling=$(( stable_allocated + transfer_stage_overhead ))
+    (( overlay_ceiling <= transaction_remaining )) \
+      || error 11 <<<'Private destination merge would exceed the aggregate transaction budget'
     remaining=''
     transfer_remaining remaining
     overlay_status=0
@@ -1251,17 +1434,29 @@ transfer_du_value_checked candidate_allocated "${candidate}" candidate
 
 publish_mode=noreplace
 (( target_exists )) && publish_mode=exchange
-candidate_identity="$(stat -c '%d:%i' -- "${candidate}" 2>/dev/null)" \
-  || error 15 <<<'Could not bind the publication candidate identity'
+stat_status=0
+transfer_deadline_capture candidate_identity stat -c '%d:%i' -- \
+  "${candidate}" 2>/dev/null || stat_status=$?
+case "${stat_status}" in
+  0) ;;
+  124|137) error 12 <<<'Publication candidate inspection exceeded the deadline' ;;
+  *) error 15 <<<'Could not bind the publication candidate identity' ;;
+esac
 [[ "${candidate_identity}" =~ ^[0-9]+:[0-9]+$ ]] \
   || error 15 <<<'Could not parse the publication candidate identity'
+manifest_status=0
 transfer_publication_manifest_write "${transfer_transaction}" prepared \
-  "${candidate}" '' \
-  || error 15 <<<'Could not durably prepare the publication manifest'
+  "${candidate}" '' || manifest_status=$?
+case "${manifest_status}" in
+  0) ;;
+  2) error 12 <<<'Publication manifest preparation exceeded the deadline' ;;
+  *) error 15 <<<'Could not durably prepare the publication manifest' ;;
+esac
 transfer_transaction_budget_checked 'publication preparation'
 (( ! target_exists )) || transfer_preserve_transaction=1
 publish_status=0
-"${publish_helper}" "${publish_mode}" "${candidate}" "${target}" \
+transfer_deadline_run "${publish_helper}" "${publish_mode}" \
+  "${candidate}" "${target}" \
   || publish_status=$?
 case "${publish_status}" in
   0) ;;
@@ -1289,6 +1484,15 @@ MESSAGE
     fi
     transfer_preserve_transaction=0
     error 15 <<<"Host publication target appeared during transfer: ${target}"
+    ;;
+  124|137)
+    transfer_preserve_transaction=1
+    transfer_publication_manifest_write "${transfer_transaction}" \
+      publication-uncertain "${candidate}" '' || true
+    error 16 <<MESSAGE
+Publication exceeded the transfer deadline and its rename state is unknown.
+The target and complete transaction were preserved for recovery: ${target}
+MESSAGE
     ;;
   *)
     transfer_preserve_transaction=1
@@ -1359,8 +1563,12 @@ if (( target_exists )); then
       4) validation_detail='existing host target validation exceeded a resource limit' ;;
       *) validation_detail='existing host target could not be validated after publication' ;;
     esac
-    live_candidate_identity="$(stat -c '%d:%i' -- "${target}" 2>/dev/null)" \
-      || error 16 <<MESSAGE
+    transfer_recovery_begin
+    live_candidate_identity=''
+    stat_status=0
+    transfer_recovery_capture live_candidate_identity stat -c '%d:%i' -- \
+      "${target}" 2>/dev/null || stat_status=$?
+    (( stat_status == 0 )) || error 16 <<MESSAGE
 ${validation_detail^}, and the provisional target identity is unknown.
 The displaced target and transaction were preserved for recovery.
 MESSAGE
@@ -1372,14 +1580,17 @@ MESSAGE
     fi
 
     transfer_publication_manifest_write "${transfer_transaction}" \
-      rollback-pending "${candidate}" '' || true
+      rollback-pending "${candidate}" '' "${transfer_recovery_deadline}" \
+      || true
     rollback_status=0
-    "${publish_helper}" exchange "${candidate}" "${target}" \
+    transfer_recovery_run "${publish_helper}" exchange \
+      "${candidate}" "${target}" \
       || rollback_status=$?
     case "${rollback_status}" in
       0)
         transfer_publication_manifest_write "${transfer_transaction}" \
-          rolled-back "${candidate}" '' || error 16 <<MESSAGE
+          rolled-back "${candidate}" '' "${transfer_recovery_deadline}" \
+          || error 16 <<MESSAGE
 ${validation_detail^}. The original target was restored durably, but the
 preserved transaction manifest could not be updated durably.
 MESSAGE
