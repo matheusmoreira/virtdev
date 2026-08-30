@@ -16,7 +16,38 @@ mkdir -p "${fixture_bin}" "${command_fixture_bin}" "${mutation_bin}" \
   "${test_tmp}/archive-source"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
-chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl"
+# shellcheck disable=SC2016  # generated fixture must retain literal expansions
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'phase=' \
+  'verbose=0' \
+  'for argument in "$@"; do' \
+  '  case "${argument}" in' \
+  '    --extract) phase=extraction ;;' \
+  '    --list) [[ "${phase}" == extraction ]] || phase=path-listing ;;' \
+  '    --verbose) verbose=1 ;;' \
+  '  esac' \
+  'done' \
+  'if [[ "${phase}" == path-listing && "${verbose}" == 1 ]]; then' \
+  '  phase=entry-accounting' \
+  'fi' \
+  'if [[ -n "${TRANSFER_HOST_TAR_STDERR_PHASE:-}"' \
+  '    && "${TRANSFER_HOST_TAR_STDERR_PHASE}" == "${phase}" ]]; then' \
+  '  if [[ "${TRANSFER_HOST_TAR_CONTROL_STDERR:-0}" == 1 ]]; then' \
+  '    printf "\\001host-tar\\177\\n" >&2' \
+  '  fi' \
+  '  if (( ${TRANSFER_HOST_TAR_STDERR_BYTES:-0} > 0 )); then' \
+  '    head -c "${TRANSFER_HOST_TAR_STDERR_BYTES}" /dev/zero | tr "\0" x >&2' \
+  '  fi' \
+  '  if (( ${TRANSFER_HOST_TAR_DELAY:-0} > 0 )); then' \
+  '    sleep "${TRANSFER_HOST_TAR_DELAY}"' \
+  '  fi' \
+  'fi' \
+  'exec /usr/bin/tar "$@"' \
+  > "${fixture_bin}/tar"
+chmod +x "${fixture_bin}/ssh" "${fixture_bin}/systemctl" \
+  "${fixture_bin}/tar"
 cp "${repository}/tests/fixtures/ssh-command" "${command_fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${command_fixture_bin}/systemctl"
 chmod +x "${command_fixture_bin}/ssh" "${command_fixture_bin}/systemctl"
@@ -61,6 +92,14 @@ run_transfer() {
 printf 'payload\n' > "${test_tmp}/archive-source/item"
 tar -C "${test_tmp}/archive-source" -cf "${test_tmp}/file.tar" \
   --transform='s,^item$,payload/item,' item
+
+mkdir -p "${test_tmp}/pax-source/payload/item"
+for index in 1 2 3 4; do
+  : > "${test_tmp}/pax-source/payload/item/member-${index}"
+done
+tar --format=pax --pax-option='foo:=guest-controlled-value' \
+  -C "${test_tmp}/pax-source" -cf "${test_tmp}/pax-warning.tar" \
+  payload/item
 destination="${test_tmp}/downloaded"
 status=0
 run_transfer "${test_tmp}/file.tar" file "${destination}" \
@@ -480,6 +519,99 @@ if (( status != 12 )) || [[ -e "${unsafe_destination}" ]]; then
   exit 1
 fi
 
+pax_destination="${test_tmp}/pax-destination"
+status=0
+run_transfer "${test_tmp}/pax-warning.tar" tree "${pax_destination}" \
+  VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=512 \
+  >"${test_tmp}/pax-success.output" 2>&1 || status=$?
+if (( status != 0 )) \
+    || [[ ! -f "${pax_destination}/member-4" ]] \
+    || ! grep -Fq "Ignoring unknown extended header keyword 'foo'" \
+      "${test_tmp}/pax-success.output"; then
+  printf 'bounded host tar warnings changed a valid download (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/pax-success.output" >&2
+  exit 1
+fi
+
+pax_overflow_root="${test_tmp}/pax-overflow-root"
+pax_overflow_destination="${pax_overflow_root}/destination"
+mkdir "${pax_overflow_root}"
+status=0
+run_transfer "${test_tmp}/pax-warning.tar" tree \
+  "${pax_overflow_destination}" VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=64 \
+  >"${test_tmp}/pax-overflow.output" 2>&1 || status=$?
+if (( status != 11 )) || [[ -e "${pax_overflow_destination}" ]] \
+    || ! grep -Fq 'output budget during download path listing' \
+      "${test_tmp}/pax-overflow.output" \
+    || (( $(stat -c '%s' "${test_tmp}/pax-overflow.output") > 4096 )) \
+    || find "${pax_overflow_root}" -maxdepth 1 -type d \
+      -name '.virtdev-transfer.*' -print -quit | grep -q .; then
+  printf 'real PAX diagnostics escaped the host tar output bound (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/pax-overflow.output" >&2
+  exit 1
+fi
+
+sanitized_root="${test_tmp}/host-tar-sanitized-root"
+sanitized_destination="${sanitized_root}/destination"
+mkdir "${sanitized_root}"
+status=0
+run_transfer "${test_tmp}/file.tar" file "${sanitized_destination}" \
+  VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=64 \
+  TRANSFER_HOST_TAR_STDERR_PHASE=path-listing \
+  TRANSFER_HOST_TAR_CONTROL_STDERR=1 \
+  >"${test_tmp}/host-tar-sanitized.output" 2>&1 || status=$?
+if (( status != 0 )) || [[ ! -f "${sanitized_destination}" ]] \
+    || ! grep -Fq '?host-tar?' "${test_tmp}/host-tar-sanitized.output"; then
+  printf 'host tar diagnostics were not sanitized (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/host-tar-sanitized.output" >&2
+  exit 1
+fi
+
+for phase in path-listing entry-accounting extraction; do
+  phase_root="${test_tmp}/host-tar-${phase}-root"
+  phase_destination="${phase_root}/destination"
+  mkdir "${phase_root}"
+  status=0
+  run_transfer "${test_tmp}/file.tar" file "${phase_destination}" \
+    VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=64 \
+    TRANSFER_HOST_TAR_STDERR_PHASE="${phase}" \
+    TRANSFER_HOST_TAR_STDERR_BYTES=1048576 \
+    >"${test_tmp}/host-tar-${phase}.output" 2>&1 || status=$?
+  if (( status != 11 )) || [[ -e "${phase_destination}" ]] \
+      || ! grep -Fq 'Host tar diagnostics exceeded their output budget' \
+        "${test_tmp}/host-tar-${phase}.output" \
+      || (( $(stat -c '%s' "${test_tmp}/host-tar-${phase}.output") > 4096 )) \
+      || find "${phase_root}" -maxdepth 1 -type d \
+        -name '.virtdev-transfer.*' -print -quit | grep -q .; then
+    printf 'host tar %s diagnostics escaped their bound (status %d)\n' \
+      "${phase}" "${status}" >&2
+    cat "${test_tmp}/host-tar-${phase}.output" >&2
+    exit 1
+  fi
+done
+
+tar_timeout_root="${test_tmp}/host-tar-timeout-root"
+tar_timeout_destination="${tar_timeout_root}/destination"
+mkdir "${tar_timeout_root}"
+status=0
+run_transfer "${test_tmp}/file.tar" file "${tar_timeout_destination}" \
+  VIRTDEV_TRANSFER_TIMEOUT=2 \
+  TRANSFER_HOST_TAR_STDERR_PHASE=path-listing TRANSFER_HOST_TAR_DELAY=5 \
+  >"${test_tmp}/host-tar-timeout.output" 2>&1 || status=$?
+if (( status != 12 )) || [[ -e "${tar_timeout_destination}" ]] \
+    || ! grep -Fq 'path validation exceeded the transfer deadline' \
+      "${test_tmp}/host-tar-timeout.output" \
+    || find "${tar_timeout_root}" -maxdepth 1 -type d \
+      -name '.virtdev-transfer.*' -print -quit | grep -q .; then
+  printf 'host tar escaped the absolute transfer deadline (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/host-tar-timeout.output" >&2
+  exit 1
+fi
+
 if find "${test_tmp}" -type d -name '.virtdev-transfer.*' \
     -print -quit | grep -q .; then
   printf 'failed bounded downloads stranded private stages\n' >&2
@@ -487,3 +619,4 @@ if find "${test_tmp}" -type d -name '.virtdev-transfer.*' \
 fi
 
 printf 'ok - transport diagnostics, failures, and total time are bounded\n'
+printf 'ok - every host tar decoder has bounded sanitized diagnostics\n'

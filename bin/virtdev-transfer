@@ -426,6 +426,25 @@ transfer_memory_limited() {
   )
 }
 
+transfer_tar_diagnostics_emit() {
+  local -r capture="${1}" phase="${2}"
+  local diagnostic_status=0
+
+  bounded_stderr_emit "${capture}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+  case "${diagnostic_status}" in
+    0)
+      rm -f -- "${capture}" \
+        || error 14 <<<"Could not retire host tar diagnostics after ${phase}"
+      ;;
+    2)
+      error 11 \
+        <<<"Host tar diagnostics exceeded their output budget during ${phase}"
+      ;;
+    *) error 14 <<<"Could not capture bounded host tar diagnostics during ${phase}" ;;
+  esac
+}
+
 transfer_du_value() {
   local -n _transfer_du_result="${1}"
   local -r path="${2}" phase="${3}"
@@ -738,13 +757,17 @@ case "${gate_status}" in
 esac
 
 archive_paths_summary="${transfer_transaction}/archive-paths"
+path_tar_stderr="${transfer_transaction}/path-list.stderr"
+path_tar_stderr_fifo="${transfer_transaction}/path-list.stderr.fifo"
 remaining=''
 transfer_remaining remaining
 set +e
 # shellcheck disable=SC2016  # awk program is data passed through timeout
-LC_ALL=C transfer_memory_limited timeout --signal=TERM \
-    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-    tar --quoting-style=escape --list --file="${archive}" \
+LC_ALL=C bounded_stderr_run "${path_tar_stderr}" \
+    "${path_tar_stderr_fifo}" "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+    transfer_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+      tar --quoting-style=escape --list --file="${archive}" \
   | LC_ALL=C transfer_memory_limited timeout --signal=TERM \
       --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
       awk -v maximum_entries="${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
@@ -794,6 +817,7 @@ LC_ALL=C transfer_memory_limited timeout --signal=TERM \
       ' > "${archive_paths_summary}"
 path_status=("${PIPESTATUS[@]}")
 set -e
+transfer_tar_diagnostics_emit "${path_tar_stderr}" 'download path listing'
 case "${path_status[1]}" in
   0) ;;
   42) error 11 <<<'Download exceeded its extracted-entry budget' ;;
@@ -805,6 +829,7 @@ esac
 case "${path_status[0]}" in
   0) ;;
   124|137) error 12 <<<'Download path listing exceeded the transfer deadline' ;;
+  125) error 14 <<<'Could not supervise host tar during download path listing' ;;
   *) error 14 <<<'Guest produced an invalid download archive' ;;
 esac
 read -r members_listed extracted_entries extra \
@@ -815,49 +840,55 @@ read -r members_listed extracted_entries extra \
 
 remaining=''
 transfer_remaining remaining
+archive_summary_file="${transfer_transaction}/archive-summary"
+accounting_tar_stderr="${transfer_transaction}/accounting-list.stderr"
+accounting_tar_stderr_fifo="${transfer_transaction}/accounting-list.stderr.fifo"
 set +e
 # shellcheck disable=SC2016  # awk program is data passed through timeout
-archive_summary="$({
-  LC_ALL=C transfer_memory_limited timeout --signal=TERM \
+LC_ALL=C bounded_stderr_run "${accounting_tar_stderr}" \
+    "${accounting_tar_stderr_fifo}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+    transfer_memory_limited timeout --signal=TERM \
       --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
       tar --numeric-owner --quoting-style=escape --list --verbose \
         --file="${archive}" \
-    | LC_ALL=C transfer_memory_limited timeout --signal=TERM \
-        --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-        awk -v maximum_entries="${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
-          -v maximum_bytes="${VIRTDEV_TRANSFER_MAX_BYTES}" '
-          {
-            count++
-            type = substr($0, 1, 1)
-            if (type !~ /^[-dlh]$/) bad_type = 1
-            if (count > maximum_entries) { entries_over = 1; exit }
-            if (type == "-") {
-              size = $3
-              if (size !~ /^[0-9]+$/) { bad_size = 1; exit }
-              sub(/^0+/, "", size)
-              if (size == "") size = "0"
-              if (length(size) > length(maximum_bytes) \
-                  || (length(size) == length(maximum_bytes) \
-                      && ("x" size) > ("x" maximum_bytes))) {
-                bytes_over = 1
-                exit
-              }
-              logical_bytes += size + 0
-              if (logical_bytes > maximum_bytes) { bytes_over = 1; exit }
+  | LC_ALL=C transfer_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+      awk -v maximum_entries="${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
+        -v maximum_bytes="${VIRTDEV_TRANSFER_MAX_BYTES}" '
+        {
+          count++
+          type = substr($0, 1, 1)
+          if (type !~ /^[-dlh]$/) bad_type = 1
+          if (count > maximum_entries) { entries_over = 1; exit }
+          if (type == "-") {
+            size = $3
+            if (size !~ /^[0-9]+$/) { bad_size = 1; exit }
+            sub(/^0+/, "", size)
+            if (size == "") size = "0"
+            if (length(size) > length(maximum_bytes) \
+                || (length(size) == length(maximum_bytes) \
+                    && ("x" size) > ("x" maximum_bytes))) {
+              bytes_over = 1
+              exit
             }
+            logical_bytes += size + 0
+            if (logical_bytes > maximum_bytes) { bytes_over = 1; exit }
           }
-          END {
-            if (entries_over) exit 42
-            if (bad_type) exit 43
-            if (bytes_over) exit 44
-            if (bad_size) exit 45
-            printf("%d %.0f\n", count, logical_bytes)
-          }
-        '
-})"
-summary_status=$?
+        }
+        END {
+          if (entries_over) exit 42
+          if (bad_type) exit 43
+          if (bytes_over) exit 44
+          if (bad_size) exit 45
+          printf("%d %.0f\n", count, logical_bytes)
+        }
+      ' > "${archive_summary_file}"
+summary_status=("${PIPESTATUS[@]}")
 set -e
-case "${summary_status}" in
+transfer_tar_diagnostics_emit "${accounting_tar_stderr}" \
+  'download entry accounting'
+case "${summary_status[1]}" in
   0) ;;
   42) error 11 <<<'Download exceeded its archive-entry budget' ;;
   43) error 14 <<<'Download archive contains an unsupported special file' ;;
@@ -866,7 +897,14 @@ case "${summary_status}" in
   124|137) error 12 <<<'Download accounting exceeded the transfer deadline' ;;
   *) error 14 <<<'Could not account for download archive entries' ;;
 esac
-read -r entries_captured logical_bytes_captured extra <<< "${archive_summary}"
+case "${summary_status[0]}" in
+  0) ;;
+  124|137) error 12 <<<'Download accounting exceeded the transfer deadline' ;;
+  125) error 14 <<<'Could not supervise host tar during download entry accounting' ;;
+  *) error 14 <<<'Guest produced an invalid download archive' ;;
+esac
+read -r entries_captured logical_bytes_captured extra \
+  < "${archive_summary_file}"
 [[ "${entries_captured}" =~ ^[0-9]+$ \
     && "${logical_bytes_captured}" =~ ^[0-9]+$ && -z "${extra}" ]] \
   || error 14 <<<'Could not parse download archive accounting'
@@ -891,17 +929,24 @@ fi
 
 extract_directory="${transfer_transaction}/extract"
 mkdir -m 0700 -- "${extract_directory}"
+extraction_tar_stderr="${transfer_transaction}/extraction.stderr"
+extraction_tar_stderr_fifo="${transfer_transaction}/extraction.stderr.fifo"
 remaining=''
 transfer_remaining remaining
 extract_status=0
-transfer_memory_limited timeout --signal=TERM \
-  --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-  tar --extract --file="${archive}" --directory="${extract_directory}" \
-    --no-same-owner --same-permissions --delay-directory-restore \
+LC_ALL=C bounded_stderr_run "${extraction_tar_stderr}" \
+    "${extraction_tar_stderr_fifo}" "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+    transfer_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+      tar --extract --file="${archive}" --directory="${extract_directory}" \
+        --no-same-owner --same-permissions --delay-directory-restore \
+    > /dev/null \
   || extract_status=$?
+transfer_tar_diagnostics_emit "${extraction_tar_stderr}" 'download extraction'
 case "${extract_status}" in
   0) ;;
   124|137) error 12 <<<'Download extraction exceeded the transfer deadline' ;;
+  125) error 14 <<<'Could not supervise host tar during download extraction' ;;
   *) error 14 <<<"Download archive extraction failed (exit ${extract_status})" ;;
 esac
 payload="${extract_directory}/payload"
