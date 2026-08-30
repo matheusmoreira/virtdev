@@ -106,6 +106,30 @@ require_unmounted_roots() {
 
 require_unmounted_roots
 
+require_loaded_units_stopped() {
+  local units status=0 unit active _
+
+  units="$(LC_ALL=C systemctl --user list-units --all --type=service \
+    --no-pager --no-legend --plain 'virtdev-*.service' 2>/dev/null)" \
+    || status=$?
+  (( status == 0 )) || error 4 <<<'Could not enumerate loaded virtdev units; nuke was refused.'
+  while read -r unit _ active _; do
+    [[ -n "${unit}" ]] || continue
+    if [[ "${unit}" != virtdev-*.service || -z "${active}" ]]; then
+      error 4 <<<'Loaded virtdev unit state was malformed; nuke was refused.'
+    fi
+    case "${active}" in
+      inactive|failed) ;;
+      *)
+        error 4 <<MESSAGE
+Loaded virtual machine unit is not stopped: ${unit} (${active})
+Stop it and verify terminal state before nuking.
+MESSAGE
+        ;;
+    esac
+  done <<< "${units}"
+}
+
 require_maintenance_stopped() {
   if ! project_is_stopped maintenance; then
     error 4 <<MESSAGE
@@ -118,14 +142,11 @@ MESSAGE
   fi
 }
 
-require_maintenance_stopped
-
-# Skip owner-added directories whose names are not valid project names.
-projects_directory="${VIRTDEV_HOME}/projects"
-if [[ -d "${projects_directory}" ]]; then
+require_projects_stopped() {
   declare -a nuke_projects=()
   project_list_into nuke_projects \
     || error 3 <<<'Could not completely enumerate projects; nuke was refused.'
+  local project
   for project in "${nuke_projects[@]}"; do
     if ! project_is_stopped "${project}"; then
       error 4 <<MESSAGE
@@ -135,7 +156,15 @@ All virtual machines must be stopped before nuking
 MESSAGE
     fi
   done
-fi
+}
+
+require_every_machine_stopped() {
+  require_loaded_units_stopped
+  require_maintenance_stopped
+  require_projects_stopped
+}
+
+require_every_machine_stopped
 
 printf >&2 'This will permanently delete all virtdev data:\n\n'
 
@@ -178,9 +207,9 @@ if ! confirm_word "nuke"; then
   error 5 <<<"Aborted."
 fi
 
-# Revalidate machine state, then each root and mount boundary immediately
-# before deletion.
-require_maintenance_stopped
+# Revalidate each root and mount boundary, then all loaded and directory-backed
+# machine identities immediately before the first deletion.
+machines_reproved=0
 for path in "${nuke_roots[@]}"; do
   current="$(realpath -m -- "${path}")"
   if [[ -L "${path}" || "${current}" != "${path}" \
@@ -192,6 +221,10 @@ This root was not deleted.
 MESSAGE
   fi
   require_unmounted_root "${path}"
+  if (( ! machines_reproved )); then
+    require_every_machine_stopped
+    machines_reproved=1
+  fi
   mount_path=''
   remove_status=0
   mount_remove_tree "${path}" mount_path || remove_status=$?

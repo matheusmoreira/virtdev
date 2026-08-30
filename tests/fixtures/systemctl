@@ -62,6 +62,10 @@ if [[ "${SYSTEMCTL_UNREACHABLE:-0}" == 1 \
 fi
 
 if [[ " $* " == *" list-units "* ]]; then
+  if [[ -n "${SYSTEMCTL_LIST_UNITS_FILE:-}" \
+      && -f "${SYSTEMCTL_LIST_UNITS_FILE}" ]]; then
+    cat -- "${SYSTEMCTL_LIST_UNITS_FILE}"
+  fi
   exit "${SYSTEMCTL_LIST_STATUS:-0}"
 fi
 

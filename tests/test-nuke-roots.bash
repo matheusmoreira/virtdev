@@ -57,6 +57,62 @@ if (( status != 4 )) \
   exit 1
 fi
 
+project_directory="${test_home}/storage/virtdev/projects/probe"
+mkdir -p "${project_directory}"
+printf 'project data\n' > "${project_directory}/sentinel"
+destroy_sequence="${test_tmp}/destroy.sequence"
+printf 'inactive\nactive\n' > "${destroy_sequence}"
+status=0
+printf 'probe\n' | HOME="${test_home}" \
+  VIRTDEV_HOME="${test_home}/storage-alias/virtdev" \
+  VIRTDEV_LOCK_DIRECTORY="${test_tmp}/locks-destroy" \
+  NO_COLOR=1 \
+  PATH="${repository}/tests/fixtures:${PATH}" \
+  SYSTEMCTL_ACTIVE_SEQUENCE_FILE="${destroy_sequence}" \
+  "${repository}/bin/virtdev-destroy" probe >"${output}" 2>&1 \
+  || status=$?
+if (( status != 4 )) || [[ ! -f "${project_directory}/sentinel" ]]; then
+  printf 'destroy ignored project state changed after confirmation (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+orphan_units="${test_tmp}/orphan.units"
+printf 'virtdev-orphan.service loaded active running Orphan\n' > "${orphan_units}"
+status=0
+printf 'nuke\n' | HOME="${test_home}" \
+  VIRTDEV_HOME="${test_home}/storage-alias/virtdev" \
+  VIRTDEV_CACHE="${test_home}/canonical-cache" \
+  NO_COLOR=1 \
+  PATH="${repository}/tests/fixtures:${PATH}" \
+  SYSTEMCTL_LIST_UNITS_FILE="${orphan_units}" \
+  SYSTEMCTL_ACTIVE_STATE=inactive \
+  "${repository}/bin/virtdev-nuke" >"${output}" 2>&1 || status=$?
+if (( status != 4 )) || [[ ! -f "${project_directory}/sentinel" ]]; then
+  printf 'nuke ignored a live unit without a project directory (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+project_sequence="${test_tmp}/project.sequence"
+printf 'inactive\ninactive\ninactive\nactive\n' > "${project_sequence}"
+status=0
+printf 'nuke\n' | HOME="${test_home}" \
+  VIRTDEV_HOME="${test_home}/storage-alias/virtdev" \
+  VIRTDEV_CACHE="${test_home}/canonical-cache" \
+  NO_COLOR=1 \
+  PATH="${repository}/tests/fixtures:${PATH}" \
+  SYSTEMCTL_ACTIVE_SEQUENCE_FILE="${project_sequence}" \
+  "${repository}/bin/virtdev-nuke" >"${output}" 2>&1 || status=$?
+if (( status != 4 )) || [[ ! -f "${project_directory}/sentinel" ]]; then
+  printf 'nuke ignored project state changed after confirmation (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
 status=0
 printf 'nuke\n' | HOME="${test_home}" \
   VIRTDEV_HOME="${test_home}/storage-alias/virtdev" \
@@ -83,4 +139,5 @@ if [[ ! -L "${test_home}/storage-alias" \
 fi
 
 printf 'ok - nuke rejects link roots and deletes exact canonical roots\n'
-printf 'ok - nuke re-proves maintenance terminal before deletion\n'
+printf 'ok - destroy and nuke re-prove every machine terminal before deletion\n'
+printf 'ok - nuke refuses loaded units missing from project storage\n'

@@ -47,13 +47,17 @@ project_directory="${VIRTDEV_HOME}/projects/${project}"
 
 project_require_ordinary "${project}"
 
-# Transitional or unknown state is not proof that deletion is safe.
-if ! project_is_stopped "${project}"; then
-  error 4 <<MESSAGE
+require_project_stopped() {
+  # Transitional or unknown state is not proof that deletion is safe.
+  if ! project_is_stopped "${project}"; then
+    error 4 <<MESSAGE
 Project virtual machine is running: ${project}
 Stop it with: virtdev-stop ${project}
 MESSAGE
-fi
+  fi
+}
+
+require_project_stopped
 
 require_unmounted_project() {
   local mount_path="" status=0
@@ -98,7 +102,9 @@ if (( ! flags[yes] )); then
   fi
 fi
 
+project_require_ordinary "${project}"
 require_unmounted_project
+require_project_stopped
 mount_path=''
 remove_status=0
 mount_remove_tree "${project_directory}" mount_path || remove_status=$?
