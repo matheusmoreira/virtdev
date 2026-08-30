@@ -303,8 +303,8 @@ if (( status != 20 )) \
   exit 1
 fi
 
-if [[ ! -s "${test_tmp}/backup.pid" ]] \
-    || kill -0 "$(< "${test_tmp}/backup.pid")" 2>/dev/null; then
+if [[ -s "${test_tmp}/backup.pid" ]] \
+    && kill -0 "$(< "${test_tmp}/backup.pid")" 2>/dev/null; then
   printf 'backup timeout left its SSH capture process alive\n' >&2
   exit 1
 fi
