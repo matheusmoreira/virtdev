@@ -1871,16 +1871,18 @@ int main(int argc, char *argv[])
 	struct stat source_status;
 	int source_root_fd = -1;
 	int destination_parent_fd = -1;
+	int identity_summary = argc == 8 && !strcmp(argv[7], "identity");
 	int is_new = 0;
 	int result = COPY_ERROR;
 
-	if (argc != 7 || parse_u64(argv[3], &maximum_bytes) ||
+	if ((argc != 7 && !identity_summary) ||
+	    parse_u64(argv[3], &maximum_bytes) ||
 	    parse_u64(argv[4], &maximum_entries) ||
 	    parse_u64(argv[5], &reserve_bytes) ||
 	    parse_u64(argv[6], &reserve_inodes) || !maximum_entries) {
 		fprintf(stderr,
 			"usage: %s source destination-parent max-bytes max-entries "
-			"reserve-bytes reserve-inodes\n",
+			"reserve-bytes reserve-inodes [identity]\n",
 			argv[0]);
 		return USAGE_ERROR;
 	}
@@ -1978,9 +1980,23 @@ int main(int argc, char *argv[])
 		result = source_paths_complete(1);
 	if (!result)
 		result = source_records_complete(1);
+	if (!result && identity_summary && fstat(source_root_fd, &source_status))
+		result = fail_source_errno("cannot finalize source identity", argv[1]);
+	if (!result && identity_summary &&
+	    !source_metadata_equal(root_record, &source_status))
+		result = source_changed("source changed before identity summary at",
+					argv[1]);
+	if (!result && identity_summary)
+		result = require_source_mount(source_root_fd, "", AT_EMPTY_PATH,
+					      argv[1], 0);
 	if (!result)
 		result = apply_fd_metadata(destination_root_fd, root_record, "tree");
-	if (!result)
+	if (!result && identity_summary)
+		printf("%" PRIu64 " %" PRIu64 " %" PRIuMAX " %" PRIuMAX "\n",
+		       copied_entries, copied_bytes,
+		       (uintmax_t)source_status.st_dev,
+		       (uintmax_t)source_status.st_ino);
+	else if (!result)
 		printf("%" PRIu64 " %" PRIu64 "\n", copied_entries,
 		       copied_bytes);
 

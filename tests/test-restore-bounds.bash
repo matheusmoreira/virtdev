@@ -328,6 +328,19 @@ mkdir -p "${copy_source}/mutable" "${copy_parent}"
 printf 'seed\n' > "${copy_source}/mutable/seed"
 "${copy_helper}" "${copy_source}" "${copy_parent}" 5 2 0 0 \
   > "${test_tmp}/copy-summary"
+if [[ "$(< "${test_tmp}/copy-summary")" != '2 5' ]]; then
+  printf 'bounded copy changed its legacy summary format\n' >&2
+  exit 1
+fi
+identity_parent="${test_tmp}/identity-parent"
+mkdir "${identity_parent}"
+"${copy_helper}" "${copy_source}" "${identity_parent}" 5 2 0 0 identity \
+  > "${test_tmp}/identity-summary"
+expected_identity="2 5 $(stat -c '%d %i' -- "${copy_source}")"
+if [[ "$(< "${test_tmp}/identity-summary")" != "${expected_identity}" ]]; then
+  printf 'bounded copy emitted an incorrect source identity summary\n' >&2
+  exit 1
+fi
 truncate -s 6 "${copy_source}/mutable/seed"
 printf 'late\n' > "${copy_source}/mutable/late"
 if [[ "$(< "${copy_parent}/tree/mutable/seed")" != seed \
