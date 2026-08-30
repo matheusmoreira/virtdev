@@ -41,6 +41,24 @@ if (( status != 3 )); then
   exit 1
 fi
 
+mkdir -p "${test_tmp}/outside-project"
+ln -s "${test_tmp}/outside-project" \
+  "${VIRTDEV_HOME}/projects/linked-project"
+status=0
+machine_target_require linked-project || status=$?
+if (( status != machine_target_missing )); then
+  printf 'machine target accepted a symlinked project root (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+status=0
+(project_require linked-project) >/dev/null 2>&1 || status=$?
+if (( status != 3 )); then
+  printf 'project requirement accepted a symlinked root (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
 status=0
 NO_COLOR=1 "${repository}/bin/virtdev-disk" maintenance \
   >"${test_tmp}/disk-output" 2>&1 || status=$?
@@ -84,4 +102,5 @@ fi
 
 printf 'ok - machine descriptors separate maintenance data and runtime roots\n'
 printf 'ok - ordinary project validation rejects machine-only targets\n'
+printf 'ok - ordinary project validation rejects symlinked roots\n'
 printf 'ok - maintenance remains a stable stopped target between sessions\n'

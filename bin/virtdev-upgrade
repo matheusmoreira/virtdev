@@ -127,7 +127,7 @@ MESSAGE
 fi
 
 system_generation_file="${system_directory}/generation"
-if [[ ! -f "${system_generation_file}" ]]; then
+if [[ ! -f "${system_generation_file}" || -L "${system_generation_file}" ]]; then
   error 9 <<<"Base system generation file missing: '${system_generation_file}'"
 fi
 base_generation="$(generation_read_base "${system_generation_file}")"
@@ -148,7 +148,8 @@ declare -A excluded_reasons=()
 if [[ ${#only_list[@]} -gt 0 ]]; then
   declare -A only_set=()
   for name in "${only_list[@]}"; do
-    if [[ ! -d "${projects_directory}/${name}" ]]; then
+    if [[ ! -d "${projects_directory}/${name}" \
+        || -L "${projects_directory}/${name}" ]]; then
       error 5 <<<"Project not found: ${name}"
     fi
     only_set["${name}"]=1
@@ -163,7 +164,8 @@ if [[ ${#only_list[@]} -gt 0 ]]; then
   done
 elif [[ ${#except_list[@]} -gt 0 ]]; then
   for name in "${except_list[@]}"; do
-    if [[ ! -d "${projects_directory}/${name}" ]]; then
+    if [[ ! -d "${projects_directory}/${name}" \
+        || -L "${projects_directory}/${name}" ]]; then
       error 5 <<<"Project not found: ${name}"
     fi
   done
@@ -178,6 +180,17 @@ elif [[ ${#except_list[@]} -gt 0 ]]; then
 else
   included=("${valid_projects[@]}")
 fi
+
+# Validate canonical generation state before any project is skipped, audited,
+# started, or backed up. Missing metadata must not masquerade as current state.
+for p in "${included[@]}"; do
+  project_generation_file="${projects_directory}/${p}/generation"
+  if [[ ! -f "${project_generation_file}" \
+      || -L "${project_generation_file}" ]]; then
+    error 9 <<<"Project generation file missing or non-regular: '${project_generation_file}'"
+  fi
+  generation_read_project "${project_generation_file}" >/dev/null
+done
 
 # Auto-skip detached projects before manifest audit. They are independent of
 # the base and do not need either a backup manifest or a rebuild. Doing this
@@ -254,17 +267,10 @@ declare -a included_after_skip=()
 for p in "${included[@]}"; do
   outdated_status=0
   project_is_outdated "${p}" || outdated_status=$?
-  if (( outdated_status == 2 || outdated_status == 3 )); then
-    # Corrupt generation file: cannot assess, and must never be fed
-    # into the backup/recreate pipeline. Exclude with a reason instead
-    # of falling through to the else branch (which would treat it as a
-    # normal rebuild candidate and recreate off the corrupt file).
-    # Status 3 (corrupt BASE) is pre-empted by the base-generation read
-    # near the top of this script (which aborts with code 82), so in
-    # practice only 2 reaches here; guarding both keeps a future
-    # reordering from feeding corruption into recreate.
-    excluded+=("${p}")
-    excluded_reasons["${p}"]="corrupt generation file"
+  if (( outdated_status == 2 )); then
+    error 9 <<<"Project generation state changed during upgrade preflight: ${p}"
+  elif (( outdated_status == 3 )); then
+    error 9 <<<'Base generation state changed during upgrade preflight.'
   elif (( outdated_status == 0 )) && ! project_is_running "${p}"; then
     outdated_blocked+=("${p}")
   else

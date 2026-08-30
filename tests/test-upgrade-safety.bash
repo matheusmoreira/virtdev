@@ -288,6 +288,29 @@ NO_COLOR=1 \
     >"${test_tmp}/upgrade-removed-flag.output" 2>&1 || status=$?
 (( status == 64 ))
 
+missing_generation_home="${test_tmp}/missing-generation-home"
+prepare_upgrade_home "${missing_generation_home}"
+rm -f "${missing_generation_home}/projects/probe/generation"
+missing_generation_log="${test_tmp}/missing-generation.commands"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+RECREATE_COMMAND_LOG="${missing_generation_log}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${missing_generation_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/missing-generation-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes \
+    >"${test_tmp}/upgrade-missing-generation.output" 2>&1 || status=$?
+if (( status != 9 )) || [[ -e "${missing_generation_log}" ]]; then
+  printf 'upgrade crossed command preflight with missing generation (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/upgrade-missing-generation.output" >&2
+  exit 1
+fi
+
 printf 'ok - upgrade emits executable phase-specific recovery\n'
 printf 'ok - upgrade distinguishes failed stops from stopped machines\n'
 printf 'ok - outdated projects fail closed without an impossible skip path\n'
+printf 'ok - upgrade rejects missing generation before external commands\n'

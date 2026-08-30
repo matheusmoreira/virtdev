@@ -6,6 +6,10 @@ command_name="${0##*/}"
 phase="${command_name#virtdev-}"
 project="${!#}"
 
+if [[ -n "${RECREATE_COMMAND_LOG:-}" ]]; then
+  printf '%s\n' "${phase}" >> "${RECREATE_COMMAND_LOG}"
+fi
+
 case "${phase}" in
   backup|stop|destroy|create|start|wait|recreate)
     if [[ "${project}" == -* ]]; then

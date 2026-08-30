@@ -73,7 +73,8 @@ machine_target_require() {
   # that need staging or runtime artifacts validate their concrete paths.
   if [[ "${VIRTDEV_MACHINE_KIND}" == "${machine_kind_maintenance}" ]]; then
     return 0
-  elif [[ -d "${VIRTDEV_MACHINE_DATA_DIR}" ]]; then
+  elif [[ -d "${VIRTDEV_MACHINE_DATA_DIR}" \
+      && ! -L "${VIRTDEV_MACHINE_DATA_DIR}" ]]; then
     return 0
   fi
   VIRTDEV_MACHINE_ERROR=missing

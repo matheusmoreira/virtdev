@@ -159,11 +159,11 @@ project_load_state() {
 
 project_is_outdated() {
   local project="${1}"
-  project_is_detached "${project}" && return 1
   local -r base_file="${VIRTDEV_HOME}/system/generation"
   local -r project_file="${VIRTDEV_HOME}/projects/${project}/generation"
-  [[ -f "${base_file}" ]] || return 1
-  [[ -f "${project_file}" ]] || return 1
+  [[ -f "${base_file}" && ! -L "${base_file}" ]] || return 3
+  [[ -f "${project_file}" && ! -L "${project_file}" ]] || return 2
+  project_is_detached "${project}" && return 1
   local base_gen project_gen
   # Generation readers panic (exit 82) on corruption, but here they run
   # inside a command substitution, so that exit would be swallowed and
@@ -200,7 +200,7 @@ project_is_detached() {
 project_require() {
   local -r project="${1}"
   local -r project_directory="${VIRTDEV_HOME}/projects/${project}"
-  if [[ ! -d "${project_directory}" ]]; then
+  if [[ ! -d "${project_directory}" || -L "${project_directory}" ]]; then
     error 3 <<<"Project not found: ${project}"
   fi
 }

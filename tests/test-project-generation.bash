@@ -41,6 +41,31 @@ if ! project_is_detached probe; then
   exit 1
 fi
 
+mkdir -p "${virtdev_home}/system"
+printf '1\n' > "${virtdev_home}/system/generation"
+printf '1\n' > "${project_directory}/generation"
+if project_is_outdated probe; then
+  printf 'matching generation was classified outdated\n' >&2
+  exit 1
+fi
+rm -f "${project_directory}/generation"
+status=0
+project_is_outdated probe || status=$?
+if (( status != 2 )); then
+  printf 'missing project generation returned %d instead of corrupt state\n' \
+    "${status}" >&2
+  exit 1
+fi
+printf '1\n' > "${project_directory}/generation"
+rm -f "${virtdev_home}/system/generation"
+status=0
+project_is_outdated probe || status=$?
+if (( status != 3 )); then
+  printf 'missing base generation returned %d instead of corrupt state\n' \
+    "${status}" >&2
+  exit 1
+fi
+
 generation_case="${test_tmp}/generation"
 output="${test_tmp}/output"
 
@@ -87,3 +112,4 @@ fi
 
 printf 'ok - detached state requires standalone disk topology\n'
 printf 'ok - generation schemas are type-separated, canonical, and bounded\n'
+printf 'ok - missing generation metadata is corrupt rather than current\n'
