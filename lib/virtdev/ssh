@@ -396,6 +396,7 @@ ssh_transport_argv() {
     batch) __ssh_transport_output+=(-o BatchMode=yes) ;;
     poll)
       __ssh_transport_output+=(
+        -n
         -o BatchMode=yes
         -o ConnectTimeout="${__ssh_transport_timeout}"
       )

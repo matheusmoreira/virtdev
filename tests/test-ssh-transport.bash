@@ -100,7 +100,7 @@ ssh_transport_argv actual batch alpha "${VIRTDEV_SSH_KEY}" 2222 /dev/null
 assert_argv actual expected_batch
 
 declare -a expected_poll=(
-  "${expected_base[@]}" -o BatchMode=yes -o ConnectTimeout=3
+  "${expected_base[@]}" -n -o BatchMode=yes -o ConnectTimeout=3
 )
 ssh_transport_argv actual poll alpha "${VIRTDEV_SSH_KEY}" 2222 /dev/null 3
 assert_argv actual expected_poll
@@ -206,6 +206,24 @@ if (( status != 0 )) \
   cat "${sshd_log}" >&2
   exit 1
 fi
+
+poll_input="${test_tmp}/poll-input"
+printf 'preserved\n' > "${poll_input}"
+exec {poll_input_fd}< "${poll_input}"
+ssh_transport_argv live_argv poll alpha "${VIRTDEV_SSH_KEY}" \
+  "${live_port}" /dev/null 3
+status=0
+"${live_argv[@]}" "$(id -un)@127.0.0.1" 'cat >/dev/null' \
+  <&"${poll_input_fd}" >/dev/null 2>>"${client_log}" || status=$?
+poll_input_record=''
+IFS= read -r poll_input_record <&"${poll_input_fd}" || true
+exec {poll_input_fd}<&-
+if (( status != 0 )) || [[ "${poll_input_record}" != preserved ]]; then
+  printf 'poll-mode SSH consumed caller stdin\n' >&2
+  cat "${client_log}" >&2
+  exit 1
+fi
+
 kill -TERM "${sshd_pid}"
 wait "${sshd_pid}" 2>/dev/null || true
 sshd_pid=''
