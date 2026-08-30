@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+target="${!#}"
+fail=0
+if [[ "${target}" == "${SYNC_FAIL_TARGET:?}" ]]; then
+  fail=1
+  if [[ -n "${SYNC_FAIL_IF_PRESENT:-}" \
+      && ! -e "${SYNC_FAIL_IF_PRESENT}" \
+      && ! -L "${SYNC_FAIL_IF_PRESENT}" ]]; then
+    fail=0
+  fi
+  if [[ -n "${SYNC_FAIL_IF_ABSENT:-}" \
+      && ( -e "${SYNC_FAIL_IF_ABSENT}" \
+        || -L "${SYNC_FAIL_IF_ABSENT}" ) ]]; then
+    fail=0
+  fi
+fi
+
+if (( fail )) && [[ ! -e "${SYNC_FAIL_ONCE_FILE:?}" ]]; then
+  : > "${SYNC_FAIL_ONCE_FILE}"
+  exit 1
+fi
+
+exec /usr/bin/sync "$@"

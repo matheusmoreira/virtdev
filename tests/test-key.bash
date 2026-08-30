@@ -63,20 +63,37 @@ if (( status != 3 )); then
   exit 1
 fi
 
+key_pair_matches() {
+  local -r private_key="${1}"
+  local derived_type derived_blob _ public_key
+
+  read -r derived_type derived_blob _ \
+    < <(ssh-keygen -y -P '' -f "${private_key}") || return
+  public_key="$(awk 'NR == 1 { print $1 " " $2 }' "${private_key}.pub")" \
+    || return
+  [[ "${public_key}" == "${derived_type} ${derived_blob}" ]]
+}
+
 sync_bin="${test_tmp}/sync-bin"
-mkdir "${sync_bin}"
-ln -s "${repository}/tests/fixtures/sync-counted" "${sync_bin}/sync"
+mv_bin="${test_tmp}/mv-bin"
+mkdir "${sync_bin}" "${mv_bin}"
+ln -s "${repository}/tests/fixtures/sync-target-state-fail" \
+  "${sync_bin}/sync"
+ln -s "${repository}/tests/fixtures/mv-rename-then-fail" "${mv_bin}/mv"
 
 private_fault_home="${test_tmp}/private-fault-home"
 private_fault_key="${test_tmp}/external-private-key/id"
-private_fault_count="${test_tmp}/private-fault.count"
+private_fault_once="${test_tmp}/private-fault.once"
 status=0
-SYNC_COUNT_FILE="${private_fault_count}" SYNC_FAIL_CALL=2 \
+SYNC_FAIL_TARGET="$(dirname "${private_fault_key}")" \
+SYNC_FAIL_IF_ABSENT="${private_fault_key}.pub" \
+SYNC_FAIL_ONCE_FILE="${private_fault_once}" \
 PATH="${sync_bin}:${PATH}" \
 VIRTDEV_HOME="${private_fault_home}" VIRTDEV_SSH_KEY="${private_fault_key}" \
   "${repository}/bin/virtdev-key" >"${output}" 2>&1 || status=$?
 if (( status != 6 )) || [[ ! -f "${private_fault_key}" \
-      || -e "${private_fault_key}.pub" ]]; then
+      || -e "${private_fault_key}.pub" \
+      || ! -e "${private_fault_once}" ]]; then
   printf 'private-key publication uncertainty was not preserved (status %d)\n' \
     "${status}" >&2
   cat "${output}" >&2
@@ -85,13 +102,13 @@ fi
 grep -Fq 'SSH private key was published' "${output}"
 grep -Fq 'The published file was preserved' "${output}"
 
-rm -f -- "${private_fault_count}"
-SYNC_COUNT_FILE="${private_fault_count}" \
+SYNC_FAIL_TARGET="$(dirname "${private_fault_key}")" \
+SYNC_FAIL_IF_ABSENT="${private_fault_key}.pub" \
+SYNC_FAIL_ONCE_FILE="${private_fault_once}" \
 PATH="${sync_bin}:${PATH}" \
 VIRTDEV_HOME="${private_fault_home}" VIRTDEV_SSH_KEY="${private_fault_key}" \
   "${repository}/bin/virtdev-key" >"${output}" 2>&1
-if [[ "$(< "${private_fault_count}")" != 3 \
-      || ! -f "${private_fault_key}.pub" ]]; then
+if ! key_pair_matches "${private_fault_key}"; then
   printf 'private-key durability retry did not publish a complete pair\n' >&2
   cat "${output}" >&2
   exit 1
@@ -99,14 +116,17 @@ fi
 
 public_fault_home="${test_tmp}/public-fault-home"
 public_fault_key="${test_tmp}/external-public-key/id"
-public_fault_count="${test_tmp}/public-fault.count"
+public_fault_once="${test_tmp}/public-fault.once"
 status=0
-SYNC_COUNT_FILE="${public_fault_count}" SYNC_FAIL_CALL=4 \
+SYNC_FAIL_TARGET="$(dirname "${public_fault_key}")" \
+SYNC_FAIL_IF_PRESENT="${public_fault_key}.pub" \
+SYNC_FAIL_ONCE_FILE="${public_fault_once}" \
 PATH="${sync_bin}:${PATH}" \
 VIRTDEV_HOME="${public_fault_home}" VIRTDEV_SSH_KEY="${public_fault_key}" \
   "${repository}/bin/virtdev-key" >"${output}" 2>&1 || status=$?
 if (( status != 6 )) || [[ ! -f "${public_fault_key}" \
-      || ! -f "${public_fault_key}.pub" ]]; then
+      || ! -f "${public_fault_key}.pub" \
+      || ! -e "${public_fault_once}" ]]; then
   printf 'public-key publication uncertainty was not preserved (status %d)\n' \
     "${status}" >&2
   cat "${output}" >&2
@@ -115,15 +135,84 @@ fi
 grep -Fq 'SSH public key was published' "${output}"
 grep -Fq 'The published file was preserved' "${output}"
 
-rm -f -- "${public_fault_count}"
-SYNC_COUNT_FILE="${public_fault_count}" \
+SYNC_FAIL_TARGET="$(dirname "${public_fault_key}")" \
+SYNC_FAIL_IF_PRESENT="${public_fault_key}.pub" \
+SYNC_FAIL_ONCE_FILE="${public_fault_once}" \
 PATH="${sync_bin}:${PATH}" \
 VIRTDEV_HOME="${public_fault_home}" VIRTDEV_SSH_KEY="${public_fault_key}" \
   "${repository}/bin/virtdev-key" >"${output}" 2>&1
-if [[ "$(< "${public_fault_count}")" != 1 ]]; then
+if ! key_pair_matches "${public_fault_key}"; then
   printf 'matching-pair retry did not close publication uncertainty\n' >&2
   cat "${output}" >&2
   exit 1
 fi
 
+private_rename_home="${test_tmp}/private-rename-home"
+private_rename_key="${test_tmp}/external-private-rename/id"
+private_rename_once="${test_tmp}/private-rename.once"
+status=0
+MV_RENAME_THEN_FAIL_TARGET="${private_rename_key}" \
+MV_RENAME_THEN_FAIL_ONCE_FILE="${private_rename_once}" \
+PATH="${mv_bin}:${PATH}" \
+VIRTDEV_HOME="${private_rename_home}" VIRTDEV_SSH_KEY="${private_rename_key}" \
+  "${repository}/bin/virtdev-key" >"${output}" 2>&1 || status=$?
+if (( status != 6 )) || [[ ! -f "${private_rename_key}" \
+      || -e "${private_rename_key}.pub" \
+      || ! -e "${private_rename_once}" ]]; then
+  printf 'private-key after-rename uncertainty lost its destination (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+private_rename_digest="$(sha256sum "${private_rename_key}")"
+
+MV_RENAME_THEN_FAIL_TARGET="${private_rename_key}" \
+MV_RENAME_THEN_FAIL_ONCE_FILE="${private_rename_once}" \
+PATH="${mv_bin}:${PATH}" \
+VIRTDEV_HOME="${private_rename_home}" VIRTDEV_SSH_KEY="${private_rename_key}" \
+  "${repository}/bin/virtdev-key" >"${output}" 2>&1
+if [[ "$(sha256sum "${private_rename_key}")" != "${private_rename_digest}" ]] \
+    || ! key_pair_matches "${private_rename_key}"; then
+  printf 'private-key after-rename retry did not preserve and complete the pair\n' \
+    >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+public_rename_home="${test_tmp}/public-rename-home"
+public_rename_key="${test_tmp}/external-public-rename/id"
+public_rename_once="${test_tmp}/public-rename.once"
+status=0
+MV_RENAME_THEN_FAIL_TARGET="${public_rename_key}.pub" \
+MV_RENAME_THEN_FAIL_ONCE_FILE="${public_rename_once}" \
+PATH="${mv_bin}:${PATH}" \
+VIRTDEV_HOME="${public_rename_home}" VIRTDEV_SSH_KEY="${public_rename_key}" \
+  "${repository}/bin/virtdev-key" >"${output}" 2>&1 || status=$?
+if (( status != 6 )) || [[ ! -f "${public_rename_key}" \
+      || ! -f "${public_rename_key}.pub" \
+      || ! -e "${public_rename_once}" ]]; then
+  printf 'public-key after-rename uncertainty lost its destination (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+public_rename_private_digest="$(sha256sum "${public_rename_key}")"
+public_rename_digest="$(sha256sum "${public_rename_key}.pub")"
+
+MV_RENAME_THEN_FAIL_TARGET="${public_rename_key}.pub" \
+MV_RENAME_THEN_FAIL_ONCE_FILE="${public_rename_once}" \
+PATH="${mv_bin}:${PATH}" \
+VIRTDEV_HOME="${public_rename_home}" VIRTDEV_SSH_KEY="${public_rename_key}" \
+  "${repository}/bin/virtdev-key" >"${output}" 2>&1
+if [[ "$(sha256sum "${public_rename_key}")" \
+      != "${public_rename_private_digest}" \
+      || "$(sha256sum "${public_rename_key}.pub")" \
+      != "${public_rename_digest}" ]] \
+    || ! key_pair_matches "${public_rename_key}"; then
+  printf 'public-key after-rename retry did not preserve the valid pair\n' >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
 printf 'ok - key setup validates, repairs, and durably publishes the ed25519 pair\n'
+printf 'ok - key publication preserves and retries after rename uncertainty\n'
