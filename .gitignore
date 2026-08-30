@@ -5,5 +5,6 @@ pkg/
 virtdev-git/
 libexec/virtdev/virtdev-exchange
 libexec/virtdev/virtdev-copy-tree
+libexec/virtdev/virtdev-archive-gate
 libexec/virtdev/virtdev-remove-tree
 man/*.[1-8]

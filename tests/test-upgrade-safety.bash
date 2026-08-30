@@ -14,7 +14,7 @@ printf '7\n' > "${virtdev_home}/system/generation"
 printf 'ssh-host-identity=1\n' > "${virtdev_home}/system/guest-contract"
 printf '7\n' > "${virtdev_home}/projects/keep/generation"
 printf '7\n' > "${virtdev_home}/projects/omitted/generation"
-printf '/etc/hostname\n' > "${virtdev_home}/projects/keep/manifest"
+printf 'etc/hostname\n' > "${virtdev_home}/projects/keep/manifest"
 
 output="${test_tmp}/output"
 status=0
@@ -145,6 +145,37 @@ mapfile -d '' -t restore_args < "${restore_args_file}"
 mapfile -d '' -t ssh_args < "${ssh_args_file}"
 [[ "${restore_args[*]}" == "--verbose -- probe ${recovery_snapshot}" ]]
 [[ "${ssh_args[*]}" == '-- probe -- bash -s' ]]
+
+pinned_home="${test_tmp}/pinned-home"
+pinned_config="${test_tmp}/pinned-config"
+pinned_source="${pinned_config}/virtdev/projects/probe/provision"
+pinned_capture="${test_tmp}/pinned-provision.capture"
+prepare_upgrade_home "${pinned_home}"
+mkdir -p "$(dirname "${pinned_source}")"
+printf 'original\n' > "${pinned_source}"
+pinned_output="${test_tmp}/upgrade-pinned.output"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+RECREATE_MUTATE_UPGRADE_PROVISION_SOURCE="${pinned_source}" \
+UPGRADE_PROVISION_CAPTURE_FILE="${pinned_capture}" \
+RECREATE_SNAPSHOT_PATH="${pinned_home}/backups/probe/${recovery_snapshot}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${pinned_config}" \
+VIRTDEV_HOME="${pinned_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/pinned-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes \
+    >"${pinned_output}" 2>&1 || status=$?
+if (( status != 0 )) || [[ "$(< "${pinned_source}")" != mutated \
+      || "$(< "${pinned_capture}")" != original ]] \
+    || find "${pinned_home}/transactions" -mindepth 1 -print -quit \
+      | grep -q .; then
+  printf 'upgrade did not pin/clean its confirmed provision input (status %d)\n' \
+    "${status}" >&2
+  cat "${pinned_output}" >&2
+  exit 1
+fi
 
 indeterminate_home="${test_tmp}/indeterminate-home"
 prepare_upgrade_home "${indeterminate_home}"

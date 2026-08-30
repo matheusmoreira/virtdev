@@ -173,6 +173,31 @@ if (( status != 0 )) \
   exit 1
 fi
 
+printf 'probe\nextra\n' > "${snapshot}/project"
+status=0
+run_restore "${test_tmp}/oversized-marker-guest" "${logical_bytes}" 100 10 \
+  >"${test_tmp}/oversized-marker.output" 2>&1 || status=$?
+if (( status != 12 )); then
+  printf 'restore accepted an inexact project marker (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/oversized-marker.output" >&2
+  exit 1
+fi
+printf 'probe\n' > "${snapshot}/project"
+
+truncate -s 1048577 "${snapshot}/manifest"
+status=0
+run_restore "${test_tmp}/oversized-manifest-guest" "${logical_bytes}" 100 10 \
+  >"${test_tmp}/oversized-manifest.output" 2>&1 || status=$?
+if (( status != 19 )); then
+  printf 'restore accepted an oversized manifest (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/oversized-manifest.output" >&2
+  exit 1
+fi
+printf '%s\n' 'real/' 'link/' 'link-two/' hard-one hard-two sparse \
+  > "${snapshot}/manifest"
+
 budget_guest="${test_tmp}/budget-guest"
 status=0
 run_restore "${budget_guest}" 1048576 100 10 \
@@ -765,6 +790,20 @@ state_ssh_started="${test_tmp}/state-ssh-started"
 mkdir "${state_bin}"
 cp "${repository}/tests/fixtures/timeout-copy-tree-status" \
   "${state_bin}/timeout"
+
+manifest_timeout_guest="${test_tmp}/manifest-timeout-guest"
+status=0
+PATH="${state_bin}:${PATH}" run_restore \
+  "${manifest_timeout_guest}" 1 1 10 env \
+  RESTORE_TIMEOUT_COMMAND=head \
+  > "${test_tmp}/manifest-timeout.output" 2>&1 || status=$?
+if (( status != 20 )) \
+    || ! grep -Fq 'manifest preflight exceeded' \
+      "${test_tmp}/manifest-timeout.output"; then
+  printf 'restore lost its manifest deadline (status %d)\n' "${status}" >&2
+  cat "${test_tmp}/manifest-timeout.output" >&2
+  exit 1
+fi
 
 bounded_summary_guest="${test_tmp}/bounded-summary-guest"
 status=0

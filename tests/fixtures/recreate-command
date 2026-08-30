@@ -15,9 +15,25 @@ case "${phase}" in
     ;;
 esac
 
+if [[ "${phase}" == destroy \
+      && -n "${RECREATE_MUTATE_PROVISION_SOURCE:-}" ]]; then
+  printf 'mutated\n' > "${RECREATE_MUTATE_PROVISION_SOURCE}"
+fi
+
 if [[ "${phase}" == recreate ]]; then
   if [[ -n "${UPGRADE_RECREATE_ARGS_FILE:-}" ]]; then
     printf '%s\0' "$@" > "${UPGRADE_RECREATE_ARGS_FILE}"
+  fi
+  if [[ -n "${UPGRADE_PROVISION_CAPTURE_FILE:-}" ]]; then
+    recreate_arguments=("$@")
+    for (( argument_index = 0; \
+          argument_index + 1 < ${#recreate_arguments[@]}; \
+          ++argument_index )); do
+      if [[ "${recreate_arguments[argument_index]}" == --provision ]]; then
+        cp -- "${recreate_arguments[argument_index + 1]}" \
+          "${UPGRADE_PROVISION_CAPTURE_FILE}"
+      fi
+    done
   fi
   recreate_status="${UPGRADE_RECREATE_STATUS:-0}"
   if (( recreate_status == 23 )); then
@@ -45,6 +61,11 @@ if [[ "${phase}" == maintain && -n "${RECREATE_MAINTAIN_STATUS:-}" ]]; then
   exit "${RECREATE_MAINTAIN_STATUS}"
 fi
 
+if [[ "${phase}" == maintain \
+      && -n "${RECREATE_MUTATE_UPGRADE_PROVISION_SOURCE:-}" ]]; then
+  printf 'mutated\n' > "${RECREATE_MUTATE_UPGRADE_PROVISION_SOURCE}"
+fi
+
 if [[ "${RECREATE_FAIL_STEP:-}" == "${phase}" ]]; then
   exit 1
 fi
@@ -70,6 +91,9 @@ case "${phase}" in
     fi
     ;;
   ssh)
+    if [[ -n "${RECREATE_SSH_STDIN_FILE:-}" ]]; then
+      tee "${RECREATE_SSH_STDIN_FILE}" >/dev/null
+    fi
     if [[ -n "${RECREATE_SSH_ARGS_FILE:-}" ]]; then
       printf '%s\0' "$@" > "${RECREATE_SSH_ARGS_FILE}"
     fi

@@ -5,12 +5,24 @@
 #   manifest_has_entries <path>                test for an active entry
 #   manifest_parent_entries <path>             print active entries containing ..
 #   manifest_write_rsync_files_from <src> <dst>
+#   manifest_freeze_validate <src> <dst> <files-from> <deadline> <kill-after>
 #   manifest_sources_confined <root> <files-from>
 #
 # Resolution prefers the project-local file, then XDG config. The rsync writer
 # strips trailing slashes so a swapped symlink root is not dereferenced.
 
 set -euo pipefail
+# shellcheck disable=SC2034,SC2016  # imported constants; literal awk program
+
+readonly manifest_max_bytes=1048576
+readonly manifest_max_lines=65536
+readonly manifest_max_entries=65536
+readonly manifest_max_path_bytes=4095
+readonly manifest_result_invalid=40
+readonly manifest_result_too_large=41
+readonly manifest_result_empty=42
+readonly manifest_result_timeout=43
+readonly manifest_result_io=44
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -56,6 +68,106 @@ manifest_write_rsync_files_from() {
     /^[[:space:]]*#/ { next }
     { sub(/\/+$/, ""); print }
   ' "${manifest}" > "${output}"
+}
+
+manifest_freeze_validate() {
+  local -r source="${1:-}" destination="${2:-}" files_from="${3:-}" \
+    deadline="${4:-}" kill_after="${5:-}"
+  local -r frozen_tmp="${destination}.tmp" files_tmp="${files_from}.tmp"
+  local remaining copy_status validate_status size
+
+  [[ -n "${source}" && -n "${destination}" && -n "${files_from}" \
+      && "${deadline}" =~ ^[0-9]+$ && "${kill_after}" =~ ^[0-9]+$ \
+      && -f "${source}" && -r "${source}" ]] \
+    || return "${manifest_result_invalid}"
+  remaining=$(( deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return "${manifest_result_timeout}"
+
+  copy_status=0
+  timeout --signal=TERM --kill-after="${kill_after}" "${remaining}" \
+    head -c "$(( manifest_max_bytes + 1 ))" -- "${source}" \
+    > "${frozen_tmp}" || copy_status=$?
+  case "${copy_status}" in
+    0) ;;
+    124|137)
+      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_timeout}"
+      ;;
+    *)
+      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_io}"
+      ;;
+  esac
+  size="$(stat -c '%s' -- "${frozen_tmp}" 2>/dev/null)" || size=''
+  if [[ ! "${size}" =~ ^[0-9]+$ ]] || (( size > manifest_max_bytes )); then
+    rm -f -- "${frozen_tmp}" "${files_tmp}"
+    return "${manifest_result_too_large}"
+  fi
+
+  remaining=$(( deadline - BASH_MONOSECONDS ))
+  if (( remaining <= 0 )); then
+    rm -f -- "${frozen_tmp}" "${files_tmp}"
+    return "${manifest_result_timeout}"
+  fi
+  validate_status=0
+  # shellcheck disable=SC2016  # awk program is literal
+  LC_ALL=C timeout --signal=TERM --kill-after="${kill_after}" "${remaining}" \
+    awk -v maximum_lines="${manifest_max_lines}" \
+      -v maximum_entries="${manifest_max_entries}" \
+      -v maximum_path_bytes="${manifest_max_path_bytes}" '
+      NR > maximum_lines { result = 41; exit }
+      /^[[:space:]]*$/ { next }
+      /^[[:space:]]*#/ { next }
+      {
+        if (length($0) > maximum_path_bytes) { result = 41; exit }
+        if ($0 ~ /^[[:space:]]/ || $0 ~ /[[:space:]]$/ \
+            || $0 ~ /[[:cntrl:]]/ || substr($0, 1, 1) == "/") {
+          result = 40
+          exit
+        }
+        count = split($0, component, "/")
+        for (i = 1; i <= count; ++i) {
+          if (component[i] == "..") { result = 40; exit }
+        }
+        sub(/\/+$/, "")
+        if ($0 == "") { result = 40; exit }
+        if (++entries > maximum_entries) { result = 41; exit }
+        print
+      }
+      END {
+        if (result) exit result
+        if (entries == 0) exit 42
+      }
+    ' "${frozen_tmp}" > "${files_tmp}" || validate_status=$?
+  case "${validate_status}" in
+    0) ;;
+    40)
+      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_invalid}"
+      ;;
+    41)
+      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_too_large}"
+      ;;
+    42)
+      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_empty}"
+      ;;
+    124|137)
+      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_timeout}"
+      ;;
+    *)
+      rm -f -- "${frozen_tmp}" "${files_tmp}"
+      return "${manifest_result_io}"
+      ;;
+  esac
+
+  if ! mv -T -- "${frozen_tmp}" "${destination}" \
+      || ! mv -T -- "${files_tmp}" "${files_from}"; then
+    rm -f -- "${frozen_tmp}" "${files_tmp}"
+    return "${manifest_result_io}"
+  fi
 }
 
 manifest_sources_confined() {

@@ -22,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest confirm terminal project firewall recreate-result lock ssh mount stop-result
+import error validate arguments snapshot manifest confirm terminal project firewall recreate-result lock ssh mount stop-result frozen-input
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -168,20 +168,44 @@ MESSAGE
   fi
 
   manifest_path="$(manifest_resolve "${project}")"
-  if ! manifest_has_entries "${manifest_path}"; then
-    error 8 <<MESSAGE
-Backup manifest is empty (no unindented, non-blank, non-comment lines):
-    ${manifest_path}
-Add at least one path starting at column 0. Or skip the backup with:
-    virtdev-recreate --no-backup ${project}
-MESSAGE
-  fi
+  manifest_audit_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
+    .recreate-manifest.XXXXXXXX)"
+  manifest_audit_copy="${manifest_audit_directory}/manifest"
+  manifest_audit_files="${manifest_audit_directory}/files"
+  cleanup_recreate_manifest_audit() {
+    rm -f -- "${manifest_audit_copy}" "${manifest_audit_copy}.tmp" \
+      "${manifest_audit_files}" "${manifest_audit_files}.tmp"
+    rmdir -- "${manifest_audit_directory}" 2>/dev/null || true
+  }
+  trap cleanup_recreate_manifest_audit EXIT
+  manifest_audit_deadline=$(( BASH_MONOSECONDS + 10 ))
+  manifest_audit_status=0
+  manifest_freeze_validate "${manifest_path}" "${manifest_audit_copy}" \
+    "${manifest_audit_files}" "${manifest_audit_deadline}" 1 \
+    || manifest_audit_status=$?
+  trap - EXIT
+  cleanup_recreate_manifest_audit
+  case "${manifest_audit_status}" in
+    0) ;;
+    "${manifest_result_empty}")
+      error 8 <<<"Backup manifest is empty: ${manifest_path}"
+      ;;
+    "${manifest_result_timeout}")
+      error 8 <<<"Backup manifest validation timed out: ${manifest_path}"
+      ;;
+    "${manifest_result_too_large}")
+      error 8 <<<"Backup manifest exceeds metadata limits: ${manifest_path}"
+      ;;
+    *) error 8 <<<"Backup manifest is unsafe or unreadable: ${manifest_path}" ;;
+  esac
 fi
 
 # Provision resolution. The kill switch wins; the flag wins over the
 # hook; the hook wins over nothing. Echoed to stderr at execution time
 # so the user can spot which path actually ran.
+provision_source=""
 provision_path=""
+provision_digest=""
 if (( ! flags[no-provision] )); then
   if [[ -n "${flags[provision]}" ]]; then
     if [[ ! -f "${flags[provision]}" || ! -r "${flags[provision]}" ]]; then
@@ -189,11 +213,11 @@ if (( ! flags[no-provision] )); then
 Provision script not found or not readable: ${flags[provision]}
 MESSAGE
     fi
-    provision_path="${flags[provision]}"
+    provision_source="${flags[provision]}"
   else
     provision_hook="${XDG_CONFIG_HOME}/virtdev/projects/${project}/provision"
     if [[ -f "${provision_hook}" && -r "${provision_hook}" ]]; then
-      provision_path="${provision_hook}"
+      provision_source="${provision_hook}"
     fi
   fi
 fi
@@ -215,8 +239,60 @@ esac
 do_backup=$((    ! flags[no-backup] ))
 do_stop=$((      unit_active ))
 do_provision=0
-[[ -n "${provision_path}" ]] && do_provision=1
+[[ -n "${provision_source}" ]] && do_provision=1
 do_restore=$((   ! flags[no-restore] ))
+
+recreate_transaction_directory=''
+recreate_transaction_started=0
+# shellcheck disable=SC2329  # invoked by EXIT trap
+cleanup_recreate_transaction() {
+  local -r status=$?
+
+  if [[ -n "${recreate_transaction_directory}" ]]; then
+    if (( status != 0 && recreate_transaction_started )); then
+      printf >&2 'Frozen provision input preserved for recovery: %s\n' \
+        "${provision_path}"
+    else
+      if ! rm -f -- "${provision_path}" \
+          || ! rmdir -- "${recreate_transaction_directory}"; then
+        printf >&2 'warning: provision transaction could not be removed safely: %s\n' \
+          "${recreate_transaction_directory}"
+      fi
+    fi
+  fi
+  return "${status}"
+}
+
+if (( do_provision )); then
+  transaction_root="${VIRTDEV_HOME}/transactions"
+  if [[ -L "${transaction_root}" \
+      || ( -e "${transaction_root}" && ! -d "${transaction_root}" ) ]]; then
+    error 6 <<<"Unsafe transaction directory: ${transaction_root}"
+  fi
+  # shellcheck disable=SC2174  # chmod below fixes the boundary mode
+  mkdir -p -m 0700 -- "${transaction_root}"
+  chmod 0700 -- "${transaction_root}"
+  recreate_transaction_directory="$(mktemp -d \
+    --tmpdir="${transaction_root}" "recreate.${project}.XXXXXXXX")"
+  trap cleanup_recreate_transaction EXIT
+  provision_path="${recreate_transaction_directory}/provision"
+  provision_deadline=$(( BASH_MONOSECONDS + 10 ))
+  provision_status=0
+  frozen_input_copy provision_digest "${provision_source}" "${provision_path}" \
+    "${provision_deadline}" 1 || provision_status=$?
+  case "${provision_status}" in
+    0) ;;
+    "${frozen_input_result_too_large}")
+      error 6 <<<"Provision script exceeds ${frozen_input_max_bytes} bytes: ${provision_source}"
+      ;;
+    "${frozen_input_result_timeout}")
+      error 6 <<<"Provision script copy exceeded its 10-second deadline: ${provision_source}"
+      ;;
+    *) error 6 <<<"Could not freeze provision script: ${provision_source}" ;;
+  esac
+  sync -f -- "${transaction_root}" \
+    || error 6 <<<"Could not durably publish frozen provision input: ${provision_path}"
+fi
 
 # Restore needs something to restore from. If we are taking a backup
 # this run, that supplies it. If we are not (--no-backup), fall back
@@ -262,7 +338,8 @@ total_steps=$(( 4 + do_backup + do_stop + do_provision + 2 * do_restore ))
   printf '  %d. start\n'         "$(( ++step ))"
   printf '  %d. wait\n'          "$(( ++step ))"
   if (( do_provision )); then
-    printf '  %d. provision     %s\n' "$(( ++step ))" "${provision_path}"
+    printf '  %d. provision     %s\n' "$(( ++step ))" "${provision_source}"
+    printf '     frozen sha256  %s\n' "${provision_digest}"
   elif (( flags[no-provision] )); then
     printf '  -- provision     (skipped: --no-provision)\n'
   else
@@ -290,6 +367,7 @@ if (( ! flags[yes] )); then
     error 7 <<<'Aborted.'
   fi
 fi
+recreate_transaction_started=1
 
 # Subcommand invocation goes through the resolved bin directory so the
 # dev tree and the pacman-installed package both work without relying
@@ -325,6 +403,13 @@ wait_ssh() {
 }
 
 provision() {
+  local -r verify_deadline=$(( BASH_MONOSECONDS + 10 ))
+  if ! frozen_input_verify "${provision_path}" "${provision_digest}" \
+      "${verify_deadline}" 1; then
+    printf >&2 'Frozen provision input changed or became unreadable: %s\n' \
+      "${provision_path}"
+    return 1
+  fi
   "${virtdev_bin_directory}/virtdev-ssh" -- "${project}" -- bash -s < "${provision_path}"
 }
 
@@ -393,9 +478,10 @@ recreate_resume() {
     command+=("${extra}")
   done
   (( flags[no-restore] )) && command+=(--no-restore)
-  (( flags[no-provision] )) && command+=(--no-provision)
-  if [[ -n "${flags[provision]}" ]]; then
-    command+=(--provision "${flags[provision]}")
+  if (( do_provision )); then
+    command+=(--provision "${provision_path}")
+  elif (( flags[no-provision] )); then
+    command+=(--no-provision)
   fi
   (( flags[verbose] )) && command+=(--verbose)
   [[ -n "${zone_arg}" ]] && command+=(--zone "${zone_arg}")
@@ -605,10 +691,10 @@ fi
 
 if (( do_provision )); then
   (( ++step ))
-  printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] provision ${provision_path}" reset)" >&2
+  printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] provision ${provision_source}" reset)" >&2
   if ! provision; then
     provision_failed=1
-    printf >&2 '%s\n' "$(terminal_write bold fg=yellow "Provision failed (script exited non-zero): ${provision_path}" reset)"
+    printf >&2 '%s\n' "$(terminal_write bold fg=yellow "Provision failed (script exited non-zero): ${provision_source}" reset)"
     printf >&2 'The virtual machine is up but unprovisioned. Re-run manually:\n'
     printf >&2 '    %s\n' "$(provision_resume)"
   fi

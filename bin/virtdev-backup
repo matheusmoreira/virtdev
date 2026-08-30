@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # constants and helper paths provided by imports
 #
 # virtdev-backup [--verbose] <project>
 # virtdev-backup --list <project>
@@ -208,6 +209,89 @@ project_require_ordinary "${project}"
 
 # From here on: create mode preconditions (4 and up).
 
+backup_deadline=$(( BASH_MONOSECONDS + VIRTDEV_BACKUP_TIMEOUT ))
+readonly backup_free_space_reserve=536870912
+readonly backup_inode_reserve=4096
+readonly backup_member_path_max_bytes=4095
+readonly backup_member_depth_max=128
+readonly backup_path_state_max_bytes=67108864
+readonly backup_extension_max_bytes=1048576
+readonly backup_archive_memory_kib=262144
+
+backup_metadata_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
+  .backup-metadata.XXXXXXXX)"
+manifest_copy="${backup_metadata_directory}/manifest"
+manifest_files_from="${backup_metadata_directory}/files-from"
+
+cleanup_backup_metadata() {
+  [[ -n "${manifest_copy}" ]] \
+    && rm -f -- "${manifest_copy}" "${manifest_copy}.tmp"
+  [[ -n "${manifest_files_from}" ]] \
+    && rm -f -- "${manifest_files_from}" "${manifest_files_from}.tmp"
+  if [[ -n "${backup_metadata_directory}" ]]; then
+    rm -f -- "${backup_metadata_directory}"/df-*
+    rmdir -- "${backup_metadata_directory}" 2>/dev/null || true
+  fi
+}
+trap cleanup_backup_metadata EXIT
+
+backup_df_value() {
+  local -n _backup_df_result="${1}"
+  local -r column="${2}" path="${3}" phase="${4}"
+  local -r output="${backup_metadata_directory}/df-${column}"
+  local remaining value output_size
+  local -a lines=()
+  local -a command_status=()
+
+  remaining=$(( backup_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || error 20 <<<"Backup deadline expired before ${phase}"
+  set +e
+  case "${column}" in
+    avail)
+      timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+        "${remaining}" df -B1 --output=avail -- "${path}" \
+        2>/dev/null | head -c 4097 > "${output}"
+      command_status=("${PIPESTATUS[@]}")
+      ;;
+    iavail)
+      timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+        "${remaining}" df --output=iavail -- "${path}" \
+        2>/dev/null | head -c 4097 > "${output}"
+      command_status=("${PIPESTATUS[@]}")
+      ;;
+    *) error 18 <<<"Could not inspect host capacity during ${phase}" ;;
+  esac
+  set -e
+  (( command_status[1] == 0 )) \
+    || error 18 <<<"Could not inspect host capacity during ${phase}"
+  output_size="$(stat -c '%s' -- "${output}" 2>/dev/null)" || output_size=''
+  [[ "${output_size}" =~ ^[0-9]+$ ]] && (( output_size <= 4096 )) \
+    || error 18 <<<"Could not parse host capacity during ${phase}"
+  case "${command_status[0]}" in
+    0) ;;
+    124|137) error 20 <<<"Backup ${phase} exceeded its wall-clock deadline" ;;
+    *) error 18 <<<"Could not inspect host capacity during ${phase}" ;;
+  esac
+  mapfile -t lines < "${output}"
+  (( ${#lines[@]} == 2 )) \
+    || error 18 <<<"Could not parse host capacity during ${phase}"
+  value="${lines[1]//[[:space:]]/}"
+  if [[ "${column}" == iavail && "${value}" == - ]]; then
+    _backup_df_result=''
+  elif [[ "${value}" =~ ^[0-9]+$ && ${#value} -le 18 ]]; then
+    _backup_df_result="${value}"
+  else
+    error 18 <<<"Could not parse host capacity during ${phase}"
+  fi
+}
+
+backup_memory_limited() {
+  (
+    ulimit -v "${backup_archive_memory_kib}" || exit 70
+    exec "$@"
+  )
+}
+
 if ! project_is_running "${project}"; then
   error 4 <<MESSAGE
 Virtual machine is not running: ${project}
@@ -226,6 +310,10 @@ tar not found on the host
 Install it with: pacman -S tar
 MESSAGE
 fi
+archive_gate="${virtdev_libexec_directory}/virtdev-archive-gate"
+if [[ ! -x "${archive_gate}" ]]; then
+  error 18 <<<"virtdev-archive-gate not found: '${archive_gate}'. Run 'make' to compile it."
+fi
 
 if ! manifest_path="$(manifest_resolve "${project}")"; then
   error 8 <<MESSAGE
@@ -237,57 +325,37 @@ Blank lines and '#' comments are ignored.
 MESSAGE
 fi
 
-# Freeze one manifest copy for validation, metadata, and guest capture.
-manifest_copy="$(mktemp)"
-cleanup_manifest_copy() {
-  rm -f "${manifest_copy}"
-}
-trap cleanup_manifest_copy EXIT
-cp -- "${manifest_path}" "${manifest_copy}"
-
-if ! manifest_has_entries "${manifest_copy}"; then
-  error 9 <<MESSAGE
-Backup manifest has no paths: ${manifest_path}
-Every line is blank, a comment, or indented. Add at least one path
-starting at column 0 (leading whitespace is rejected as malformed).
-MESSAGE
+metadata_available=''
+backup_df_value metadata_available avail "${VIRTDEV_HOME}" \
+  'manifest preflight'
+if (( metadata_available < 2 * manifest_max_bytes + 1048576 )); then
+  error 19 <<<'Not enough host free space for bounded backup metadata'
 fi
 
-# The remote existence check and tar both accept absolute names.
-abs_lines="$(grep -nE '^\s*/' "${manifest_copy}" || true)"
-if [[ -n "${abs_lines}" ]]; then
-  error 15 <<MESSAGE
-Backup manifest contains absolute paths: ${manifest_path}
-${abs_lines}
-Manifest entries must be relative to the guest's /home/dev/.
+manifest_status=0
+manifest_freeze_validate "${manifest_path}" "${manifest_copy}" \
+  "${manifest_files_from}" "${backup_deadline}" \
+  "${VIRTDEV_BACKUP_KILL_AFTER}" || manifest_status=$?
+case "${manifest_status}" in
+  0) ;;
+  "${manifest_result_empty}")
+    error 9 <<<"Backup manifest has no paths: ${manifest_path}"
+    ;;
+  "${manifest_result_invalid}")
+    error 16 <<<"Backup manifest contains an unsafe or malformed path: ${manifest_path}"
+    ;;
+  "${manifest_result_too_large}")
+    error 19 <<MESSAGE
+Backup manifest exceeds a metadata limit: ${manifest_path}
+Maximums are ${manifest_max_bytes} bytes, ${manifest_max_lines} lines,
+${manifest_max_entries} active entries, and ${manifest_max_path_bytes} bytes per path.
 MESSAGE
-fi
-
-parent_lines="$(manifest_parent_entries "${manifest_copy}")"
-if [[ -n "${parent_lines}" ]]; then
-  error 15 <<MESSAGE
-Backup manifest contains parent path components: ${manifest_path}
-${parent_lines}
-Manifest entries must remain beneath the guest's /home/dev/.
-MESSAGE
-fi
-
-# Manifest whitespace is literal; reject ambiguous path shapes.
-bad_shape="$(awk '
-  /^[[:space:]]*$/ { next }
-  /^[[:space:]]*#/ { next }
-  /^[[:space:]]/  { printf("%d: leading whitespace: %s\n", NR, $0); next }
-  /[[:space:]]$/  { printf("%d: trailing whitespace: %s\n", NR, $0); next }
-  /[[:cntrl:]]/   { printf("%d: control character: %s\n", NR, $0); next }
-' "${manifest_copy}")"
-if [[ -n "${bad_shape}" ]]; then
-  error 16 <<MESSAGE
-Backup manifest has malformed path entries: ${manifest_path}
-${bad_shape}
-Each path must start at column 0, end with a non-whitespace
-character, and contain no tabs or control characters.
-MESSAGE
-fi
+    ;;
+  "${manifest_result_timeout}")
+    error 20 <<<'Backup manifest preflight exceeded its wall-clock deadline'
+    ;;
+  *) error 18 <<<"Could not freeze backup manifest: ${manifest_path}" ;;
+esac
 
 printf >&2 'manifest: %s\n' "${manifest_path}"
 
@@ -326,7 +394,7 @@ cleanup_partial() {
       *) printf >&2 'warning: could not remove partial backup safely: %s\n' "${partial}" ;;
     esac
   fi
-  [[ -n "${manifest_copy}" ]] && rm -f "${manifest_copy}"
+  cleanup_backup_metadata
   [[ -n "${ssh_wrapper}" ]] && rm -f "${ssh_wrapper}"
   # Preserve the status that entered the EXIT trap.
   return 0
@@ -335,6 +403,9 @@ trap cleanup_partial EXIT
 
 mv -- "${manifest_copy}" "${partial}/manifest"
 manifest_copy=
+files_from="${partial}/files-from"
+mv -- "${manifest_files_from}" "${files_from}"
+manifest_files_from=
 
 # Restore rejects a snapshot whose source marker names another project.
 printf '%s\n' "${project}" > "${partial}/project"
@@ -352,23 +423,11 @@ ssh_command=""
 ssh_rsync_command ssh_command ssh_wrapper "${project}" \
   "${VIRTDEV_SSH_KEY}" "${port}"
 
-files_from="${partial}/files-from"
-manifest_write_rsync_files_from "${partial}/manifest" "${files_from}"
 archive="${partial}/capture.tar"
-backup_deadline=$(( BASH_MONOSECONDS + VIRTDEV_BACKUP_TIMEOUT ))
-readonly backup_free_space_reserve=536870912
-readonly backup_inode_reserve=4096
-readonly backup_member_path_max_bytes=4095
-readonly backup_member_depth_max=128
-readonly backup_path_state_max_bytes=67108864
 
-available_bytes="$(df -B1 --output=avail -- "${partial}" 2>/dev/null \
-  | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
-  || available_bytes=''
-if [[ ! "${available_bytes}" =~ ^[0-9]+$ \
-      || ${#available_bytes} -gt 18 ]]; then
-  error 18 <<<'Could not determine bounded backup free space'
-fi
+available_bytes=''
+backup_df_value available_bytes avail "${partial}" \
+  'archive capacity preflight'
 if (( available_bytes <= backup_free_space_reserve + 1 )); then
   error 19 <<<'Not enough host free space to preserve the backup safety reserve'
 fi
@@ -416,12 +475,28 @@ esac
 
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Backup deadline expired before validation'
+gate_status=0
+timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+  "${remaining}" "${archive_gate}" "${archive}" \
+  "${VIRTDEV_BACKUP_MAX_ENTRIES}" "${backup_member_path_max_bytes}" \
+  "${backup_extension_max_bytes}" || gate_status=$?
+case "${gate_status}" in
+  0) ;;
+  2) error 18 <<<'Guest produced malformed tar metadata' ;;
+  3) error 19 <<<'Backup archive metadata exceeds its bounded record budget' ;;
+  124|137) error 20 <<<'Backup metadata validation exceeded its wall-clock deadline' ;;
+  *) error 18 <<<'Could not validate bounded tar metadata' ;;
+esac
+
+remaining=$(( backup_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) || error 20 <<<'Backup deadline expired before validation'
 archive_paths_summary_file="${partial}/archive-paths-summary"
 set +e
 # shellcheck disable=SC2016  # awk program is passed through timeout
-LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+LC_ALL=C backup_memory_limited timeout --signal=TERM \
+    --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
     "${remaining}" tar --quoting-style=escape --list --file="${archive}" \
-  | LC_ALL=C timeout --signal=TERM \
+  | LC_ALL=C backup_memory_limited timeout --signal=TERM \
       --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" "${remaining}" \
       awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" \
         -v maximum_path_bytes="${backup_member_path_max_bytes}" \
@@ -513,11 +588,15 @@ read -r members_listed extracted_entries extra_summary \
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Backup deadline expired before validation'
 set +e
+# shellcheck disable=SC2016  # awk program is passed through timeout
 archive_summary="$({
-  LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+  LC_ALL=C backup_memory_limited timeout --signal=TERM \
+    --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
     "${remaining}" tar --numeric-owner --quoting-style=escape \
       --list --verbose --file="${archive}" \
-    | awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" \
+    | LC_ALL=C backup_memory_limited timeout --signal=TERM \
+      --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" "${remaining}" \
+      awk -v maximum_entries="${VIRTDEV_BACKUP_MAX_ENTRIES}" \
         -v maximum_bytes="${VIRTDEV_BACKUP_MAX_BYTES}" '
       {
         count++
@@ -568,12 +647,12 @@ read -r entries_captured logical_bytes_captured extra_summary \
 (( entries_captured == members_listed )) \
   || error 18 <<<'Backup archive listings disagreed'
 
-available_extract_bytes="$(df -B1 --output=avail -- "${partial}" 2>/dev/null \
-  | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
-  || available_extract_bytes=''
-available_inodes="$(df --output=iavail -- "${partial}" 2>/dev/null \
-  | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
-  || available_inodes=''
+available_extract_bytes=''
+available_inodes=''
+backup_df_value available_extract_bytes avail "${partial}" \
+  'extraction capacity preflight'
+backup_df_value available_inodes iavail "${partial}" \
+  'extraction inode preflight'
 metadata_budget=$(( extracted_entries * 4096 ))
 extract_budget=$(( archive_size + metadata_budget + backup_free_space_reserve ))
 if [[ ! "${available_extract_bytes}" =~ ^[0-9]+$ \
@@ -589,7 +668,8 @@ fi
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Backup deadline expired before extraction'
 set +e
-timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+backup_memory_limited timeout --signal=TERM \
+    --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
     "${remaining}" tar --extract --file="${archive}" \
       --directory="${partial}/tree" --no-same-owner --same-permissions \
       --delay-directory-restore --sparse

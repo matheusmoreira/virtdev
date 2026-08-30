@@ -13,7 +13,8 @@
 #   3 base missing; 4 conflicting filters; 5 unknown filtered project;
 #   6/7 audit failure; 8 aborted; 9 generation missing; 10 no projects;
 #   11 empty selection; 12 coupled project excluded; 13 excluded detached
-#   project not stopped; 14 bad base SSH contract; 20 backup failure;
+#   project not stopped; 14 bad base SSH contract; 15 provision preflight;
+#   20 backup failure;
 #   30 pre-exchange maintenance failure; 31 indeterminate base exchange;
 #   40 rebuild failure; 41 unprovisioned rebuild.
 #
@@ -23,7 +24,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project snapshot confirm terminal firewall recreate-result lock ssh mount stop-result
+import error validate arguments manifest project snapshot confirm terminal firewall recreate-result lock ssh mount stop-result frozen-input
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -196,14 +197,44 @@ included=("${included_after_detach[@]}")
 # ── Audit ───────────────────────────────────────────────────────────
 
 declare -a audit_failures=()
+upgrade_audit_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
+  .upgrade-audit.XXXXXXXX)"
+audit_manifest=''
+audit_files=''
+cleanup_upgrade_audit() {
+  [[ -z "${audit_manifest}" ]] \
+    || rm -f -- "${audit_manifest}" "${audit_manifest}.tmp"
+  [[ -z "${audit_files}" ]] \
+    || rm -f -- "${audit_files}" "${audit_files}.tmp"
+  rmdir -- "${upgrade_audit_directory}" 2>/dev/null || true
+}
+trap cleanup_upgrade_audit EXIT
 
 for p in "${included[@]}"; do
-  if ! manifest_resolve "${p}" >/dev/null; then
+  manifest_path=''
+  if ! manifest_path="$(manifest_resolve "${p}")"; then
     audit_failures+=("${p}: missing manifest")
-  elif ! manifest_has_entries "$(manifest_resolve "${p}")"; then
-    audit_failures+=("${p}: empty manifest")
+    continue
   fi
+  audit_manifest="${upgrade_audit_directory}/${p}.manifest"
+  audit_files="${upgrade_audit_directory}/${p}.files"
+  audit_deadline=$(( BASH_MONOSECONDS + 10 ))
+  audit_status=0
+  manifest_freeze_validate "${manifest_path}" "${audit_manifest}" \
+    "${audit_files}" "${audit_deadline}" 1 || audit_status=$?
+  case "${audit_status}" in
+    0) ;;
+    "${manifest_result_empty}") audit_failures+=("${p}: empty manifest") ;;
+    "${manifest_result_timeout}") audit_failures+=("${p}: manifest validation timed out") ;;
+    "${manifest_result_too_large}") audit_failures+=("${p}: manifest exceeds metadata limits") ;;
+    *) audit_failures+=("${p}: unsafe or unreadable manifest") ;;
+  esac
+  rm -f -- "${audit_manifest}" "${audit_files}"
+  audit_manifest=''
+  audit_files=''
 done
+trap - EXIT
+cleanup_upgrade_audit
 
 if [[ ${#audit_failures[@]} -gt 0 ]]; then
   {
@@ -304,14 +335,81 @@ if [[ ${#excluded_not_stopped[@]} -gt 0 ]]; then
   error 13 <<<"Aborting."
 fi
 
-# Discover provision scripts for the plan display.
+# Freeze provision scripts before the plan is confirmed.
 declare -A provision_paths=()
+declare -A provision_sources=()
+declare -A provision_digests=()
 for p in "${included[@]}"; do
   provision_hook="${XDG_CONFIG_HOME}/virtdev/projects/${p}/provision"
   if [[ -f "${provision_hook}" && -r "${provision_hook}" ]]; then
-    provision_paths["${p}"]="${provision_hook}"
+    provision_sources["${p}"]="${provision_hook}"
   fi
 done
+
+upgrade_transaction_directory=''
+upgrade_maintenance_started=0
+cleanup_upgrade_transaction() {
+  local -r status=$?
+  local p cleanup_failed=0
+
+  if [[ -n "${upgrade_transaction_directory}" ]]; then
+    if (( status != 0 && upgrade_maintenance_started )); then
+      printf >&2 'Frozen provision inputs preserved for recovery: %s\n' \
+        "${upgrade_transaction_directory}"
+    else
+      for p in "${!provision_paths[@]}"; do
+        rm -f -- "${provision_paths[${p}]}" || cleanup_failed=1
+      done
+      if (( cleanup_failed )) \
+          || ! rmdir -- "${upgrade_transaction_directory}"; then
+        printf >&2 'warning: provision transaction could not be removed safely: %s\n' \
+          "${upgrade_transaction_directory}"
+      fi
+    fi
+  fi
+  return "${status}"
+}
+
+if (( ${#provision_sources[@]} > 0 )); then
+  transaction_root="${VIRTDEV_HOME}/transactions"
+  if [[ -L "${transaction_root}" \
+      || ( -e "${transaction_root}" && ! -d "${transaction_root}" ) ]]; then
+    error 15 <<<"Unsafe transaction directory: ${transaction_root}"
+  fi
+  # shellcheck disable=SC2174  # chmod below fixes the boundary mode
+  mkdir -p -m 0700 -- "${transaction_root}"
+  chmod 0700 -- "${transaction_root}"
+  upgrade_transaction_directory="$(mktemp -d \
+    --tmpdir="${transaction_root}" upgrade.XXXXXXXX)"
+  trap cleanup_upgrade_transaction EXIT
+  provision_total_bytes=0
+  for p in "${included[@]}"; do
+    [[ -v provision_sources["${p}"] ]] || continue
+    provision_paths["${p}"]="${upgrade_transaction_directory}/${p}.provision"
+    provision_deadline=$(( BASH_MONOSECONDS + 10 ))
+    provision_status=0
+    frozen_input_copy provision_digests["${p}"] \
+      "${provision_sources[${p}]}" "${provision_paths[${p}]}" \
+      "${provision_deadline}" 1 || provision_status=$?
+    case "${provision_status}" in
+      0) ;;
+      "${frozen_input_result_too_large}")
+        error 15 <<<"Provision script exceeds ${frozen_input_max_bytes} bytes: ${provision_sources[${p}]}"
+        ;;
+      "${frozen_input_result_timeout}")
+        error 15 <<<"Provision script copy exceeded its 10-second deadline: ${provision_sources[${p}]}"
+        ;;
+      *) error 15 <<<"Could not freeze provision script: ${provision_sources[${p}]}" ;;
+    esac
+    provision_size="$(stat -c '%s' -- "${provision_paths[${p}]}" 2>/dev/null)" \
+      || error 15 <<<"Could not inspect frozen provision script: ${provision_paths[${p}]}"
+    (( provision_total_bytes += provision_size ))
+    (( provision_total_bytes <= 67108864 )) \
+      || error 15 <<<'Frozen provision inputs exceed the 64 MiB transaction budget'
+  done
+  sync -f -- "${transaction_root}" \
+    || error 15 <<<"Could not durably publish frozen provision inputs: ${upgrade_transaction_directory}"
+fi
 
 # Print the plan.
 {
@@ -332,7 +430,8 @@ done
     printf '\nProvision scripts found:\n'
     for p in "${included[@]}"; do
       if [[ -v provision_paths["${p}"] ]]; then
-        printf '    %-30s %s\n' "${p}" "${provision_paths[${p}]}"
+        printf '    %-30s %s\n' "${p}" "${provision_sources[${p}]}"
+        printf '      sha256 %s\n' "${provision_digests[${p}]}"
       fi
     done
   fi
@@ -547,6 +646,7 @@ printf '\n%s\n' "$(terminal_write bold "[Phase 2/${total_phases}] Maintaining ba
 printf 'This is the interactive phase. SSH into the maintenance virtual machine,\n' >&2
 printf 'perform updates, and power off when done.\n\n' >&2
 
+upgrade_maintenance_started=1
 maintain_status=0
 "${virtdev_bin_directory}/virtdev-maintain" "${unfiltered_opt[@]}" \
   || maintain_status=$?
@@ -587,9 +687,18 @@ declare -A fail_codes=()
 for p in "${included[@]}"; do
   printf '\n  Recreating %s...\n' "${p}" >&2
   recreate_opts=(--no-backup --yes --snapshot "${backup_snapshots[${p}]}")
+  provision_input_failed=0
   (( flags[verbose] )) && recreate_opts+=(--verbose)
   if [[ -n "${provision_paths[${p}]:-}" ]]; then
-    recreate_opts+=(--provision "${provision_paths[${p}]}")
+    provision_deadline=$(( BASH_MONOSECONDS + 10 ))
+    if frozen_input_verify "${provision_paths[${p}]}" \
+        "${provision_digests[${p}]}" "${provision_deadline}" 1; then
+      recreate_opts+=(--provision "${provision_paths[${p}]}")
+    else
+      provision_input_failed=1
+      recreate_opts+=(--no-provision)
+      printf >&2 '    Frozen provision input changed or became unreadable; rebuilding without it.\n'
+    fi
   else
     recreate_opts+=(--no-provision)
   fi
@@ -604,7 +713,11 @@ for p in "${included[@]}"; do
   (( flags[unfiltered] )) && recreate_opts+=(--unfiltered)
 
   if "${virtdev_bin_directory}/virtdev-recreate" "${recreate_opts[@]}" -- "${p}"; then
-    succeeded+=("${p}")
+    if (( provision_input_failed )); then
+      unprovisioned+=("${p}")
+    else
+      succeeded+=("${p}")
+    fi
   else
     exit_code=$?
     if (( exit_code == recreate_result_unprovisioned )); then
@@ -646,7 +759,15 @@ if [[ ${#unprovisioned[@]} -gt 0 ]]; then
   for p in "${unprovisioned[@]}"; do
     printf >&2 '    %s\n' "${p}"
   done
-  printf >&2 '\nThese virtual machines are up on the new base; re-run their provisioning.\n'
+  printf >&2 '\nThese virtual machines are up on the new base. Re-run provisioning with:\n'
+  for p in "${unprovisioned[@]}"; do
+    if [[ -n "${provision_paths[${p}]:-}" ]]; then
+      printf >&2 '    '
+      command_render virtdev-ssh -- "${p}" -- bash -s >&2
+      printf >&2 ' < '
+      printf >&2 '%q\n' "${provision_paths[${p}]}"
+    fi
+  done
 fi
 
 if [[ ${#failed[@]} -gt 0 ]]; then

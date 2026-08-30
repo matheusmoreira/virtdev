@@ -50,6 +50,8 @@ run_recreate() {
   RECREATE_FAIL_PREFLIGHT="${RECREATE_FAIL_PREFLIGHT:-0}" \
   RECREATE_PRESERVE_CREATE_PARTIAL="${RECREATE_PRESERVE_CREATE_PARTIAL:-0}" \
   RECREATE_STOP_STATUS="${RECREATE_STOP_STATUS:-}" \
+  RECREATE_MUTATE_PROVISION_SOURCE="${RECREATE_MUTATE_PROVISION_SOURCE:-}" \
+  RECREATE_SSH_STDIN_FILE="${RECREATE_SSH_STDIN_FILE:-}" \
   RECREATE_SNAPSHOT_PATH="${virtdev_home}/backups/${target}/${backup_snapshot}" \
   PATH="${fixture_bin}:${PATH}" \
   HOME="${test_tmp}" \
@@ -246,6 +248,28 @@ RECREATE_SSH_ARGS_FILE="${ssh_args_file}" \
   bash -c "${provision_command}"
 mapfile -d '' -t ssh_args < "${ssh_args_file}"
 [[ "${ssh_args[*]}" == '-- probe -- bash -s' ]]
+
+prepare_project
+printf 'original\n' > "${provision_path}"
+frozen_stdin="${test_tmp}/frozen-provision.stdin"
+frozen_output="${test_tmp}/frozen-provision.output"
+transactions_before="$(find "${virtdev_home}/transactions" \
+  -mindepth 1 -maxdepth 1 -type d -printf '.' | wc -c)"
+status="$(RECREATE_WITH_PROVISION=1 \
+  RECREATE_MUTATE_PROVISION_SOURCE="${provision_path}" \
+  RECREATE_SSH_STDIN_FILE="${frozen_stdin}" \
+  run_recreate inactive none "${frozen_output}" \
+    --no-backup --no-restore --provision "${provision_path}")"
+transactions_after="$(find "${virtdev_home}/transactions" \
+  -mindepth 1 -maxdepth 1 -type d -printf '.' | wc -c)"
+if (( status != 0 )) \
+    || [[ "$(< "${frozen_stdin}")" != original \
+      || "${transactions_after}" != "${transactions_before}" ]]; then
+  printf 'recreate did not execute/clean its frozen provision input (status %d)\n' \
+    "${status}" >&2
+  cat "${frozen_output}" >&2
+  exit 1
+fi
 
 prepare_project
 combined_failure_output="${test_tmp}/combined-failure.output"

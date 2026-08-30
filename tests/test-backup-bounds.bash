@@ -10,8 +10,9 @@ trap 'rm -rf -- "${test_tmp}"' EXIT
 fixture_bin="${test_tmp}/bin"
 restore_bin="${test_tmp}/restore-bin"
 sync_bin="${test_tmp}/sync-bin"
+timeout_bin="${test_tmp}/timeout-bin"
 mkdir -p "${fixture_bin}" "${restore_bin}" "${test_tmp}/guest/data/sub"
-mkdir "${sync_bin}"
+mkdir "${sync_bin}" "${timeout_bin}"
 cp "${repository}/tests/fixtures/ssh-backup" "${fixture_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
 printf '%s\n' \
@@ -30,6 +31,8 @@ cp "${repository}/tests/fixtures/ssh-restore" "${restore_bin}/ssh"
 cp "${repository}/tests/fixtures/systemctl" "${restore_bin}/systemctl"
 chmod +x "${restore_bin}/ssh" "${restore_bin}/systemctl"
 ln -s "${repository}/tests/fixtures/sync-counted" "${sync_bin}/sync"
+cp "${repository}/tests/fixtures/timeout-copy-tree-status" \
+  "${timeout_bin}/timeout"
 
 printf 'payload\n' > "${test_tmp}/guest/data/sub/file"
 printf 'second\n' > "${test_tmp}/guest/data/other"
@@ -47,6 +50,13 @@ for _ in {1..129}; do
 done
 tar -C "${test_tmp}/guest/data" -cf "${test_tmp}/too-deep.tar" \
   --transform="s|^other$|${deep_prefix}other|" other
+long_name=''
+for _ in {1..5000}; do
+  long_name+='x'
+done
+tar --format=pax -C "${test_tmp}/guest/data" \
+  -cf "${test_tmp}/long-name.tar" \
+  --transform="s|^other$|${long_name}|" other
 
 ssh_key="${test_tmp}/id"
 printf 'test private key\n' > "${ssh_key}"
@@ -223,6 +233,59 @@ if (( status != 18 )) || find "${escape_home}" -name escaped -print -quit \
     | grep -q .; then
   printf 'unsafe archive path escaped extraction containment (status %d)\n' \
     "${status}" >&2
+  exit 1
+fi
+
+long_name_home="${test_tmp}/long-name-home"
+long_name_extract_started="${test_tmp}/long-name-extract-started"
+prepare_home "${long_name_home}"
+status=0
+run_backup "${long_name_home}" 1048576 100 10 \
+  env BACKUP_TAR_STREAM="${test_tmp}/long-name.tar" \
+    BACKUP_EXTRACT_STARTED_FILE="${long_name_extract_started}" \
+  >"${test_tmp}/long-name.output" 2>&1 || status=$?
+if (( status != 19 )) || [[ -e "${long_name_extract_started}" ]]; then
+  printf 'oversized tar extension reached host listing/extraction (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/long-name.output" >&2
+  exit 1
+fi
+
+manifest_home="${test_tmp}/manifest-home"
+prepare_home "${manifest_home}"
+truncate -s 1048577 "${manifest_home}/projects/probe/manifest"
+status=0
+run_backup "${manifest_home}" 1048576 100 10 \
+  >"${test_tmp}/manifest-overflow.output" 2>&1 || status=$?
+if (( status != 19 )); then
+  printf 'backup accepted an oversized manifest (status %d)\n' "${status}" >&2
+  cat "${test_tmp}/manifest-overflow.output" >&2
+  exit 1
+fi
+
+manifest_timeout_home="${test_tmp}/manifest-timeout-home"
+prepare_home "${manifest_timeout_home}"
+status=0
+run_backup "${manifest_timeout_home}" 1048576 100 10 \
+  env PATH="${timeout_bin}:${fixture_bin}:${PATH}" \
+    RESTORE_TIMEOUT_COMMAND=head \
+  >"${test_tmp}/manifest-timeout.output" 2>&1 || status=$?
+if (( status != 20 )); then
+  printf 'backup lost its manifest deadline (status %d)\n' "${status}" >&2
+  cat "${test_tmp}/manifest-timeout.output" >&2
+  exit 1
+fi
+
+df_timeout_home="${test_tmp}/df-timeout-home"
+prepare_home "${df_timeout_home}"
+status=0
+run_backup "${df_timeout_home}" 1048576 100 10 \
+  env PATH="${timeout_bin}:${fixture_bin}:${PATH}" \
+    RESTORE_TIMEOUT_COMMAND=df \
+  >"${test_tmp}/df-timeout.output" 2>&1 || status=$?
+if (( status != 20 )); then
+  printf 'backup lost its capacity-probe deadline (status %d)\n' "${status}" >&2
+  cat "${test_tmp}/df-timeout.output" >&2
   exit 1
 fi
 

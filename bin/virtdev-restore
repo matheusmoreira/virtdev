@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # constants and helper paths provided by imports
 #
 # virtdev-restore [--verbose] [--preflight] <project> [snapshot]
 #
@@ -153,6 +154,48 @@ if [[ ! -x "${copy_tree_helper}" ]]; then
   error 25 <<<"virtdev-copy-tree not found: '${copy_tree_helper}'. Run 'make' to compile it."
 fi
 
+restore_deadline=$(( BASH_MONOSECONDS + VIRTDEV_RESTORE_TIMEOUT ))
+readonly restore_free_space_reserve=536870912
+readonly restore_inode_reserve=4096
+restore_summary_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
+  .restore-summary.XXXXXXXX)"
+restore_tree_summary_file="${restore_summary_directory}/tree"
+restore_allocated_summary_file="${restore_summary_directory}/allocated"
+restore_copy_summary_file="${restore_summary_directory}/copy"
+restore_manifest_copy="${restore_summary_directory}/manifest"
+restore_files_from="${restore_summary_directory}/files-from"
+restore_expected_project="${restore_summary_directory}/project"
+rsync_log=''
+rsync_wrapper=''
+restore_stage=''
+cleanup_restore() {
+  local -r status=$?
+  local mount_path='' remove_status=0 path
+
+  for path in "${rsync_log}" "${rsync_wrapper}"; do
+    [[ -z "${path}" ]] || rm -f -- "${path}"
+  done
+  if [[ -n "${restore_stage}" ]]; then
+    mount_remove_tree "${restore_stage}" mount_path || remove_status=$?
+    case "${remove_status}" in
+      0) ;;
+      1) printf >&2 'warning: preserving restore stage with mounted subtree: %s\n' "${mount_path}" ;;
+      *) printf >&2 'warning: preserving restore stage because cleanup safety is indeterminate: %s\n' "${restore_stage}" ;;
+    esac
+  fi
+  mount_path=''
+  remove_status=0
+  mount_remove_tree "${restore_summary_directory}" mount_path \
+    || remove_status=$?
+  case "${remove_status}" in
+    0) ;;
+    1) printf >&2 'warning: preserving restore summary state with mounted subtree: %s\n' "${mount_path}" ;;
+    *) printf >&2 'warning: preserving restore summary state because cleanup safety is indeterminate: %s\n' "${restore_summary_directory}" ;;
+  esac
+  return "${status}"
+}
+trap cleanup_restore EXIT
+
 backups_project_dir="$(snapshot_directory "${project}")"
 
 # Resolve omitted components to the latest available snapshot.
@@ -181,13 +224,13 @@ fi
 
 snapshot="${backups_project_dir}/${resolved_date}/${resolved_time}"
 
-if [[ ! -f "${snapshot}/manifest" ]]; then
+if [[ ! -f "${snapshot}/manifest" || -L "${snapshot}/manifest" ]]; then
   error 10 <<<"Snapshot missing manifest: ${snapshot}"
 fi
 if [[ ! -d "${snapshot}/tree" || -L "${snapshot}/tree" ]]; then
   error 23 <<<"Snapshot missing tree/: ${snapshot}"
 fi
-if [[ ! -f "${snapshot}/project" ]]; then
+if [[ ! -f "${snapshot}/project" || -L "${snapshot}/project" ]]; then
   error 24 <<MESSAGE
 Snapshot missing 'project' marker: ${snapshot}
 This snapshot was likely produced by an older virtdev-backup that
@@ -197,13 +240,26 @@ Re-run virtdev-backup to produce a snapshot with origin metadata.
 MESSAGE
 fi
 
-# Snapshot trees are project-scoped.
-snapshot_project="$(< "${snapshot}/project")"
-if [[ "${snapshot_project}" != "${project}" ]]; then
+printf '%s\n' "${project}" > "${restore_expected_project}"
+snapshot_project_size="$(stat -c '%s' -- "${snapshot}/project" 2>/dev/null)" \
+  || snapshot_project_size=''
+remaining=$(( restore_deadline - BASH_MONOSECONDS ))
+(( remaining > 0 )) \
+  || error 20 <<<'Restore deadline expired before project-marker validation'
+marker_status=0
+timeout --signal=TERM --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" \
+  "${remaining}" cmp -s -- "${snapshot}/project" \
+  "${restore_expected_project}" || marker_status=$?
+case "${marker_status}" in
+  0|1) ;;
+  124|137) error 20 <<<'Restore project-marker validation exceeded its wall-clock deadline' ;;
+  *) error 19 <<<'Could not validate snapshot project marker' ;;
+esac
+if [[ "${snapshot_project_size}" != "$(( ${#project} + 1 ))" \
+      || -L "${snapshot}/project" || ${marker_status} -ne 0 ]]; then
   error 12 <<MESSAGE
 Snapshot belongs to a different project.
-	snapshot project: ${snapshot_project}
-	target project:   ${project}
+Target project: ${project}
 Snapshots are project-scoped; cross-project restoration is refused.
 MESSAGE
 fi
@@ -247,49 +303,6 @@ fi
 printf >&2 '  snapshot generation: %s\n' "${snapshot_generation}"
 printf >&2 '  current generation:  %s\n' "${project_generation}"
 
-restore_summary_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
-  .restore-summary.XXXXXXXX)"
-restore_tree_summary_file="${restore_summary_directory}/tree"
-restore_allocated_summary_file="${restore_summary_directory}/allocated"
-restore_copy_summary_file="${restore_summary_directory}/copy"
-restore_files_from=''
-rsync_log=''
-rsync_wrapper=''
-restore_stage=''
-cleanup_restore() {
-  local -r status=$?
-  local mount_path='' remove_status=0
-
-  rm -f -- "${restore_files_from}" "${rsync_log}" "${rsync_wrapper}"
-  if [[ -n "${restore_stage}" ]]; then
-    mount_remove_tree "${restore_stage}" mount_path || remove_status=$?
-    case "${remove_status}" in
-      0) ;;
-      1) printf >&2 'warning: preserving restore stage with mounted subtree: %s\n' "${mount_path}" ;;
-      *) printf >&2 'warning: preserving restore stage because cleanup safety is indeterminate: %s\n' "${restore_stage}" ;;
-    esac
-  fi
-  mount_path=''
-  remove_status=0
-  mount_remove_tree "${restore_summary_directory}" mount_path \
-    || remove_status=$?
-  case "${remove_status}" in
-    0) ;;
-    1) printf >&2 'warning: preserving restore summary state with mounted subtree: %s\n' "${mount_path}" ;;
-    *) printf >&2 'warning: preserving restore summary state because cleanup safety is indeterminate: %s\n' "${restore_summary_directory}" ;;
-  esac
-  return "${status}"
-}
-trap cleanup_restore EXIT
-
-restore_deadline=$(( BASH_MONOSECONDS + VIRTDEV_RESTORE_TIMEOUT ))
-readonly restore_free_space_reserve=536870912
-readonly restore_inode_reserve=4096
-restore_files_from="$(mktemp)"
-manifest_write_rsync_files_from "${snapshot}/manifest" "${restore_files_from}"
-[[ -s "${restore_files_from}" ]] \
-  || error 10 <<<"Snapshot manifest has no restorable paths: ${snapshot}"
-
 restore_require_confined_tree() {
   local -r tree="${1}"
   local mount_path="" mount_status=0
@@ -314,8 +327,9 @@ restore_df_value() {
   local -n _restore_df_result="${1}"
   local -r column="${2}" path="${3}" phase="${4}"
   local -r df_output="${restore_summary_directory}/df-${column}"
-  local remaining df_status value
+  local remaining value output_size
   local -a df_lines=()
+  local -a df_status=()
 
   remaining=$(( restore_deadline - BASH_MONOSECONDS ))
   (( remaining > 0 )) \
@@ -329,17 +343,24 @@ restore_df_value() {
     avail)
       timeout --signal=TERM --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" \
         "${remaining}" df -B1 --output=avail -- "${path}" \
-        > "${df_output}" 2>/dev/null
+        2>/dev/null | head -c 4097 > "${df_output}"
+      df_status=("${PIPESTATUS[@]}")
       ;;
     iavail)
       timeout --signal=TERM --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" \
         "${remaining}" df --output=iavail -- "${path}" \
-        > "${df_output}" 2>/dev/null
+        2>/dev/null | head -c 4097 > "${df_output}"
+      df_status=("${PIPESTATUS[@]}")
       ;;
   esac
-  df_status=$?
   set -e
-  case "${df_status}" in
+  (( df_status[1] == 0 )) \
+    || error 19 <<<"Could not inspect host capacity during ${phase}"
+  output_size="$(stat -c '%s' -- "${df_output}" 2>/dev/null)" \
+    || output_size=''
+  [[ "${output_size}" =~ ^[0-9]+$ ]] && (( output_size <= 4096 )) \
+    || error 19 <<<"Could not parse host capacity during ${phase}"
+  case "${df_status[0]}" in
     0) ;;
     124|137) error 20 <<<"Restore ${phase} exceeded its wall-clock deadline" ;;
     *) error 19 <<<"Could not inspect host capacity during ${phase}" ;;
@@ -358,6 +379,33 @@ restore_df_value() {
   fi
   _restore_df_result="${value}"
 }
+
+metadata_available=''
+restore_df_value metadata_available avail "${VIRTDEV_HOME}" \
+  'manifest capacity preflight'
+if (( metadata_available < 2 * manifest_max_bytes + 1048576 )); then
+  error 19 <<<'Not enough host free space for bounded restore metadata'
+fi
+manifest_status=0
+manifest_freeze_validate "${snapshot}/manifest" "${restore_manifest_copy}" \
+  "${restore_files_from}" "${restore_deadline}" \
+  "${VIRTDEV_RESTORE_KILL_AFTER}" || manifest_status=$?
+case "${manifest_status}" in
+  0) ;;
+  "${manifest_result_empty}")
+    error 10 <<<"Snapshot manifest has no restorable paths: ${snapshot}"
+    ;;
+  "${manifest_result_timeout}")
+    error 20 <<<'Restore manifest preflight exceeded its wall-clock deadline'
+    ;;
+  "${manifest_result_too_large}")
+    error 19 <<<'Snapshot manifest exceeds its bounded metadata budget'
+    ;;
+  "${manifest_result_invalid}")
+    error 19 <<<'Snapshot manifest contains an unsafe or malformed path'
+    ;;
+  *) error 19 <<<'Could not freeze snapshot manifest' ;;
+esac
 
 restore_summarize_tree() {
   local -r tree="${1}" output="${2}" phase="${3}" entry_limit="${4}"
