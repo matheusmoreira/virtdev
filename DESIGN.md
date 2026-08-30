@@ -1176,15 +1176,13 @@ there is no silent shadowing when both files exist.
   project to standalone images — this preserves the current system state but
   requires the project to be updated independently going forward.
 
-  `virtdev-detach` operates in two modes: in-place rebase (fast, uses
-  `qemu-img rebase -b ""`) and convert-then-swap (default, produces a
-  clean standalone image via `qemu-img convert`). The convert-then-swap
-  mode blocks signals during its rename sequence and first durably writes
-  `.detach.transaction`. That journal binds the project, coupled generation,
-  and both original disk device/inode identities. Recovery cleans up a proven
-  completed swap or rolls back only when the surviving current/`.bak` files
-  match those identities. A `.bak` file without the journal is untrusted and
-  causes a fail-closed exit without mutation.
+  `virtdev-detach` supports in-place rebase (`qemu-img rebase -b ""`) and
+  convert-then-swap (the default). Both first durably write an identity-bound
+  `.detach.transaction` journal. Convert recovery either finishes a proven
+  swap or restores matching original/`.bak` inodes. In-place recovery cannot
+  roll back rewritten images; it publishes `detached` only after both matching
+  disk inodes are proven backing-free, and otherwise preserves the journal for
+  inspection. A `.bak` file without the journal is untrusted.
 
 - **Read-only root setup in base image.** The `systemd.volatile=state` kernel
   parameter is the intended mechanism. The base image configuration for this

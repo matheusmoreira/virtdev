@@ -18,8 +18,8 @@
 #
 #   --in-place (rebase):
 #       Modifies images in place via qemu-img rebase. Less disk space
-#       and write volume. No rollback on interruption — if the rebase
-#       is interrupted, the image is in an undefined state.
+#       and write volume. The journal can finish metadata publication after
+#       completed rebases, but cannot roll back an interrupted image rewrite.
 #
 # Both modes verify the resulting images with qemu-img check.
 #
@@ -49,6 +49,7 @@
 #   14  convert failed for home disk
 #   15  in-place: detached but verification failed (images may be corrupt)
 #   16  detach recovery state is missing, corrupt, or does not match the disks
+#   17  in-place disks committed but detached metadata is incomplete
 #
 # Configuration via environment variables:
 #
@@ -131,15 +132,24 @@ MESSAGE
   printf '%s' "${project_generation}"
 }
 
-has_backing() {
-  qemu-img info --output=json "${1}" \
-    | grep -q '"backing-filename"'
+disk_backing_state() {
+  local -n _detach_backing_state="${1}"
+  local info
+
+  info="$(qemu-img info --output=json "${2}")" || return 1
+  if grep -q '"backing-filename"' <<< "${info}"; then
+    _detach_backing_state=backed
+  else
+    _detach_backing_state=standalone
+  fi
 }
 
-# Pre-lock checks: fast failure before the confirmation prompt.
-# These are repeated under the lock below to close the TOCTOU window.
-# Fail CLOSED: only a PROVABLY stopped machine proceeds — an unreachable manager
-# reads as not-stopped, never as safe (detach mutates disks).
+has_backing() {
+  local state=''
+  disk_backing_state state "${1}" && [[ "${state}" == backed ]]
+}
+
+# Repeated under the lock before disk mutation.
 if ! project_is_stopped "${project}"; then
   error 4 <<MESSAGE
 Virtual machine is running: ${project}
@@ -176,13 +186,31 @@ detach_transaction_load() {
   body="${raw%$'\n'}"
   local -a transaction_lines=()
   mapfile -t transaction_lines <<< "${body}"
-  if (( ${#transaction_lines[@]} != 6 )) \
-     || [[ "${transaction_lines[0]}" != version=1 \
-        || "${transaction_lines[1]}" != "project=${project}" \
-        || "${transaction_lines[2]}" != generation=* \
-        || "${transaction_lines[3]}" != system_identity=* \
-        || "${transaction_lines[4]}" != home_identity=* \
-        || "${transaction_lines[5]}" != phase=swapping ]]; then
+  detach_txn_mode=''
+  if (( ${#transaction_lines[@]} == 6 )) \
+      && [[ "${transaction_lines[0]}" == version=1 \
+        && "${transaction_lines[1]}" == "project=${project}" \
+        && "${transaction_lines[2]}" == generation=* \
+        && "${transaction_lines[3]}" == system_identity=* \
+        && "${transaction_lines[4]}" == home_identity=* \
+        && "${transaction_lines[5]}" == phase=swapping ]]; then
+    detach_txn_mode=convert
+  elif (( ${#transaction_lines[@]} == 7 )) \
+      && [[ "${transaction_lines[0]}" == version=2 \
+        && "${transaction_lines[1]}" == "project=${project}" \
+        && "${transaction_lines[2]}" == generation=* \
+        && "${transaction_lines[3]}" == system_identity=* \
+        && "${transaction_lines[4]}" == home_identity=* \
+        && "${transaction_lines[5]}" == mode=* \
+        && "${transaction_lines[6]}" == phase=* ]]; then
+    detach_txn_mode="${transaction_lines[5]#mode=}"
+    detach_txn_phase="${transaction_lines[6]#phase=}"
+    case "${detach_txn_mode}:${detach_txn_phase}" in
+      convert:swapping|in-place:rebasing) ;;
+      *) detach_txn_mode='' ;;
+    esac
+  fi
+  if [[ -z "${detach_txn_mode}" ]]; then
     error 16 <<<"Detach transaction identity does not match this operation: ${detach_transaction}"
   fi
 
@@ -217,9 +245,11 @@ MESSAGE
 }
 
 detach_transaction_write() {
-  local -r generation="${1}" system_identity="${2}" home_identity="${3}"
-  printf 'version=1\nproject=%s\ngeneration=%s\nsystem_identity=%s\nhome_identity=%s\nphase=swapping\n' \
+  local -r generation="${1}" system_identity="${2}" home_identity="${3}" \
+    mode="${4}" phase="${5}"
+  printf 'version=2\nproject=%s\ngeneration=%s\nsystem_identity=%s\nhome_identity=%s\nmode=%s\nphase=%s\n' \
     "${project}" "${generation}" "${system_identity}" "${home_identity}" \
+    "${mode}" "${phase}" \
     > "${detach_transaction_tmp}"
   chmod 600 "${detach_transaction_tmp}"
   if ! sync -f "${detach_transaction_tmp}"; then
@@ -231,11 +261,24 @@ detach_transaction_write() {
   fi
 }
 
-# ── Journaled interrupted-detach recovery ──────────────────────────
-# A .bak name alone is not transaction authority: it may be stale or manual.
-# Only a durable journal tied to both original disk inodes may authorize cleanup
-# or rollback. Recovery happens before the normal detached/backing guards because
-# a partially swapped project intentionally violates those steady-state shapes.
+detach_generation_publish() {
+  local -r value="${1}" temporary="${generation_file}.detach.tmp"
+
+  rm -f -- "${temporary}" || return 1
+  printf '%s\n' "${value}" > "${temporary}" || return 1
+  chmod 0644 -- "${temporary}" || return 1
+  sync -f -- "${temporary}" || return 1
+  mv -T -- "${temporary}" "${generation_file}" || return 1
+  sync -f -- "${project_directory}"
+}
+
+detach_transaction_remove() {
+  rm -f -- "${detach_transaction_tmp}" "${detach_transaction}" || return 1
+  sync -f -- "${project_directory}"
+}
+
+# A journal binds recovery to both disk inodes. A .bak name alone has no
+# recovery authority.
 if [[ ( -e "${system_bak}" || -L "${system_bak}" \
         || -e "${home_bak}" || -L "${home_bak}" ) \
       && ! -e "${detach_transaction}" && ! -L "${detach_transaction}" ]]; then
@@ -258,6 +301,53 @@ Stop it first: virtdev-stop ${project}
 MESSAGE
   fi
   detach_transaction_load
+
+  if [[ "${detach_txn_mode}" == in-place ]]; then
+    if [[ -e "${system_bak}" || -L "${system_bak}" \
+        || -e "${home_bak}" || -L "${home_bak}" ]]; then
+      error 16 <<<'In-place detach journal conflicts with convert-mode backup files; no recovery mutation was attempted.'
+    fi
+    detach_transaction_require_identity \
+      "${system_disk}" "${detach_txn_system_identity}" 'system disk'
+    detach_transaction_require_identity \
+      "${home_disk}" "${detach_txn_home_identity}" 'home disk'
+    system_backing_state=''
+    home_backing_state=''
+    disk_backing_state system_backing_state "${system_disk}" \
+      || error 17 <<<'Could not inspect the journaled in-place system disk; recovery state was preserved.'
+    disk_backing_state home_backing_state "${home_disk}" \
+      || error 17 <<<'Could not inspect the journaled in-place home disk; recovery state was preserved.'
+    if [[ "${system_backing_state}" != standalone \
+        || "${home_backing_state}" != standalone ]]; then
+      error 17 <<MESSAGE
+In-place detach recovery cannot prove both exact disks are standalone.
+    system: ${system_backing_state}
+    home:   ${home_backing_state}
+The journal was preserved. Inspect the images and restore from backup if either
+interrupted rebase left an undefined image.
+MESSAGE
+    fi
+
+    verify_failed=0
+    qemu-img check -q "${system_disk}" || verify_failed=1
+    qemu-img check -q "${home_disk}" || verify_failed=1
+    detach_generation_publish detached || error 17 <<MESSAGE
+Both journaled disks are standalone, but detached metadata could not be
+published durably. The journal was preserved: ${detach_transaction}
+MESSAGE
+    detach_transaction_remove || error 17 <<MESSAGE
+Detached metadata is committed, but journal cleanup could not be made durable:
+${detach_transaction}
+MESSAGE
+    if (( verify_failed )); then
+      error 15 <<MESSAGE
+Project metadata was recovered as detached, but image verification failed.
+Restore from backup if the images are corrupt: ${project}
+MESSAGE
+    fi
+    printf >&2 '%s\n' "$(terminal_write fg=green "Recovered detached project: ${project}" reset)"
+    exit 0
+  fi
 
   if project_is_detached "${project}"; then
     [[ ! -e "${system_bak}" && ! -L "${system_bak}" ]] \
@@ -312,11 +402,7 @@ MESSAGE
   if ! has_backing "${system_disk}" || ! has_backing "${home_disk}"; then
     error 16 <<<'Journaled originals were restored, but their backing topology could not be verified; recovery state was preserved.'
   fi
-  rm -f -- "${generation_file}.tmp"
-  printf '%s\n' "${detach_txn_generation}" > "${generation_file}.tmp"
-  mv -T -- "${generation_file}.tmp" "${generation_file}"
-  chmod 644 "${generation_file}"
-  if ! sync -f "${project_directory}"; then
+  if ! detach_generation_publish "${detach_txn_generation}"; then
     error 16 <<<'Detach rollback completed in memory but could not be made durable; transaction state was preserved.'
   fi
   rm -f -- "${system_disk}.detach" "${home_disk}.detach" \
@@ -352,7 +438,7 @@ current_generation="$(detach_generation_require_current)"
   printf '  Home disk:   %s\n' "${home_disk}"
   printf '  Generation:  %s\n' "${current_generation}"
   if (( flags[in-place] )); then
-    printf '  Mode:        in-place (no rollback on interruption)\n'
+    printf '  Mode:        journaled in-place (no image rollback)\n'
   else
     printf '  Mode:        convert (use --in-place to rebase in place)\n'
   fi
@@ -379,17 +465,11 @@ No mutation was attempted; re-run virtdev-detach to validate and recover it.
 MESSAGE
 fi
 
-# No journal/.bak exists here, so the originals are intact. A SIGKILL during a prior convert can
-# still leave orphaned .detach temp files (a full base-sized copy each, not
-# created before the journaled commit); sweep them for disk-space/orphan hygiene.
-# The convert's own EXIT trap covers ordinary signals; this covers a SIGKILL or
-# power loss between runs.
-rm -f -- "${system_disk}.detach" "${home_disk}.detach" "${detach_transaction_tmp}"
+# Discard unjournaled conversion temporaries from an interrupted pre-commit run.
+rm -f -- "${system_disk}.detach" "${home_disk}.detach" \
+  "${detach_transaction_tmp}" "${generation_file}.detach.tmp"
 
-# Post-lock re-checks: close the TOCTOU window between the pre-lock
-# checks and lock acquisition. A concurrent virtdev-start could have
-# booted the VM, or a concurrent virtdev-detach could have completed.
-# Fail CLOSED: only a PROVABLY stopped machine proceeds (unreachable manager reads as not-stopped).
+# Close the confirmation-to-lock race before mutating disks.
 if ! project_is_stopped "${project}"; then
   error 4 <<MESSAGE
 Virtual machine is running: ${project}
@@ -417,11 +497,20 @@ current_generation="$(detach_generation_require_current)"
 if (( flags[in-place] )); then
   # ── In-place mode (rebase) ──────────────────────────────────────
 
+  system_original_identity="$(disk_identity "${system_disk}")" \
+    || error 16 <<<"System disk is not a regular file: ${system_disk}"
+  home_original_identity="$(disk_identity "${home_disk}")" \
+    || error 16 <<<"Home disk is not a regular file: ${home_disk}"
+  detach_transaction_write "${current_generation}" \
+    "${system_original_identity}" "${home_original_identity}" \
+    in-place rebasing
+
   printf >&2 'Rebasing system disk...\n'
   if ! qemu-img rebase -b "" -f qcow2 "${system_disk}"; then
     error 10 <<MESSAGE
 Rebase failed for system disk: ${system_disk}
-The image may be in an undefined state. Restore from backup.
+The image may be in an undefined state. The recovery journal was preserved;
+inspect the image and restore from backup if needed.
 MESSAGE
   fi
 
@@ -430,7 +519,8 @@ MESSAGE
     error 11 <<MESSAGE
 Rebase failed for home disk: ${home_disk}
 The system disk was already rebased. Both images may be in an
-undefined state. Restore from backup.
+undefined state. The recovery journal was preserved; inspect the images and
+restore from backup if needed.
 MESSAGE
   fi
 
@@ -445,17 +535,31 @@ MESSAGE
     verify_failed=1
   fi
 
-  printf 'detached\n' > "${generation_file}"
-  chmod 644 "${generation_file}"
+  detach_transaction_require_identity \
+    "${system_disk}" "${system_original_identity}" 'system disk'
+  detach_transaction_require_identity \
+    "${home_disk}" "${home_original_identity}" 'home disk'
+  system_backing_state=''
+  home_backing_state=''
+  disk_backing_state system_backing_state "${system_disk}" \
+    || error 17 <<<'Could not verify the rebased system disk topology; the journal was preserved.'
+  disk_backing_state home_backing_state "${home_disk}" \
+    || error 17 <<<'Could not verify the rebased home disk topology; the journal was preserved.'
+  if [[ "${system_backing_state}" != standalone \
+      || "${home_backing_state}" != standalone ]]; then
+    error 17 <<<'Rebase returned success without two standalone disks; the journal was preserved.'
+  fi
+
+  detach_generation_publish detached || error 17 <<MESSAGE
+Both disks were rebased, but detached metadata could not be published durably.
+The journal was preserved for recovery: ${detach_transaction}
+MESSAGE
+  detach_transaction_remove || error 17 <<MESSAGE
+Detached metadata is committed, but journal cleanup could not be made durable:
+${detach_transaction}
+MESSAGE
 
   if (( verify_failed )); then
-    # The in-place rebase already removed the backing file (irreversible), so the
-    # disks ARE standalone — the 'detached' marker above keeps the metadata
-    # consistent with on-disk reality (gating it would leave a standalone project
-    # wrongly marked coupled, which virtdev-start could then refuse to boot).
-    # Exit 15, distinct from convert mode's exit 12 ("verify failed, project
-    # UNCHANGED"), so a caller can tell "committed but maybe corrupt" from "safely
-    # rolled back".
     printf >&2 '\n%s\n' "$(terminal_write fg=yellow "Project detached: ${project}, but verification FAILED — images may be corrupt." reset)"
     printf >&2 'Restore from backup if the images are bad.\n'
     exit 15
@@ -502,23 +606,17 @@ MESSAGE
   home_original_identity="$(disk_identity "${home_disk}")" \
     || error 16 <<<"Home disk is not a regular file: ${home_disk}"
   detach_transaction_write "${current_generation}" \
-    "${system_original_identity}" "${home_original_identity}"
+    "${system_original_identity}" "${home_original_identity}" \
+    convert swapping
 
-  # Swap: the durable journal is the authority for the exact originals. The
-  # fully detached topology and marker are flushed before backups are removed;
-  # any interruption is deterministically rolled back or cleanup-completed by
-  # the recovery branch above.
+  # The journal keeps the rename sequence recoverable until publication syncs.
   trap '' INT TERM HUP QUIT
   printf >&2 'Swapping...\n'
   mv -T -- "${system_disk}" "${system_bak}"
   mv -T -- "${system_detach}" "${system_disk}"
   mv -T -- "${home_disk}" "${home_bak}"
   mv -T -- "${home_detach}" "${home_disk}"
-  rm -f -- "${generation_file}.tmp"
-  printf 'detached\n' > "${generation_file}.tmp"
-  mv -T -- "${generation_file}.tmp" "${generation_file}"
-  chmod 644 "${generation_file}"
-  if ! sync -f "${project_directory}"; then
+  if ! detach_generation_publish detached; then
     error 16 <<MESSAGE
 The detach swap completed but could not be made durable.
 Journal and original disks were preserved for recovery: ${detach_transaction}

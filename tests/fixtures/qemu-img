@@ -4,11 +4,38 @@ set -euo pipefail
 
 case "${1:-}" in
   info)
-    if [[ "${QEMU_HAS_BACKING:-1}" == 1 ]]; then
+    disk="${!#}"
+    if [[ -n "${QEMU_BACKING_STATE_DIRECTORY:-}" ]]; then
+      if [[ -e "${QEMU_BACKING_STATE_DIRECTORY}/${disk##*/}" ]]; then
+        printf '{"backing-filename":"/base/image.qcow2"}\n'
+      else
+        printf '{}\n'
+      fi
+    elif [[ "${QEMU_HAS_BACKING:-1}" == 1 ]]; then
       printf '{"backing-filename":"/base/image.qcow2"}\n'
     else
       printf '{}\n'
     fi
+    ;;
+  rebase)
+    [[ -z "${QEMU_LOG:-}" ]] || printf '%s\n' "$*" >> "${QEMU_LOG}"
+    if [[ "${QEMU_REBASE_MUTATE:-0}" == 1 ]]; then
+      disk="${!#}"
+      rm -f -- "${QEMU_BACKING_STATE_DIRECTORY:?}/${disk##*/}"
+      if [[ "${QEMU_REBASE_FAIL_DISK:-}" == "${disk##*/}" ]]; then
+        exit "${QEMU_REBASE_FAIL_STATUS:-1}"
+      fi
+      exit 0
+    fi
+    exit "${QEMU_OTHER_STATUS:-99}"
+    ;;
+  check)
+    [[ -z "${QEMU_LOG:-}" ]] || printf '%s\n' "$*" >> "${QEMU_LOG}"
+    if [[ "${QEMU_REBASE_MUTATE:-0}" == 1 \
+        || -n "${QEMU_CHECK_STATUS:-}" ]]; then
+      exit "${QEMU_CHECK_STATUS:-0}"
+    fi
+    exit "${QEMU_OTHER_STATUS:-99}"
     ;;
   *)
     if [[ -n "${QEMU_LOG:-}" ]]; then
