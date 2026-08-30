@@ -2,8 +2,23 @@
 
 set -euo pipefail
 
-if (( $# >= 2 )) \
-    && [[ "${*: -2:1}" == bash && "${*: -1}" == -s ]] \
+declare -a remote_arguments=()
+while (( $# > 0 )); do
+  if [[ "${1}" == dev@127.0.0.1 ]]; then
+    shift
+    remote_arguments=("$@")
+    break
+  fi
+  shift
+done
+remote_command=''
+if (( ${#remote_arguments[@]} )); then
+  printf -v remote_command '%s ' "${remote_arguments[@]}"
+  remote_command="${remote_command% }"
+fi
+
+if [[ "${remote_command}" == 'bash -s' \
+      || "${remote_command}" == "'bash' '-s'" ]] \
     && [[ "${MAINTENANCE_EXECUTE_HOOKS:-0}" == 1 ]]; then
   : "${MAINTENANCE_HOOK_CAPTURE_DIRECTORY:?}"
   mkdir -p -- "${MAINTENANCE_HOOK_CAPTURE_DIRECTORY}"
