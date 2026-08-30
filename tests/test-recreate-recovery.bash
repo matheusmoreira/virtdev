@@ -45,6 +45,7 @@ run_recreate() {
   fi
   SYSTEMCTL_ACTIVE_STATE="${active_state}" \
   RECREATE_FAIL_STEP="${failure}" \
+  RECREATE_FAIL_STEPS="${RECREATE_FAIL_STEPS:-}" \
   RECREATE_SNAPSHOT_PATH="${virtdev_home}/backups/probe/${backup_snapshot}" \
   PATH="${fixture_bin}:${PATH}" \
   HOME="${test_tmp}" \
@@ -166,6 +167,49 @@ if [[ "${ssh_args[*]}" != 'probe -- bash -s' ]]; then
 fi
 
 prepare_project
+provision_failure_output="${test_tmp}/provision-failure.output"
+status="$(RECREATE_WITH_PROVISION=1 run_recreate inactive ssh \
+  "${provision_failure_output}" --no-backup --snapshot "${old_snapshot}" \
+  --provision "${provision_path}")"
+if (( status != 26 )); then
+  printf 'recreate did not report failed provisioning (status %d)\n' \
+    "${status}" >&2
+  cat "${provision_failure_output}" >&2
+  exit 1
+fi
+provision_command="$(sed -n 's/^    \(virtdev-ssh .*\)$/\1/p' \
+  "${provision_failure_output}" | tail -n1)"
+rm -f -- "${ssh_args_file}"
+PATH="${test_bin}:${PATH}" \
+RECREATE_SSH_ARGS_FILE="${ssh_args_file}" \
+  bash -c "${provision_command}"
+mapfile -d '' -t ssh_args < "${ssh_args_file}"
+[[ "${ssh_args[*]}" == 'probe -- bash -s' ]]
+
+prepare_project
+combined_failure_output="${test_tmp}/combined-failure.output"
+status="$(RECREATE_WITH_PROVISION=1 RECREATE_FAIL_STEPS=ssh,restore \
+  run_recreate inactive none "${combined_failure_output}" \
+  --no-backup --snapshot "${old_snapshot}" \
+  --provision "${provision_path}")"
+if (( status != 27 )); then
+  printf 'recreate did not report combined recovery failure (status %d)\n' \
+    "${status}" >&2
+  cat "${combined_failure_output}" >&2
+  exit 1
+fi
+grep -Fq "Selected snapshot: ${backups_directory}/12-00-00/" \
+  "${combined_failure_output}"
+combined_provision_command="$(sed -n \
+  's/^    \(virtdev-ssh .*\)$/\1/p' "${combined_failure_output}" | tail -n1)"
+rm -f -- "${ssh_args_file}"
+PATH="${test_bin}:${PATH}" \
+RECREATE_SSH_ARGS_FILE="${ssh_args_file}" \
+  bash -c "${combined_provision_command}"
+mapfile -d '' -t ssh_args < "${ssh_args_file}"
+[[ "${ssh_args[*]}" == 'probe -- bash -s' ]]
+
+prepare_project
 no_restore_output="${test_tmp}/no-restore-wait.output"
 status="$(run_recreate inactive wait "${no_restore_output}" \
   --no-backup --no-restore)"
@@ -185,4 +229,5 @@ fi
 
 printf 'ok - recreate recovery commands retain the transaction snapshot\n'
 printf 'ok - recreate recovery preserves selected post-wait steps\n'
+printf 'ok - provision failure recovery preserves the selected script path\n'
 printf 'ok - failed starts report indeterminate fixed-unit ownership\n'

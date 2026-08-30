@@ -588,7 +588,7 @@ if (( do_provision )); then
     provision_failed=1
     printf >&2 '%s\n' "$(terminal_write bold fg=yellow "Provision failed (script exited non-zero): ${provision_path}" reset)"
     printf >&2 'The virtual machine is up but unprovisioned. Re-run manually:\n'
-    printf >&2 '    virtdev-ssh %s -- bash -s < %s\n' "${project}" "${provision_path}"
+    printf >&2 '    %s\n' "$(provision_resume)"
   fi
 fi
 
@@ -604,10 +604,10 @@ if (( do_restore )); then
     if (( provision_failed )); then
       provision_hint="
 Provisioning also failed. Retry it with:
-    virtdev-ssh ${project} -- bash -s < ${provision_path}"
+    $(provision_resume)"
     fi
     [[ -n "${snap}" ]] && snap_hint="
-Latest snapshot: ${backups_project_dir}/${snap}/
+Selected snapshot: ${backups_project_dir}/${snap}/
 Retry with explicit snapshot:
     virtdev-restore ${project} ${snap}"
     error "${recreate_result_restore_failed}" <<MESSAGE

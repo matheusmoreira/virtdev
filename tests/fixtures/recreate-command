@@ -9,6 +9,10 @@ project="${!#}"
 if [[ "${RECREATE_FAIL_STEP:-}" == "${phase}" ]]; then
   exit 1
 fi
+IFS=',' read -r -a failure_steps <<< "${RECREATE_FAIL_STEPS:-}"
+for failure_step in "${failure_steps[@]}"; do
+  [[ -z "${failure_step}" || "${failure_step}" != "${phase}" ]] || exit 1
+done
 
 case "${phase}" in
   backup)
