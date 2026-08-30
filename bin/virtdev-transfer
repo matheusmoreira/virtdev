@@ -748,6 +748,7 @@ transfer_file_state() {
   case "${command_status}" in
     0) ;;
     44|47) return 1 ;;
+    49) return 5 ;;
     124|137) return 2 ;;
     *) return 3 ;;
   esac
@@ -813,11 +814,12 @@ transfer_directory_root_state() {
 transfer_trees_equal() {
   local -r expected="${1}" actual="${2}"
   local remaining rsync_status=0 head_status=0 diagnostic_status=0
-  local expected_root actual_root comparison
+  local expected_root actual_root comparison direction comparison_source \
+    comparison_target
   local difference="${transfer_transaction}/tree-comparison"
   local capture="${transfer_transaction}/tree-comparison.stderr"
   local fifo="${transfer_transaction}/tree-comparison.stderr.fifo"
-  local -a statuses=() rsync_options=()
+  local -a directions=() statuses=() rsync_options=()
 
   transfer_directory_root_state "${expected}" || return $?
   expected_root="${TRANSFER_DIRECTORY_ROOT_STATE}"
@@ -826,50 +828,61 @@ transfer_trees_equal() {
   [[ "${expected_root}" == "${actual_root}" ]] || return 1
 
   for comparison in metadata content; do
+    directions=(forward)
     case "${comparison}" in
       metadata)
         rsync_options=(-aHn --modify-window=-1 --numeric-ids)
+        directions+=(reverse)
         ;;
       content)
         rsync_options=(-rlHnc)
         ;;
     esac
-    remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
-    (( remaining > 0 )) || return 2
-    : > "${difference}" || return 3
-    statuses=()
-    diagnostic_status=0
-    set +e
-    LC_ALL=C bounded_stderr_run "${capture}" "${fifo}" \
-        "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
-        timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
-          "${remaining}" rsync "${rsync_options[@]}" --delete \
-            --itemize-changes --out-format=x -- "${expected}/" "${actual}/" \
-      | head -c 1 > "${difference}"
-    statuses=("${PIPESTATUS[@]}")
-    set -e
-    (( ${#statuses[@]} == 2 )) || return 3
-    rsync_status="${statuses[0]}"
-    head_status="${statuses[1]}"
-    bounded_stderr_emit "${capture}" \
-      "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
-    case "${diagnostic_status}" in
-      0) ;;
-      2) return 4 ;;
-      *) return 3 ;;
-    esac
-    rm -f -- "${capture}" || return 3
-    (( head_status == 0 )) || return 3
-    case "${rsync_status}" in
-      0) ;;
-      124|137) return 2 ;;
-      141)
-        [[ -s "${difference}" ]] && return 1
-        return 3
-        ;;
-      *) return 3 ;;
-    esac
-    [[ ! -s "${difference}" ]] || return 1
+    for direction in "${directions[@]}"; do
+      comparison_source="${expected}"
+      comparison_target="${actual}"
+      if [[ "${direction}" == reverse ]]; then
+        comparison_source="${actual}"
+        comparison_target="${expected}"
+      fi
+      remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+      (( remaining > 0 )) || return 2
+      : > "${difference}" || return 3
+      statuses=()
+      diagnostic_status=0
+      set +e
+      LC_ALL=C bounded_stderr_run "${capture}" "${fifo}" \
+          "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+          timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+            "${remaining}" rsync "${rsync_options[@]}" --delete \
+              --itemize-changes --out-format=x -- \
+              "${comparison_source}/" "${comparison_target}/" \
+        | head -c 1 > "${difference}"
+      statuses=("${PIPESTATUS[@]}")
+      set -e
+      (( ${#statuses[@]} == 2 )) || return 3
+      rsync_status="${statuses[0]}"
+      head_status="${statuses[1]}"
+      bounded_stderr_emit "${capture}" \
+        "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+      case "${diagnostic_status}" in
+        0) ;;
+        2) return 4 ;;
+        *) return 3 ;;
+      esac
+      rm -f -- "${capture}" || return 3
+      (( head_status == 0 )) || return 3
+      case "${rsync_status}" in
+        0) ;;
+        124|137) return 2 ;;
+        141)
+          [[ -s "${difference}" ]] && return 1
+          return 3
+          ;;
+        *) return 3 ;;
+      esac
+      [[ ! -s "${difference}" ]] || return 1
+    done
   done
 }
 
@@ -1251,6 +1264,8 @@ elif [[ -d "${source_item}" ]]; then
         (( remaining > 0 )) \
           || error 12 <<<'Symlink validation exceeded the transfer deadline'
         link_status=0
+        link_display=''
+        diagnostic_quote link_display "${link_path}"
         timeout --signal=TERM \
           --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
           realpath -m -z -- "${link_path}" > "${resolved_link_file}" \
@@ -1258,15 +1273,15 @@ elif [[ -d "${source_item}" ]]; then
         case "${link_status}" in
           0) ;;
           124|137) error 12 <<<'Symlink validation exceeded the transfer deadline' ;;
-          *) error 14 <<<"Could not resolve downloaded symlink: ${link_path}" ;;
+          *) error 14 <<<"Could not resolve downloaded symlink: ${link_display}" ;;
         esac
         mapfile -d '' -t resolved_links < "${resolved_link_file}"
         (( ${#resolved_links[@]} == 1 )) \
-          || error 14 <<<"Could not parse downloaded symlink: ${link_path}"
+          || error 14 <<<"Could not parse downloaded symlink: ${link_display}"
         resolved_link="${resolved_links[0]}"
         if [[ "${resolved_link}" != "${symlink_root}" \
             && "${resolved_link}" != "${symlink_root}/"* ]]; then
-          error 14 <<<"Downloaded symlink escapes the transfer root: ${link_path}"
+          error 14 <<<"Downloaded symlink escapes the transfer root: ${link_display}"
         fi
       done
     )
@@ -1442,6 +1457,7 @@ if (( target_exists )); then
       1) error 15 <<<'Existing host file changed or exceeded the validation bound' ;;
       2) error 12 <<<'Existing host file validation exceeded the transfer deadline' ;;
       4) error 11 <<<'Existing host file diagnostics exceeded their output budget' ;;
+      5) error 15 <<<'Existing host file has extended attributes or ACLs that cannot be preserved' ;;
       *) error 15 <<<'Could not capture a stable existing host file' ;;
     esac
   else
@@ -1590,6 +1606,7 @@ if (( target_exists )); then
       1) validation_detail='existing host target changed during publication' ;;
       2) validation_detail='existing host target validation exceeded the deadline' ;;
       4) validation_detail='existing host target validation exceeded a resource limit' ;;
+      5) validation_detail='existing host target gained unsupported extended attributes or ACLs' ;;
       *) validation_detail='existing host target could not be validated after publication' ;;
     esac
     transfer_recovery_begin

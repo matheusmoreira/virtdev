@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 
 enum {
@@ -17,6 +18,7 @@ enum {
 	FILE_STATE_ERROR = 1,
 	FILE_STATE_LIMIT = 44,
 	FILE_STATE_CHANGED = 47,
+	FILE_STATE_METADATA_UNSUPPORTED = 49,
 	FILE_STATE_USAGE = 64,
 };
 
@@ -245,6 +247,24 @@ static int file_error(const char *operation, const char *path)
 	return FILE_STATE_ERROR;
 }
 
+static int require_no_xattrs(int descriptor, const char *path)
+{
+	ssize_t size;
+
+	do {
+		size = flistxattr(descriptor, NULL, 0);
+	} while (size < 0 && errno == EINTR);
+	if (size < 0)
+		return file_error("cannot inspect regular-file attributes at", path);
+	if (size) {
+		fprintf(stderr,
+			"extended attributes or ACLs are unsupported at '%s'\n",
+			path);
+		return FILE_STATE_METADATA_UNSUPPORTED;
+	}
+	return FILE_STATE_OK;
+}
+
 static int digest_fd(int descriptor, off_t size, const char *path,
 		     unsigned char digest[SHA256_DIGEST_SIZE])
 {
@@ -338,6 +358,9 @@ int main(int argc, char *argv[])
 		result = FILE_STATE_LIMIT;
 		goto out;
 	}
+	result = require_no_xattrs(descriptor, argv[1]);
+	if (result)
+		goto out;
 	result = digest_fd(descriptor, before.st_size, argv[1], digest);
 	if (result)
 		goto out;

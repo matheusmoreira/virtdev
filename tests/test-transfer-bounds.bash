@@ -512,6 +512,80 @@ file_mutation_library="${test_tmp}/publish-mutate-file.so"
 cc -std=c99 -shared -fPIC -Wall -Wextra -Wpedantic -Werror \
   -o "${file_mutation_library}" \
   "${repository}/tests/support/publish-mutate-file.c"
+
+hardlink_race_root="${test_tmp}/hardlink-race-root"
+hardlink_race_target="${hardlink_race_root}/remote-dir"
+hardlink_race_marker="${test_tmp}/hardlink-race.marker"
+mkdir -p "${hardlink_race_target}"
+: > "${hardlink_race_target}/one"
+: > "${hardlink_race_target}/two"
+touch -d '@1700000000.100000000' -- "${hardlink_race_target}"
+status=0
+run_transfer "${test_tmp}/directory.tar" remote-dir "${hardlink_race_root}" \
+  env LD_PRELOAD="${file_mutation_library}" \
+    TRANSFER_MUTATION_MODE=hardlink \
+    TRANSFER_MUTATION_TARGET="${hardlink_race_target}" \
+    TRANSFER_MUTATION_MARKER="${hardlink_race_marker}" \
+  >"${test_tmp}/hardlink-race.output" 2>&1 || status=$?
+hardlink_race_transaction="$(find "${hardlink_race_root}" -maxdepth 1 \
+  -type d -name '.virtdev-transfer.*' -print -quit)"
+if (( status != 15 )) || [[ ! -e "${hardlink_race_marker}" \
+      || "$(stat -c '%i' -- "${hardlink_race_target}/one")" \
+        != "$(stat -c '%i' -- "${hardlink_race_target}/two")" \
+      || -e "${hardlink_race_target}/new" \
+      || -z "${hardlink_race_transaction}" ]]; then
+  printf 'introduced hardlink topology was not rolled back (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/hardlink-race.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${hardlink_race_transaction}"
+
+xattr_file_root="${test_tmp}/xattr-file-root"
+xattr_file_target="${xattr_file_root}/target"
+mkdir "${xattr_file_root}"
+printf 'old\n' > "${xattr_file_target}"
+setfattr -n user.virtdev-test -v retained -- "${xattr_file_target}"
+status=0
+run_transfer "${test_tmp}/replacement.tar" file "${xattr_file_target}" \
+  >"${test_tmp}/xattr-file.output" 2>&1 || status=$?
+if (( status != 15 )) || [[ "$(< "${xattr_file_target}")" != old \
+      || "$(getfattr --only-values -n user.virtdev-test -- \
+        "${xattr_file_target}" 2>/dev/null)" != retained ]] \
+    || find "${xattr_file_root}" -maxdepth 1 -type d \
+      -name '.virtdev-transfer.*' -print -quit | grep -q .; then
+  printf 'existing-file xattrs were not rejected before publication (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/xattr-file.output" >&2
+  exit 1
+fi
+
+xattr_race_root="${test_tmp}/xattr-race-root"
+xattr_race_target="${xattr_race_root}/target"
+xattr_race_marker="${test_tmp}/xattr-race.marker"
+mkdir "${xattr_race_root}"
+printf 'old\n' > "${xattr_race_target}"
+status=0
+run_transfer "${test_tmp}/replacement.tar" file "${xattr_race_target}" \
+  env LD_PRELOAD="${file_mutation_library}" \
+    TRANSFER_MUTATION_MODE=xattr \
+    TRANSFER_MUTATION_TARGET="${xattr_race_target}" \
+    TRANSFER_MUTATION_MARKER="${xattr_race_marker}" \
+  >"${test_tmp}/xattr-race.output" 2>&1 || status=$?
+xattr_race_transaction="$(find "${xattr_race_root}" -maxdepth 1 -type d \
+  -name '.virtdev-transfer.*' -print -quit)"
+if (( status != 15 )) || [[ ! -e "${xattr_race_marker}" \
+      || "$(< "${xattr_race_target}")" != old \
+      || "$(getfattr --only-values -n user.virtdev-race -- \
+        "${xattr_race_target}" 2>/dev/null)" != writer \
+      || -z "${xattr_race_transaction}" ]]; then
+  printf 'xattr-only publication race was not rolled back (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/xattr-race.output" >&2
+  exit 1
+fi
+rm -rf --one-file-system -- "${xattr_race_transaction}"
+
 printf 'old\n' > "${destination}"
 file_race_marker="${test_tmp}/file-race.marker"
 status=0
@@ -590,6 +664,7 @@ rm -rf --one-file-system -- "${nested_nanosecond_transaction}"
 
 printf 'ok - existing-target races include nanosecond metadata changes\n'
 printf 'ok - existing-target races roll back without discarding writer data\n'
+printf 'ok - hardlink and access-metadata races roll back exactly\n'
 
 sync_fault="${test_tmp}/publish-sync-fail.so"
 cc -shared -fPIC -Wall -Wextra -Werror \
@@ -856,6 +931,26 @@ if (( status != 14 )) || [[ -e "${unsafe_destination}" ]]; then
   printf 'escaping symlink was not rejected before publication (status %d)\n' \
     "${status}" >&2
   cat "${test_tmp}/symlink.output" >&2
+  exit 1
+fi
+
+control_symlink_source="${test_tmp}/control-symlink-source"
+control_symlink_name=$'control-\033[2J\nspoof'
+mkdir -p "${control_symlink_source}/item"
+ln -s ../../escape -- \
+  "${control_symlink_source}/item/${control_symlink_name}"
+tar -C "${control_symlink_source}" -cf "${test_tmp}/control-symlink.tar" \
+  --transform='flags=rh;s,^item,payload/item,' item
+status=0
+run_transfer "${test_tmp}/control-symlink.tar" tree "${unsafe_destination}" \
+  >"${test_tmp}/control-symlink.output" 2>&1 || status=$?
+if (( status != 14 )) \
+    || LC_ALL=C grep -q $'\033' "${test_tmp}/control-symlink.output" \
+    || grep -Fxq spoof "${test_tmp}/control-symlink.output" \
+    || ! grep -Fq '\nspoof' "${test_tmp}/control-symlink.output"; then
+  printf 'guest-controlled symlink diagnostic was not neutralized (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/control-symlink.output" >&2
   exit 1
 fi
 

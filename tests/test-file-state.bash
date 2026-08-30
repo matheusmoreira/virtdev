@@ -57,6 +57,17 @@ if (( status != 44 )) || [[ -s "${test_tmp}/limit.stdout" ]]; then
   exit 1
 fi
 
+setfattr -n user.virtdev-test -v retained -- "${source_file}"
+status=0
+"${helper}" "${source_file}" 8 >"${test_tmp}/xattr.stdout" \
+  2>"${test_tmp}/xattr.stderr" || status=$?
+if (( status != 49 )) || [[ -s "${test_tmp}/xattr.stdout" ]]; then
+  printf 'file-state did not reject extended attributes (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+setfattr -x user.virtdev-test -- "${source_file}"
+
 mkdir "${test_tmp}/directory"
 ln -s source "${test_tmp}/symlink"
 mkfifo "${test_tmp}/fifo"

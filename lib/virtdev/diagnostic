@@ -3,6 +3,11 @@
 
 set -euo pipefail
 
+diagnostic_quote() {
+  local -n _diagnostic_quote_ref="${1}"
+  printf -v _diagnostic_quote_ref '%q' "${2}"
+}
+
 bounded_stderr_run() {
   local -r capture="${1}" fifo="${2}" maximum_bytes="${3}"
   shift 3
