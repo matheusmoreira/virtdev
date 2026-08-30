@@ -265,8 +265,9 @@ backup_df_value() {
   (( command_status[1] == 0 )) \
     || error 18 <<<"Could not inspect host capacity during ${phase}"
   output_size="$(stat -c '%s' -- "${output}" 2>/dev/null)" || output_size=''
-  [[ "${output_size}" =~ ^[0-9]+$ ]] && (( output_size <= 4096 )) \
-    || error 18 <<<"Could not parse host capacity during ${phase}"
+  if [[ ! "${output_size}" =~ ^[0-9]+$ ]] || (( output_size > 4096 )); then
+    error 18 <<<"Could not parse host capacity during ${phase}"
+  fi
   case "${command_status[0]}" in
     0) ;;
     124|137) error 20 <<<"Backup ${phase} exceeded its wall-clock deadline" ;;

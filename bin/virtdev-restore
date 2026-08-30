@@ -358,8 +358,9 @@ restore_df_value() {
     || error 19 <<<"Could not inspect host capacity during ${phase}"
   output_size="$(stat -c '%s' -- "${df_output}" 2>/dev/null)" \
     || output_size=''
-  [[ "${output_size}" =~ ^[0-9]+$ ]] && (( output_size <= 4096 )) \
-    || error 19 <<<"Could not parse host capacity during ${phase}"
+  if [[ ! "${output_size}" =~ ^[0-9]+$ ]] || (( output_size > 4096 )); then
+    error 19 <<<"Could not parse host capacity during ${phase}"
+  fi
   case "${df_status[0]}" in
     0) ;;
     124|137) error 20 <<<"Restore ${phase} exceeded its wall-clock deadline" ;;
