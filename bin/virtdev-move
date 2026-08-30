@@ -32,7 +32,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal project runtime ssh
+import enumerate error validate lock arguments terminal project runtime ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -201,9 +201,15 @@ if [[ -d "${target_backups}" ]]; then
   # named 'project' under <date>/<time>/tree/..., which would then be
   # clobbered with the new project name (and a 'project' *directory*
   # would make the redirect fail mid-critical-section).
-  while IFS= read -r -d '' marker; do
+  declare -a snapshot_markers=()
+  # shellcheck disable=SC2154  # imported from enumerate
+  enumerate_nul_sorted snapshot_markers "${enumerate_max_bytes}" \
+    find "${target_backups}" -mindepth 3 -maxdepth 3 -type f \
+      -name project -print0 \
+    || error 9 <<<'Could not completely enumerate moved snapshot markers; the move journal was preserved.'
+  for marker in "${snapshot_markers[@]}"; do
     printf '%s\n' "${target_name}" > "${marker}"
-  done < <(find "${target_backups}" -mindepth 3 -maxdepth 3 -type f -name project -print0)
+  done
   printf >&2 'Backup snapshots moved and markers updated.\n'
 fi
 

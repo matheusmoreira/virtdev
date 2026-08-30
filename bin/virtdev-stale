@@ -34,7 +34,10 @@ if [[ $# -ne 0 ]]; then
   error 64 <<<"$(arguments_usage spec)"
 fi
 
-while IFS= read -r p; do
+declare -a stale_projects=()
+project_list_into stale_projects \
+  || error 3 <<<'Could not completely enumerate projects.'
+for p in "${stale_projects[@]}"; do
   status=0
   project_is_outdated "${p}" || status=$?
   case "${status}" in
@@ -47,4 +50,4 @@ Cannot determine which projects are outdated; reseal or repair the base.
 MESSAGE
        ;;
   esac
-done < <(project_list)
+done

@@ -140,18 +140,21 @@ validate_project_name "${project}"
 
 project_directory="${VIRTDEV_HOME}/projects/${project}"
 
-project_require_ordinary "${project}"
-
 # Latest mode: print the most recent snapshot ID and exit.
 if (( flags[latest] )); then
-  snapshot_latest "${project}"
+  latest_snapshot=''
+  snapshot_latest_into latest_snapshot "${project}" \
+    || error 18 <<<'Could not completely enumerate snapshots.'
+  printf '%s' "${latest_snapshot}"
   exit 0
 fi
 
 # List mode stops here; it lists past snapshots regardless of VM state.
 if (( flags[list] )); then
   backups_project_dir="$(snapshot_directory "${project}")"
-  mapfile -t day_dirs < <(snapshot_list_days "${project}")
+  declare -a day_dirs=()
+  snapshot_list_days_into day_dirs "${project}" \
+    || error 18 <<<'Could not completely enumerate snapshot dates.'
 
   if (( ${#day_dirs[@]} == 0 )); then
     printf >&2 'No snapshots.\n'
@@ -177,7 +180,9 @@ if (( flags[list] )); then
   }
 
   for d in "${day_dirs[@]}"; do
-    mapfile -t time_dirs < <(snapshot_list_times "${project}" "${d}")
+    declare -a time_dirs=()
+    snapshot_list_times_into time_dirs "${project}" "${d}" \
+      || error 18 <<<'Could not completely enumerate snapshot times.'
     for t in "${time_dirs[@]}"; do
       snapshot="${backups_project_dir}/${d}/${t}"
       size="$(du -sh "${snapshot}" 2>/dev/null | cut -f1 || true)"
@@ -198,6 +203,8 @@ if (( flags[list] )); then
   done
   exit 0
 fi
+
+project_require_ordinary "${project}"
 
 # From here on: create mode preconditions (4 and up).
 

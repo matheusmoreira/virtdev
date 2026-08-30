@@ -83,7 +83,9 @@ find "${project_directory}" -type f \
     done
 
 backups_project_dir="$(snapshot_directory "${project}")"
-backup_count="$(snapshot_count "${project}")"
+backup_count=0
+snapshot_count_into backup_count "${project}" \
+  || error 6 <<<'Could not completely enumerate preserved backups; destruction was refused.'
 if (( backup_count > 0 )); then
   printf >&2 '\nBackups preserved: %d snapshot(s) at %s\n' "${backup_count}" "${backups_project_dir}"
 fi

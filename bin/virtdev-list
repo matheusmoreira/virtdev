@@ -41,7 +41,9 @@ fi
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
-mapfile -t projects < <(project_list)
+declare -a projects=()
+project_list_into projects \
+  || error 3 <<<'Could not completely enumerate projects.'
 
 if [[ ${#projects[@]} -eq 0 ]]; then
   printf >&2 'No projects found.\n'

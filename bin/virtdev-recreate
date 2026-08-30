@@ -201,7 +201,13 @@ fi
 # and no prior snapshots" rule, and for the latest-snapshot reference
 # in restore-failure recovery hints.
 has_snapshots=0
-snapshot_any "${project}" && has_snapshots=1
+snapshot_inventory_status=0
+snapshot_any_strict "${project}" || snapshot_inventory_status=$?
+case "${snapshot_inventory_status}" in
+  0) has_snapshots=1 ;;
+  1) ;;
+  *) error 9 <<<'Could not completely enumerate restore snapshots' ;;
+esac
 
 # Decide which steps will actually run. Computed up front so the plan
 # print is accurate and the chain executes without re-deriving.
@@ -220,7 +226,8 @@ if (( do_restore )); then
     do_restore=0
     restore_skip_reason="no prior snapshots"
   elif (( ! do_backup )) && [[ -z "${pinned_snapshot}" ]]; then
-    pinned_snapshot="$(snapshot_latest "${project}")"
+    snapshot_latest_into pinned_snapshot "${project}" \
+      || error 9 <<<'Could not completely enumerate restore snapshots'
     [[ -n "${pinned_snapshot}" ]] \
       || error 9 <<<'Could not pin the selected restore snapshot'
   fi
@@ -335,7 +342,9 @@ selected_snapshot() {
   elif [[ -n "${pinned_snapshot}" ]]; then
     printf '%s' "${pinned_snapshot}"
   else
-    snapshot_latest "${project}"
+    local latest_snapshot=''
+    snapshot_latest_into latest_snapshot "${project}" || return 1
+    printf '%s' "${latest_snapshot}"
   fi
 }
 

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Strict, bounded NUL-record command capture.
+
+set -euo pipefail
+
+# shellcheck disable=SC2034  # consumed by importing libraries and commands
+readonly enumerate_max_bytes=67108864
+
+enumerate_nul_sorted() {
+  local -n _enumerate_result="${1}"
+  local -r maximum_bytes="${2}"
+  shift 2
+  local output size producer_status consumer_status sort_status=0
+  local restore_errexit=0
+  local -a pipeline_status=()
+
+  _enumerate_result=()
+  [[ "${maximum_bytes}" =~ ^[1-9][0-9]*$ ]] \
+    && (( maximum_bytes <= 1073741824 )) || return 2
+  output="$(mktemp)" || return 2
+  [[ $- == *e* ]] && restore_errexit=1
+  set +e
+  "$@" | head -c "$(( maximum_bytes + 1 ))" > "${output}"
+  pipeline_status=("${PIPESTATUS[@]}")
+  (( restore_errexit )) && set -e
+
+  producer_status="${pipeline_status[0]:-1}"
+  consumer_status="${pipeline_status[1]:-1}"
+  size="$(stat -c '%s' -- "${output}" 2>/dev/null)" || {
+    rm -f -- "${output}"
+    return 2
+  }
+  if [[ ! "${size}" =~ ^[0-9]+$ ]] || (( size > maximum_bytes )); then
+    rm -f -- "${output}"
+    return 3
+  fi
+  if (( producer_status != 0 || consumer_status != 0 )); then
+    rm -f -- "${output}"
+    return 2
+  fi
+  LC_ALL=C sort -z --output="${output}" -- "${output}" \
+    || sort_status=$?
+  if (( sort_status != 0 )); then
+    rm -f -- "${output}"
+    return 2
+  fi
+  mapfile -d '' -t _enumerate_result < "${output}"
+  rm -f -- "${output}"
+}

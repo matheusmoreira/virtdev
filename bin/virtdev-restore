@@ -156,7 +156,9 @@ backups_project_dir="$(snapshot_directory "${project}")"
 
 # Resolve omitted components to the latest available snapshot.
 if [[ -z "${given_date}" ]]; then
-  resolved_snapshot="$(snapshot_latest "${project}")"
+  resolved_snapshot=''
+  snapshot_latest_into resolved_snapshot "${project}" \
+    || error 19 <<<'Could not completely enumerate snapshots'
   if [[ -z "${resolved_snapshot}" ]]; then
     error 8 <<MESSAGE
 No snapshots for this project: ${project}
@@ -170,14 +172,6 @@ else
     error 16 <<<"Snapshot date not found: ${given_date}"
   fi
   resolved_date="${given_date}"
-fi
-
-if [[ -z "${given_time}" && -z "${resolved_time:-}" ]]; then
-  resolved_time="$(snapshot_list_times "${project}" "${resolved_date}" | tail -n1)"
-  if [[ -z "${resolved_time}" ]]; then
-    error 17 <<<"No snapshots on date ${resolved_date}"
-  fi
-else
   if [[ ! -d "${backups_project_dir}/${resolved_date}/${given_time}" ]]; then
     error 18 <<<"Snapshot time not found: ${resolved_date}/${given_time}"
   fi
@@ -229,12 +223,17 @@ if [[ -s "${snapshot}/generation" ]]; then
   snapshot_generation="$(generation_read_base_lenient "${snapshot}/generation")"
 fi
 
-if ! snapshot_tree_has_entries "${snapshot}/tree"; then
-  error 11 <<MESSAGE
+snapshot_tree_status=0
+snapshot_tree_has_entries_strict "${snapshot}/tree" || snapshot_tree_status=$?
+case "${snapshot_tree_status}" in
+  0) ;;
+  1) error 11 <<MESSAGE
 Empty snapshot: ${resolved_date}/${resolved_time}
 The snapshot's tree contains no entries to restore.
 MESSAGE
-fi
+     ;;
+  *) error 19 <<<'Could not inspect the complete snapshot tree' ;;
+esac
 
 # A generation mismatch is normal after recreate.
 printf >&2 'Restoring %s from %s/%s\n' \

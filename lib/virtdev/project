@@ -2,7 +2,7 @@
 # shellcheck disable=SC2154  # machine constants are provided by import
 # Project enumeration, unit state, and generation validation.
 #
-# Public API: project_list; project_state; project_load_state;
+# Public API: project_list, project_list_into; project_state; project_load_state;
 # project_is_{running,stopped,unreachable,outdated,detached}; project_require;
 # generation_read_{base,project}; and their display-only lenient variants.
 #
@@ -17,23 +17,36 @@
 
 set -euo pipefail
 
-import error machine validate
+import enumerate error machine validate
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
 readonly generation_max=2147483647
 
-project_list() {
+project_list_into() {
+  local -n _project_list_result="${1}"
   local LC_ALL=C
   local -r projects_dir="${VIRTDEV_HOME}/projects"
-  [[ -d "${projects_dir}" ]] || return 0
+  local -a discovered=()
   local name
-  # NUL delimiters keep owner-created newline names indivisible and rejectable.
-  while IFS= read -r -d '' name; do
+
+  _project_list_result=()
+  [[ -d "${projects_dir}" ]] || return 0
+  enumerate_nul_sorted discovered "${enumerate_max_bytes}" \
+    find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' \
+    || return $?
+  for name in "${discovered[@]}"; do
     project_name_is_valid "${name}" || continue
     [[ "${name}" == "maintenance" ]] && continue
-    printf '%s\n' "${name}"
-  done < <(find "${projects_dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' | sort -z)
+    _project_list_result+=("${name}")
+  done
+}
+
+project_list() {
+  local -a projects=()
+  project_list_into projects || return $?
+  (( ${#projects[@]} )) && printf '%s\n' "${projects[@]}"
+  return 0
 }
 
 project_state() {

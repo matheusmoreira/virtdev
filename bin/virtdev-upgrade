@@ -131,7 +131,8 @@ fi
 base_generation="$(generation_read_base "${system_generation_file}")"
 
 declare -a valid_projects=()
-mapfile -t valid_projects < <(project_list)
+project_list_into valid_projects \
+  || error 6 <<<'Could not completely enumerate projects; upgrade was refused.'
 
 if [[ ${#valid_projects[@]} -eq 0 ]]; then
   error 10 <<<"No projects found."

@@ -124,6 +124,29 @@ if (( sparse_size != 2097152 || sparse_blocks * 512 >= sparse_size )); then
   exit 1
 fi
 
+latest_guest="${test_tmp}/latest-guest"
+mkdir -p "${latest_guest}"
+status=0
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/config" \
+NO_COLOR=1 \
+SYSTEMCTL_ACTIVE_STATE=active \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_SSH_KEY="${ssh_key}" \
+VIRTDEV_RESTORE_MAX_BYTES="${logical_bytes}" \
+VIRTDEV_RESTORE_MAX_ENTRIES=100 \
+VIRTDEV_RESTORE_TIMEOUT=10 \
+VIRTDEV_RESTORE_KILL_AFTER=1 \
+RESTORE_GUEST_ROOT="${latest_guest}" \
+  "${repository}/bin/virtdev-restore" probe \
+    >"${test_tmp}/latest.output" 2>&1 || status=$?
+if (( status != 0 )) || [[ ! -f "${latest_guest}/real/sub/file" ]]; then
+  printf 'implicit-latest restore failed (status %d)\n' "${status}" >&2
+  cat "${test_tmp}/latest.output" >&2
+  exit 1
+fi
+
 budget_guest="${test_tmp}/budget-guest"
 status=0
 run_restore "${budget_guest}" 1048576 100 10 \

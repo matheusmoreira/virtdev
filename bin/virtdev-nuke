@@ -109,9 +109,10 @@ require_unmounted_roots
 # Skip owner-added directories whose names are not valid project names.
 projects_directory="${VIRTDEV_HOME}/projects"
 if [[ -d "${projects_directory}" ]]; then
-  LC_ALL=C
-  while IFS= read -r project; do
-    [[ "${project}" =~ ^[a-zA-Z0-9_-]+$ ]] || continue
+  declare -a nuke_projects=()
+  project_list_into nuke_projects \
+    || error 3 <<<'Could not completely enumerate projects; nuke was refused.'
+  for project in "${nuke_projects[@]}"; do
     if ! project_is_stopped "${project}"; then
       error 4 <<MESSAGE
 Project virtual machine is running: ${project}
@@ -119,7 +120,7 @@ Stop it with: virtdev-stop ${project}
 All virtual machines must be stopped before nuking
 MESSAGE
     fi
-  done < <(find "${projects_directory}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null)
+  done
 fi
 
 printf >&2 'This will permanently delete all virtdev data:\n\n'
@@ -132,15 +133,18 @@ done
 
 backups_root="${VIRTDEV_HOME}/backups"
 if [[ -d "${backups_root}" ]]; then
-  mapfile -t backup_projects < <(
-    find "${backups_root}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
-      | sort
-  )
+  declare -a backup_projects=()
+  # shellcheck disable=SC2154  # imported through project
+  enumerate_nul_sorted backup_projects "${enumerate_max_bytes}" \
+    find "${backups_root}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' \
+    || error 3 <<<'Could not completely enumerate backup roots; nuke was refused.'
   if (( ${#backup_projects[@]} > 0 )); then
     printf >&2 '\nBackup snapshots:\n'
     for bp in "${backup_projects[@]}"; do
       bp_dir="${backups_root}/${bp}"
-      count="$(snapshot_count "${bp}")"
+      count=0
+      snapshot_count_into count "${bp}" \
+        || error 3 <<<'Could not completely enumerate backup snapshots; nuke was refused.'
       size="$(du -sh "${bp_dir}" 2>/dev/null | cut -f1 || true)"
       printf >&2 '\t%s\t%s\t(%d snapshots)\n' "${size}" "${bp_dir}" "${count}"
     done

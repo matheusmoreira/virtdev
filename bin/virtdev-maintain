@@ -1245,7 +1245,12 @@ fi
 printf >&2 '%s\n' "$(terminal_write fg=green "Base system resealed: ${system_directory}" reset)"
 
 outdated_count=0
-while IFS= read -r p; do
+declare -a resealed_projects=()
+if ! project_list_into resealed_projects; then
+  printf >&2 'warning: base resealed, but projects could not be completely enumerated\n'
+  resealed_projects=()
+fi
+for p in "${resealed_projects[@]}"; do
   outdated_status=0
   project_is_outdated "${p}" || outdated_status=$?
   case "${outdated_status}" in
@@ -1257,7 +1262,7 @@ while IFS= read -r p; do
        printf >&2 '%s\n' "$(terminal_write fg=yellow "warning: base generation file is unreadable; cannot assess outdated projects" reset)"
        break ;;
   esac
-done < <(project_list)
+done
 
 if (( outdated_count > 0 )); then
   printf >&2 '\n'

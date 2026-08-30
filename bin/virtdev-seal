@@ -30,7 +30,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error lock arguments terminal ssh
+import enumerate error lock arguments terminal ssh
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -86,11 +86,11 @@ fi
 # any changes: renaming the whole directory is the atomic commit, so no file
 # can be stranded and system/ can never become partially populated.
 declare -a unexpected_entries=()
-while IFS= read -r -d '' entry; do
-  unexpected_entries+=("${entry}")
-done < <(find "${installation_directory}" -mindepth 1 -maxdepth 1 \
-  ! -name system.qcow2 ! -name home.qcow2 ! -name nvram \
-  ! -name generation ! -name "${ssh_guest_contract_name}" -print0)
+enumerate_nul_sorted unexpected_entries "${enumerate_max_bytes}" \
+  find "${installation_directory}" -mindepth 1 -maxdepth 1 \
+    ! -name system.qcow2 ! -name home.qcow2 ! -name nvram \
+    ! -name generation ! -name "${ssh_guest_contract_name}" -print0 \
+  || error 8 <<<'Could not completely enumerate installation staging; no base was published.'
 
 if (( ${#unexpected_entries[@]} )); then
   unexpected_list=''

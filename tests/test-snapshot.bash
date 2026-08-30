@@ -40,4 +40,22 @@ if snapshot_id_from_path other "${snapshot_path}" >/dev/null; then
   exit 1
 fi
 
+latest_output="$(
+  HOME="${test_tmp}" NO_COLOR=1 \
+    "${repository}/bin/virtdev-backup" --latest probe
+)"
+if [[ "${latest_output}" != '2026-08-26/12-00-00' ]]; then
+  printf 'preserved snapshots were not discoverable without a project\n' >&2
+  exit 1
+fi
+list_output="$(
+  HOME="${test_tmp}" NO_COLOR=1 \
+    "${repository}/bin/virtdev-backup" --list probe
+)"
+if [[ "${list_output}" != *'2026-08-26'* || "${list_output}" != *'12-00-00'* ]]; then
+  printf 'preserved snapshot listing failed without a project\n' >&2
+  exit 1
+fi
+
 printf 'ok - snapshot selection skips empty days and retains directories\n'
+printf 'ok - list and latest discover backups after project removal\n'
