@@ -4,6 +4,7 @@ set -euo pipefail
 
 case "${1:-}" in
   info)
+    [[ -z "${QEMU_INFO_STATUS:-}" ]] || exit "${QEMU_INFO_STATUS}"
     disk="${!#}"
     if [[ -n "${QEMU_BACKING_STATE_DIRECTORY:-}" ]]; then
       if [[ -e "${QEMU_BACKING_STATE_DIRECTORY}/${disk##*/}" ]]; then

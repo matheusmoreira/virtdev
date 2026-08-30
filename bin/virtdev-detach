@@ -42,6 +42,7 @@
 #   6   disk has no backing file
 #   7   project/base generation mismatch or invalid detach generation state
 #   8   user aborted at confirmation prompt
+#   9   disk backing topology could not be inspected
 #   10  rebase failed for system disk (--in-place)
 #   11  rebase failed for home disk (--in-place)
 #   12  verification failed (convert mode — project unchanged)
@@ -147,6 +148,16 @@ disk_backing_state() {
 has_backing() {
   local state=''
   disk_backing_state state "${1}" && [[ "${state}" == backed ]]
+}
+
+detach_require_backed() {
+  local -r description="${1}" disk="${2}"
+  local state=''
+
+  disk_backing_state state "${disk}" \
+    || error 9 <<<"Could not inspect ${description,,} backing topology: ${disk}"
+  [[ "${state}" == backed ]] \
+    || error 6 <<<"${description} has no backing file: ${disk}"
 }
 
 # Repeated under the lock before disk mutation.
@@ -421,13 +432,8 @@ if project_is_detached "${project}"; then
   error 5 <<<"Already detached: ${project}"
 fi
 
-if ! has_backing "${system_disk}"; then
-  error 6 <<<"System disk has no backing file: ${system_disk}"
-fi
-
-if ! has_backing "${home_disk}"; then
-  error 6 <<<"Home disk has no backing file: ${home_disk}"
-fi
+detach_require_backed 'System disk' "${system_disk}"
+detach_require_backed 'Home disk' "${home_disk}"
 
 current_generation="$(detach_generation_require_current)"
 
@@ -481,13 +487,8 @@ if project_is_detached "${project}"; then
   error 5 <<<"Already detached: ${project}"
 fi
 
-if ! has_backing "${system_disk}"; then
-  error 6 <<<"System disk has no backing file: ${system_disk}"
-fi
-
-if ! has_backing "${home_disk}"; then
-  error 6 <<<"Home disk has no backing file: ${home_disk}"
-fi
+detach_require_backed 'System disk' "${system_disk}"
+detach_require_backed 'Home disk' "${home_disk}"
 
 # Maintenance and generation metadata are protected by this same lock. Repeat
 # the equality proof after acquiring it so neither a concurrent reseal nor a
