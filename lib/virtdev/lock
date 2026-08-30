@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# lock library: fail-fast store and cache serialization.
+# lock library: fail-fast store, cache, and transfer-target serialization.
 # Public:
 #   lock_acquire                  store lock, ordinary diagnostic
 #   lock_acquire_for_maintain     store lock, maintenance diagnostic
 #   lock_acquire_cache            cache/ISO lock
+#   lock_acquire_transfer_target  one canonical host transfer target
 #   lock_store_path               print the stable store lock path
 #   lock_cache_path               print the stable cache lock path
 #   lock_control_directory        print the lock directory
@@ -12,10 +13,9 @@
 #   75  contention (EX_TEMPFAIL)
 #   76  lock setup failure
 #
-# Store locks use fd 9; cache locks use fd 8. A store operation also holds the
-# legacy ${VIRTDEV_HOME}/lock on fd 7 so the current firewall apply path stays
-# coordinated. Exported path markers let composed commands reuse inherited
-# descriptors instead of deadlocking against their parent.
+# Store locks use fd 9, cache locks use fd 8, and transfer-target locks use fd
+# 6. A store operation also holds the legacy ${VIRTDEV_HOME}/lock on fd 7.
+# Exported path markers let composed commands reuse inherited descriptors.
 
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
@@ -63,6 +63,11 @@ lock_store_path() {
 lock_cache_path() {
   : "${VIRTDEV_CACHE:="${XDG_CACHE_HOME:-${HOME}/.cache}/virtdev"}"
   lock_identity_path cache "${VIRTDEV_CACHE}"
+}
+
+lock_transfer_target_path() {
+  (( $# == 1 )) || return 2
+  lock_identity_path transfer-target "${1}"
 }
 
 lock_setup_die() {
@@ -256,4 +261,29 @@ lock_acquire_cache() {
   flock -n 8 || lock_die other "${lock_file}"
   printf '%d\n' "${BASHPID}" > "${lock_file}"
   export VIRTDEV_CACHE_LOCK_PATH="${lock_file}"
+}
+
+lock_acquire_transfer_target() {
+  (( $# == 1 )) || lock_setup_die \
+    'A transfer-target lock requires one canonical target path.'
+  local -r target="${1}"
+  local lock_file
+  lock_file="$(lock_transfer_target_path "${target}")" \
+    || lock_setup_die "Cannot derive a transfer-target lock for '${target}'"
+
+  if [[ "${VIRTDEV_TRANSFER_TARGET_LOCK_PATH:-}" == "${lock_file}" ]] \
+      && lock_fd_matches 6 "${lock_file}"; then
+    flock -n 6 || lock_die other "${lock_file}"
+    return 0
+  fi
+
+  lock_prepare_control_directory
+  lock_prepare_file "${lock_file}"
+  if ! exec 6>>"${lock_file}"; then
+    lock_setup_die "Cannot open transfer-target lock: '${lock_file}'"
+  fi
+  flock -n 6 || lock_die other "${lock_file}"
+  printf '%d\n' "${BASHPID}" > "${lock_file}" \
+    || lock_setup_die "Cannot record transfer-target lock holder: '${lock_file}'"
+  export VIRTDEV_TRANSFER_TARGET_LOCK_PATH="${lock_file}"
 }

@@ -32,6 +32,7 @@
 #   VIRTDEV_SSH_KEY                      Default: ${VIRTDEV_HOME}/ssh/id
 #   VIRTDEV_TRANSFER_MAX_BYTES           Default: 8589934592 (8 GiB logical data)
 #   VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES Default: 10737418240 (10 GiB)
+#   VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES Default: 53687091200 (50 GiB)
 #   VIRTDEV_TRANSFER_MAX_ENTRIES         Default: 200000
 #   VIRTDEV_TRANSFER_TIMEOUT             Default: 3600 seconds total
 #   VIRTDEV_TRANSFER_KILL_AFTER          Default: 5 seconds from TERM to KILL
@@ -74,6 +75,7 @@ import diagnostic enumerate error integer lock mount validate arguments ssh port
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
 : "${VIRTDEV_TRANSFER_MAX_BYTES:=8589934592}"
 : "${VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES:=10737418240}"
+: "${VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES:=53687091200}"
 : "${VIRTDEV_TRANSFER_MAX_ENTRIES:=200000}"
 : "${VIRTDEV_TRANSFER_TIMEOUT:=3600}"
 : "${VIRTDEV_TRANSFER_KILL_AFTER:=5}"
@@ -83,6 +85,8 @@ integer_is_bounded_positive "${VIRTDEV_TRANSFER_MAX_BYTES}" 1099511627776 \
   || error 64 <<<'Invalid VIRTDEV_TRANSFER_MAX_BYTES: expected 1..1099511627776'
 integer_is_bounded_positive "${VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES}" 2199023255552 \
   || error 64 <<<'Invalid VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES: expected 1..2199023255552'
+integer_is_bounded_positive "${VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES}" 10995116277760 \
+  || error 64 <<<'Invalid VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES: expected 1..10995116277760'
 integer_is_bounded_positive "${VIRTDEV_TRANSFER_MAX_ENTRIES}" 10000000 \
   || error 64 <<<'Invalid VIRTDEV_TRANSFER_MAX_ENTRIES: expected 1..10000000'
 integer_is_bounded_positive "${VIRTDEV_TRANSFER_TIMEOUT}" 86400 \
@@ -250,8 +254,10 @@ done
 # shellcheck disable=SC2154  # helper directory provided by import
 archive_gate="${virtdev_libexec_directory}/virtdev-archive-gate"
 copy_tree_helper="${virtdev_libexec_directory}/virtdev-copy-tree"
+file_state_helper="${virtdev_libexec_directory}/virtdev-file-state"
 publish_helper="${virtdev_libexec_directory}/virtdev-publish"
-for helper in "${archive_gate}" "${copy_tree_helper}" "${publish_helper}"; do
+for helper in "${archive_gate}" "${copy_tree_helper}" "${file_state_helper}" \
+  "${publish_helper}"; do
   [[ -x "${helper}" ]] \
     || error 11 <<<"Required bounded-transfer helper is unavailable: ${helper}. Run 'make'."
 done
@@ -344,6 +350,8 @@ transfer_transaction="$(mktemp -d \
   || error 11 <<<"Could not create a private download stage in ${transaction_parent}"
 transfer_preserve_transaction=0
 transfer_df_counter=0
+transfer_du_counter=0
+transfer_file_state_counter=0
 
 cleanup_transfer() {
   local -r cleanup_status=$?
@@ -451,8 +459,10 @@ transfer_du_value() {
   local remaining output value ignored
   local -a statuses=()
 
-  output="${transfer_transaction}/du-${phase}"
-  transfer_remaining remaining
+  (( ++transfer_du_counter ))
+  output="${transfer_transaction}/du-${transfer_du_counter}"
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
   set +e
   LC_ALL=C timeout --signal=TERM \
       --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
@@ -461,145 +471,67 @@ transfer_du_value() {
   statuses=("${PIPESTATUS[@]}")
   set -e
   (( ${#statuses[@]} == 2 && statuses[1] == 0 )) \
-    || error 11 <<<"Could not capture allocated bytes during ${phase}"
+    || return 3
   case "${statuses[0]}" in
     0) ;;
-    124|137) error 12 <<<"Allocated-byte accounting timed out during ${phase}" ;;
-    *) error 11 <<<"Could not inspect allocated bytes during ${phase}" ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
   esac
   read -r value ignored < "${output}"
   [[ "${value}" =~ ^[0-9]+$ && ${#value} -le 18 \
       && -n "${ignored}" ]] \
-    || error 11 <<<"Could not parse allocated bytes during ${phase}"
+    || return 3
+  rm -f -- "${output}" || return 3
   _transfer_du_result="${value}"
 }
 
-transfer_copy_tree() {
-  local -r source_tree="${1}" destination_parent="${2}" phase="${3}"
-  local remaining copy_status=0 summary_entries summary_bytes summary_device \
-    summary_inode extra
-  local summary="${destination_parent}/summary"
+transfer_du_value_checked() {
+  local -r result_name="${1}" path="${2}" phase="${3}"
+  local status=0
 
-  mkdir -m 0700 -- "${destination_parent}"
-  transfer_remaining remaining
-  timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
-    "${remaining}" "${copy_tree_helper}" \
-    "${source_tree}" "${destination_parent}" \
-    "${VIRTDEV_TRANSFER_MAX_BYTES}" "${VIRTDEV_TRANSFER_MAX_ENTRIES}" \
-    "${transfer_free_space_reserve}" "${transfer_inode_reserve}" \
-    identity \
-    > "${summary}" || copy_status=$?
-  case "${copy_status}" in
+  transfer_du_value "${result_name}" "${path}" "${phase}" || status=$?
+  case "${status}" in
     0) ;;
-    42|44|45|46|48) error 11 <<<"${phase} exceeded a transfer resource or structure limit" ;;
-    47) error 14 <<<"${phase} changed while a stable copy was being constructed" ;;
-    124|137) error 12 <<<"${phase} exceeded the transfer deadline" ;;
-    *) error 11 <<<"Could not construct a stable tree during ${phase}" ;;
+    2) error 12 <<<"Allocated-byte accounting timed out during ${phase}" ;;
+    *) error 11 <<<"Could not account for allocated bytes during ${phase}" ;;
   esac
-  read -r summary_entries summary_bytes summary_device summary_inode extra \
-    < "${summary}"
-  [[ "${summary_entries}" =~ ^[0-9]+$ \
-      && "${summary_bytes}" =~ ^[0-9]+$ \
-      && "${summary_device}" =~ ^[0-9]+$ \
-      && "${summary_inode}" =~ ^[0-9]+$ && -z "${extra}" ]] \
-    || error 11 <<<"Could not parse stable-tree accounting during ${phase}"
-  TRANSFER_COPY_ENTRIES="${summary_entries}"
-  TRANSFER_COPY_BYTES="${summary_bytes}"
-  TRANSFER_COPY_DEVICE="${summary_device}"
-  TRANSFER_COPY_INODE="${summary_inode}"
 }
 
-transfer_file_state() {
-  local -r source_file="${1}"
-  local before after hash_line hash_before hash_after marker extra
-  local device inode mode uid gid links size mtime ctime
-  local remaining command_status=0
+transfer_transaction_budget() {
+  local -r phase="${1}"
+  local allocated='' status=0
 
-  TRANSFER_FILE_IDENTITY=''
-  TRANSFER_FILE_SEMANTIC=''
-  [[ -f "${source_file}" && ! -L "${source_file}" ]] || return 1
-
-  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return 2
-  before="$(LC_ALL=C timeout --signal=TERM \
-    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-    stat --printf='%d %i %f %u %g %h %s %Y %Z' -- "${source_file}" \
-    2>/dev/null)" || command_status=$?
-  case "${command_status}" in
-    0) ;;
-    124|137) return 2 ;;
-    *) return 3 ;;
-  esac
-  read -r device inode mode uid gid links size mtime ctime extra <<< "${before}"
-  [[ "${device}" =~ ^[0-9]+$ && "${inode}" =~ ^[0-9]+$ \
-      && "${mode}" =~ ^[0-9a-f]+$ && "${uid}" =~ ^[0-9]+$ \
-      && "${gid}" =~ ^[0-9]+$ && "${links}" =~ ^[0-9]+$ \
-      && "${size}" =~ ^[0-9]+$ && "${mtime}" =~ ^-?[0-9]+$ \
-      && "${ctime}" =~ ^-?[0-9]+$ && -z "${extra}" ]] || return 3
-  (( size <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) || return 1
-
-  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return 2
-  command_status=0
-  hash_line="$(timeout --signal=TERM \
-    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-    sha256sum < "${source_file}" 2>/dev/null)" || command_status=$?
-  case "${command_status}" in
-    0) ;;
-    124|137) return 2 ;;
-    *) return 3 ;;
-  esac
-  read -r hash_before marker extra <<< "${hash_line}"
-  [[ "${hash_before}" =~ ^[0-9a-f]{64}$ && "${marker}" == - \
-      && -z "${extra}" ]] || return 3
-
-  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return 2
-  command_status=0
-  hash_line="$(timeout --signal=TERM \
-    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-    sha256sum < "${source_file}" 2>/dev/null)" || command_status=$?
-  case "${command_status}" in
-    0) ;;
-    124|137) return 2 ;;
-    *) return 3 ;;
-  esac
-  read -r hash_after marker extra <<< "${hash_line}"
-  [[ "${hash_after}" =~ ^[0-9a-f]{64}$ && "${marker}" == - \
-      && -z "${extra}" ]] || return 3
-
-  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return 2
-  command_status=0
-  after="$(LC_ALL=C timeout --signal=TERM \
-    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-    stat --printf='%d %i %f %u %g %h %s %Y %Z' -- "${source_file}" \
-    2>/dev/null)" || command_status=$?
-  case "${command_status}" in
-    0) ;;
-    124|137) return 2 ;;
-    *) return 3 ;;
-  esac
-  [[ -f "${source_file}" && ! -L "${source_file}" \
-      && "${before}" == "${after}" \
-      && "${hash_before}" == "${hash_after}" ]] || return 1
-
-  TRANSFER_FILE_IDENTITY="${device}:${inode}"
-  TRANSFER_FILE_SEMANTIC="${mode}:${uid}:${gid}:${links}:${size}:${mtime}:${hash_before}"
+  transfer_du_value allocated "${transfer_transaction}" \
+    "transaction-${phase}" || status=$?
+  (( status == 0 )) || return "${status}"
+  (( allocated <= VIRTDEV_TRANSFER_MAX_TRANSACTION_BYTES )) || return 1
 }
 
-transfer_copy_tree_for_validation() {
+transfer_transaction_budget_checked() {
+  local -r phase="${1}"
+  local status=0
+
+  transfer_transaction_budget "${phase}" || status=$?
+  case "${status}" in
+    0) ;;
+    1) error 11 <<<"Transfer transaction exceeded its aggregate byte budget during ${phase}" ;;
+    2) error 12 <<<"Transfer transaction accounting timed out during ${phase}" ;;
+    *) error 11 <<<"Could not account for the transfer transaction during ${phase}" ;;
+  esac
+}
+
+transfer_copy_tree_core() {
   local -r source_tree="${1}" destination_parent="${2}"
-  local remaining copy_status=0 diagnostic_status=0
+  local remaining copy_status=0 diagnostic_status=0 budget_status=0
   local summary_entries summary_bytes summary_device summary_inode extra
   local summary="${destination_parent}/summary"
   local capture="${destination_parent}.stderr"
   local fifo="${destination_parent}.stderr.fifo"
 
-  TRANSFER_VALIDATION_ENTRIES=''
-  TRANSFER_VALIDATION_BYTES=''
-  TRANSFER_VALIDATION_DEVICE=''
-  TRANSFER_VALIDATION_INODE=''
+  TRANSFER_COPY_ENTRIES=''
+  TRANSFER_COPY_BYTES=''
+  TRANSFER_COPY_DEVICE=''
+  TRANSFER_COPY_INODE=''
   mkdir -m 0700 -- "${destination_parent}" || return 3
   remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
   (( remaining > 0 )) || return 2
@@ -613,12 +545,16 @@ transfer_copy_tree_for_validation() {
         identity > "${summary}" || copy_status=$?
   bounded_stderr_emit "${capture}" \
     "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
-  (( diagnostic_status == 0 )) || return 3
+  case "${diagnostic_status}" in
+    0) ;;
+    2) return 4 ;;
+    *) return 3 ;;
+  esac
   rm -f -- "${capture}" || return 3
-
   case "${copy_status}" in
     0) ;;
     47) return 1 ;;
+    42|44|45|46|48) return 4 ;;
     124|137) return 2 ;;
     *) return 3 ;;
   esac
@@ -627,11 +563,127 @@ transfer_copy_tree_for_validation() {
   [[ "${summary_entries}" =~ ^[0-9]+$ \
       && "${summary_bytes}" =~ ^[0-9]+$ \
       && "${summary_device}" =~ ^[0-9]+$ \
-      && "${summary_inode}" =~ ^[0-9]+$ && -z "${extra}" ]] || return 3
-  TRANSFER_VALIDATION_ENTRIES="${summary_entries}"
-  TRANSFER_VALIDATION_BYTES="${summary_bytes}"
-  TRANSFER_VALIDATION_DEVICE="${summary_device}"
-  TRANSFER_VALIDATION_INODE="${summary_inode}"
+      && "${summary_inode}" =~ ^[0-9]+$ && -z "${extra}" ]] \
+    || return 3
+  TRANSFER_COPY_ENTRIES="${summary_entries}"
+  TRANSFER_COPY_BYTES="${summary_bytes}"
+  TRANSFER_COPY_DEVICE="${summary_device}"
+  TRANSFER_COPY_INODE="${summary_inode}"
+  transfer_transaction_budget 'tree-copy' || budget_status=$?
+  case "${budget_status}" in
+    0) ;;
+    1) return 4 ;;
+    2) return 2 ;;
+    *) return 3 ;;
+  esac
+}
+
+transfer_copy_tree() {
+  local -r source_tree="${1}" destination_parent="${2}" phase="${3}"
+  local copy_status=0
+
+  transfer_copy_tree_core "${source_tree}" "${destination_parent}" \
+    || copy_status=$?
+  case "${copy_status}" in
+    0) ;;
+    1) error 14 <<<"${phase} changed while a stable copy was being constructed" ;;
+    2) error 12 <<<"${phase} exceeded the transfer deadline" ;;
+    4) error 11 <<<"${phase} exceeded a transfer resource or structure limit" ;;
+    *) error 11 <<<"Could not construct a stable tree during ${phase}" ;;
+  esac
+}
+
+transfer_file_state() {
+  local -r source_file="${1}"
+  local device inode mode uid gid links size mtime_seconds mtime_nanoseconds
+  local ctime_seconds ctime_nanoseconds digest extra
+  local remaining command_status=0 diagnostic_status=0
+  local output capture fifo
+
+  TRANSFER_FILE_IDENTITY=''
+  TRANSFER_FILE_SEMANTIC=''
+  (( ++transfer_file_state_counter ))
+  output="${transfer_transaction}/file-state-${transfer_file_state_counter}"
+  capture="${output}.stderr"
+  fifo="${output}.stderr.fifo"
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  bounded_stderr_run "${capture}" "${fifo}" \
+      "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+      timeout --signal=TERM --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" \
+        "${remaining}" "${file_state_helper}" "${source_file}" \
+        "${VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES}" \
+        > "${output}" || command_status=$?
+  bounded_stderr_emit "${capture}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+  case "${diagnostic_status}" in
+    0) ;;
+    2) return 4 ;;
+    *) return 3 ;;
+  esac
+  rm -f -- "${capture}" || return 3
+  case "${command_status}" in
+    0) ;;
+    44|47) return 1 ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
+  esac
+  read -r device inode mode uid gid links size mtime_seconds \
+    mtime_nanoseconds ctime_seconds ctime_nanoseconds digest extra \
+    < "${output}"
+  [[ "${device}" =~ ^[0-9]+$ && "${inode}" =~ ^[0-9]+$ \
+      && "${mode}" =~ ^[0-9a-f]+$ && "${uid}" =~ ^[0-9]+$ \
+      && "${gid}" =~ ^[0-9]+$ && "${links}" =~ ^[0-9]+$ \
+      && "${size}" =~ ^[0-9]+$ \
+      && "${mtime_seconds}" =~ ^-?[0-9]+$ \
+      && "${mtime_nanoseconds}" =~ ^[0-9]+$ \
+      && "${ctime_seconds}" =~ ^-?[0-9]+$ \
+      && "${ctime_nanoseconds}" =~ ^[0-9]+$ \
+      && "${digest}" =~ ^[0-9a-f]{64}$ && -z "${extra}" \
+      && ${#mtime_nanoseconds} -le 9 \
+      && ${#ctime_nanoseconds} -le 9 ]] || return 3
+  (( 10#${mtime_nanoseconds} <= 999999999 \
+      && 10#${ctime_nanoseconds} <= 999999999 )) || return 3
+  rm -f -- "${output}" || return 3
+
+  TRANSFER_FILE_IDENTITY="${device}:${inode}"
+  TRANSFER_FILE_SEMANTIC="${mode}:${uid}:${gid}:${links}:${size}:"
+  TRANSFER_FILE_SEMANTIC+="${mtime_seconds}:${mtime_nanoseconds}:${digest}"
+}
+
+transfer_copy_tree_for_validation() {
+  local -r source_tree="${1}" destination_parent="${2}"
+  local copy_status=0
+
+  TRANSFER_VALIDATION_ENTRIES=''
+  TRANSFER_VALIDATION_BYTES=''
+  TRANSFER_VALIDATION_DEVICE=''
+  TRANSFER_VALIDATION_INODE=''
+  transfer_copy_tree_core "${source_tree}" "${destination_parent}" \
+    || copy_status=$?
+  (( copy_status == 0 )) || return "${copy_status}"
+  TRANSFER_VALIDATION_ENTRIES="${TRANSFER_COPY_ENTRIES}"
+  TRANSFER_VALIDATION_BYTES="${TRANSFER_COPY_BYTES}"
+  TRANSFER_VALIDATION_DEVICE="${TRANSFER_COPY_DEVICE}"
+  TRANSFER_VALIDATION_INODE="${TRANSFER_COPY_INODE}"
+}
+
+transfer_directory_root_state() {
+  local -r directory="${1}"
+  local remaining command_status=0
+
+  TRANSFER_DIRECTORY_ROOT_STATE=''
+  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 2
+  TRANSFER_DIRECTORY_ROOT_STATE="$(LC_ALL=C timeout --signal=TERM \
+    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
+    stat --printf='%f:%u:%g:%h:%s:%y' -- "${directory}" 2>/dev/null)" \
+    || command_status=$?
+  case "${command_status}" in
+    0) ;;
+    124|137) return 2 ;;
+    *) return 3 ;;
+  esac
 }
 
 transfer_trees_equal() {
@@ -643,18 +695,10 @@ transfer_trees_equal() {
   local fifo="${transfer_transaction}/tree-comparison.stderr.fifo"
   local -a statuses=()
 
-  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return 2
-  expected_root="$(LC_ALL=C timeout --signal=TERM \
-    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-    stat --printf='%f:%u:%g:%h:%s:%Y' -- "${expected}" 2>/dev/null)" \
-    || return 3
-  remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return 2
-  actual_root="$(LC_ALL=C timeout --signal=TERM \
-    --kill-after="${VIRTDEV_TRANSFER_KILL_AFTER}" "${remaining}" \
-    stat --printf='%f:%u:%g:%h:%s:%Y' -- "${actual}" 2>/dev/null)" \
-    || return 3
+  transfer_directory_root_state "${expected}" || return $?
+  expected_root="${TRANSFER_DIRECTORY_ROOT_STATE}"
+  transfer_directory_root_state "${actual}" || return $?
+  actual_root="${TRANSFER_DIRECTORY_ROOT_STATE}"
   [[ "${expected_root}" == "${actual_root}" ]] || return 1
 
   remaining=$(( transfer_deadline - BASH_MONOSECONDS ))
@@ -673,15 +717,66 @@ transfer_trees_equal() {
   head_status="${statuses[1]}"
   bounded_stderr_emit "${capture}" \
     "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
-  (( diagnostic_status == 0 )) || return 3
-  rm -f -- "${capture}" || return 3
-  (( head_status == 0 )) || return 3
-  [[ ! -s "${difference}" ]] || return 1
-  case "${rsync_status}" in
-    0) return 0 ;;
-    124|137) return 2 ;;
+  case "${diagnostic_status}" in
+    0) ;;
+    2) return 4 ;;
     *) return 3 ;;
   esac
+  rm -f -- "${capture}" || return 3
+  (( head_status == 0 )) || return 3
+  case "${rsync_status}" in
+    0) ;;
+    124|137) return 2 ;;
+    141)
+      [[ -s "${difference}" ]] && return 1
+      return 3
+      ;;
+    *) return 3 ;;
+  esac
+  [[ ! -s "${difference}" ]] || return 1
+}
+
+transfer_publication_manifest_write() {
+  local -r directory="${1}" phase="${2}" entry="${3}" recovery="${4}"
+  local -r manifest="${directory}/publication" \
+    temporary="${directory}/publication.tmp"
+
+  rm -f -- "${temporary}" || return 1
+  if ! ( set -o noclobber; umask 077; printf '%s\0' \
+      'version=1' "phase=${phase}" "target=${target}" \
+      "entry=${entry}" "candidate_identity=${candidate_identity}" \
+      "previous_type=${target_original_type}" \
+      "previous_identity=${target_original_identity}" \
+      "recovery=${recovery}" > "${temporary}" ); then
+    return 1
+  fi
+  chmod 0600 -- "${temporary}" \
+    && sync -f -- "${temporary}" \
+    && mv -T -- "${temporary}" "${manifest}" \
+    && sync -f -- "${directory}"
+}
+
+transfer_retain_previous_target() {
+  local retained_identity
+  local -r candidate_parent="${candidate%/*}"
+
+  TRANSFER_RECOVERY_DIRECTORY="$(mktemp -d --tmpdir="${target_parent}" \
+    '.virtdev-transfer-recovery.XXXXXXXX')" || return 1
+  chmod 0700 -- "${TRANSFER_RECOVERY_DIRECTORY}" \
+    && sync -f -- "${target_parent}" || return 1
+  TRANSFER_RECOVERY_ENTRY="${TRANSFER_RECOVERY_DIRECTORY}/previous"
+  transfer_publication_manifest_write "${TRANSFER_RECOVERY_DIRECTORY}" \
+    retaining "${TRANSFER_RECOVERY_ENTRY}" "${TRANSFER_RECOVERY_DIRECTORY}" \
+    || return 1
+  mv -T -- "${candidate}" "${TRANSFER_RECOVERY_ENTRY}" || return 1
+  sync -f -- "${TRANSFER_RECOVERY_DIRECTORY}" \
+    && sync -f -- "${candidate_parent}" || return 1
+  retained_identity="$(stat -c '%d:%i' -- "${TRANSFER_RECOVERY_ENTRY}" \
+    2>/dev/null)" || return 1
+  [[ "${retained_identity}" == "${target_original_identity}" ]] || return 1
+  transfer_publication_manifest_write "${TRANSFER_RECOVERY_DIRECTORY}" \
+    retained "${TRANSFER_RECOVERY_ENTRY}" "${TRANSFER_RECOVERY_DIRECTORY}" \
+    && sync -f -- "${target_parent}"
 }
 
 printf >&2 'Capturing a bounded download from %s...\n' "${project}"
@@ -740,6 +835,7 @@ case "${capture_status[0]}" in
   255) error 13 <<<'SSH transport failed during download capture' ;;
   *) error 13 <<<"Guest archive creation failed (exit ${capture_status[0]})" ;;
 esac
+transfer_transaction_budget_checked 'archive capture'
 
 remaining=''
 transfer_remaining remaining
@@ -949,6 +1045,7 @@ case "${extract_status}" in
   125) error 14 <<<'Could not supervise host tar during download extraction' ;;
   *) error 14 <<<"Download archive extraction failed (exit ${extract_status})" ;;
 esac
+transfer_transaction_budget_checked 'download extraction'
 payload="${extract_directory}/payload"
 source_item="${payload}/item"
 [[ -d "${payload}" && ! -L "${payload}" \
@@ -996,7 +1093,7 @@ for link_path in "${transfer_symlinks[@]}"; do
 done
 
 extracted_allocated=''
-transfer_du_value extracted_allocated "${payload}" extracted
+transfer_du_value_checked extracted_allocated "${payload}" extracted
 (( extracted_allocated <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
   || error 11 <<<'Extracted download exceeded its allocated-byte budget'
 
@@ -1010,7 +1107,7 @@ transfer_copy_tree "${payload}" "${stable_parent}" 'download stabilization'
 stable_payload="${stable_parent}/tree"
 stable_item="${stable_payload}/item"
 stable_allocated=''
-transfer_du_value stable_allocated "${stable_payload}" stable
+transfer_du_value_checked stable_allocated "${stable_payload}" stable
 (( stable_allocated <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
   || error 11 <<<'Stable download exceeded its allocated-byte budget'
 
@@ -1050,17 +1147,7 @@ target_parent="${target%/*}"
 [[ -d "${target_parent}" && ! -L "${target_parent}" ]] \
   || error 15 <<<"Host publication parent changed or is unsafe: ${target_parent}"
 
-transfer_target_lock="$(lock_identity_path transfer-target "${target}")" \
-  || error 76 <<<"Could not derive a lock identity for host target: ${target}"
-lock_prepare_control_directory
-lock_prepare_file "${transfer_target_lock}"
-if ! exec {transfer_target_lock_fd}>>"${transfer_target_lock}"; then
-  error 76 <<<"Could not open the host-target lock: ${transfer_target_lock}"
-fi
-if ! flock -n "${transfer_target_lock_fd}"; then
-  error 75 <<<"Another transfer is publishing to the host target: ${target}"
-fi
-printf '%d\n' "${BASHPID}" > "${transfer_target_lock}"
+lock_acquire_transfer_target "${target}"
 
 transaction_device="$(stat -c '%d' -- "${transfer_transaction}")" \
   || error 15 <<<'Could not inspect transfer-stage filesystem'
@@ -1123,6 +1210,7 @@ if (( target_exists )); then
         ;;
       1) error 15 <<<'Existing host file changed or exceeded the validation bound' ;;
       2) error 12 <<<'Existing host file validation exceeded the transfer deadline' ;;
+      4) error 11 <<<'Existing host file diagnostics exceeded their output budget' ;;
       *) error 15 <<<'Could not capture a stable existing host file' ;;
     esac
   else
@@ -1131,7 +1219,7 @@ if (( target_exists )); then
 fi
 
 candidate_allocated=''
-transfer_du_value candidate_allocated "${candidate}" candidate
+transfer_du_value_checked candidate_allocated "${candidate}" candidate
 (( candidate_allocated <= VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES )) \
   || error 11 <<<'Publication candidate exceeded its allocated-byte budget'
 
@@ -1141,6 +1229,10 @@ candidate_identity="$(stat -c '%d:%i' -- "${candidate}" 2>/dev/null)" \
   || error 15 <<<'Could not bind the publication candidate identity'
 [[ "${candidate_identity}" =~ ^[0-9]+:[0-9]+$ ]] \
   || error 15 <<<'Could not parse the publication candidate identity'
+transfer_publication_manifest_write "${transfer_transaction}" prepared \
+  "${candidate}" '' \
+  || error 15 <<<'Could not durably prepare the publication manifest'
+transfer_transaction_budget_checked 'publication preparation'
 (( ! target_exists )) || transfer_preserve_transaction=1
 publish_status=0
 "${publish_helper}" "${publish_mode}" "${candidate}" "${target}" \
@@ -1149,56 +1241,91 @@ case "${publish_status}" in
   0) ;;
   2)
     transfer_preserve_transaction=1
+    transfer_publication_manifest_write "${transfer_transaction}" \
+      publication-uncertain "${candidate}" '' || true
     error 16 <<MESSAGE
 The completed download reached '${target}', but its post-publication sync failed.
-The previous target and transaction were preserved for inspection.
+The transaction was preserved for recovery inspection.
 MESSAGE
     ;;
   3)
+    if (( target_exists )); then
+      transfer_publication_manifest_write "${transfer_transaction}" \
+        publication-uncertain "${candidate}" '' || true
+      error 16 <<MESSAGE
+Existing-target publication returned an indeterminate conflict status.
+The target and complete transaction were preserved for recovery: ${target}
+MESSAGE
+    fi
     transfer_preserve_transaction=0
     error 15 <<<"Host publication target appeared during transfer: ${target}"
     ;;
   *)
-    (( ! target_exists )) || transfer_preserve_transaction=0
-    error 15 <<<"Could not atomically publish the completed download: ${target}"
+    transfer_preserve_transaction=1
+    transfer_publication_manifest_write "${transfer_transaction}" \
+      publication-uncertain "${candidate}" '' || true
+    error 16 <<MESSAGE
+Publication ended with indeterminate status ${publish_status}.
+The target and complete transaction were preserved for recovery: ${target}
+MESSAGE
     ;;
 esac
+transfer_publication_manifest_write "${transfer_transaction}" published \
+  "${candidate}" '' || {
+  transfer_preserve_transaction=1
+  error 16 <<MESSAGE
+The completed download reached '${target}', but its recovery manifest could not
+be updated durably. The target and transaction were preserved for inspection.
+MESSAGE
+}
 
 if (( target_exists )); then
   validation_status=0
   validation_detail='existing host target changed during publication'
-  case "${target_original_type}" in
-    directory)
-      displaced_parent="${transfer_transaction}/displaced"
-      transfer_copy_tree_for_validation "${candidate}" "${displaced_parent}" \
-        || validation_status=$?
-      if (( validation_status == 0 )) \
-          && [[ "${TRANSFER_VALIDATION_DEVICE}:${TRANSFER_VALIDATION_INODE}" \
-              != "${target_original_identity}" \
-            || "${TRANSFER_VALIDATION_ENTRIES}" != "${target_original_entries}" \
-            || "${TRANSFER_VALIDATION_BYTES}" != "${target_original_bytes}" ]]; then
-        validation_status=1
-      fi
-      if (( validation_status == 0 )); then
-        transfer_trees_equal "${target_baseline}" \
-          "${displaced_parent}/tree" || validation_status=$?
-      fi
-      ;;
-    file)
-      transfer_file_state "${candidate}" || validation_status=$?
-      if (( validation_status == 0 )) \
-          && [[ "${TRANSFER_FILE_IDENTITY}" != "${target_original_identity}" \
-            || "${TRANSFER_FILE_SEMANTIC}" != "${target_original_semantic}" ]]; then
-        validation_status=1
-      fi
-      ;;
+  transaction_status=0
+  transfer_transaction_budget 'post-publication validation' \
+    || transaction_status=$?
+  case "${transaction_status}" in
+    0) ;;
+    1) validation_status=4 ;;
+    2) validation_status=2 ;;
     *) validation_status=3 ;;
   esac
+  if (( validation_status == 0 )); then
+    case "${target_original_type}" in
+      directory)
+        displaced_parent="${transfer_transaction}/displaced"
+        transfer_copy_tree_for_validation "${candidate}" "${displaced_parent}" \
+          || validation_status=$?
+        if (( validation_status == 0 )) \
+            && [[ "${TRANSFER_VALIDATION_DEVICE}:${TRANSFER_VALIDATION_INODE}" \
+                != "${target_original_identity}" \
+              || "${TRANSFER_VALIDATION_ENTRIES}" != "${target_original_entries}" \
+              || "${TRANSFER_VALIDATION_BYTES}" != "${target_original_bytes}" ]]; then
+          validation_status=1
+        fi
+        if (( validation_status == 0 )); then
+          transfer_trees_equal "${target_baseline}" \
+            "${displaced_parent}/tree" || validation_status=$?
+        fi
+        ;;
+      file)
+        transfer_file_state "${candidate}" || validation_status=$?
+        if (( validation_status == 0 )) \
+            && [[ "${TRANSFER_FILE_IDENTITY}" != "${target_original_identity}" \
+              || "${TRANSFER_FILE_SEMANTIC}" != "${target_original_semantic}" ]]; then
+          validation_status=1
+        fi
+        ;;
+      *) validation_status=3 ;;
+    esac
+  fi
 
   if (( validation_status != 0 )); then
     case "${validation_status}" in
       1) validation_detail='existing host target changed during publication' ;;
       2) validation_detail='existing host target validation exceeded the deadline' ;;
+      4) validation_detail='existing host target validation exceeded a resource limit' ;;
       *) validation_detail='existing host target could not be validated after publication' ;;
     esac
     live_candidate_identity="$(stat -c '%d:%i' -- "${target}" 2>/dev/null)" \
@@ -1213,12 +1340,22 @@ The displaced target and transaction were preserved for recovery.
 MESSAGE
     fi
 
+    transfer_publication_manifest_write "${transfer_transaction}" \
+      rollback-pending "${candidate}" '' || true
     rollback_status=0
     "${publish_helper}" exchange "${candidate}" "${target}" \
       || rollback_status=$?
     case "${rollback_status}" in
       0)
-        error 15 <<MESSAGE
+        transfer_publication_manifest_write "${transfer_transaction}" \
+          rolled-back "${candidate}" '' || error 16 <<MESSAGE
+${validation_detail^}. The original target was restored durably, but the
+preserved transaction manifest could not be updated durably.
+MESSAGE
+        rollback_exit=15
+        (( validation_status != 2 )) || rollback_exit=12
+        (( validation_status != 4 )) || rollback_exit=11
+        error "${rollback_exit}" <<MESSAGE
 ${validation_detail^}. The original target was restored durably.
 The rejected download transaction was preserved for inspection.
 MESSAGE
@@ -1231,7 +1368,35 @@ MESSAGE
         ;;
     esac
   fi
+  transfer_publication_manifest_write "${transfer_transaction}" validated \
+    "${candidate}" '' || error 16 <<MESSAGE
+The previous target was validated, but the recovery manifest could not be
+updated durably. The target and transaction were preserved for inspection.
+MESSAGE
+  TRANSFER_RECOVERY_DIRECTORY=''
+  TRANSFER_RECOVERY_ENTRY=''
+  if ! transfer_retain_previous_target; then
+    if [[ -n "${TRANSFER_RECOVERY_DIRECTORY}" ]]; then
+      transfer_publication_manifest_write "${transfer_transaction}" \
+        retention-uncertain "${candidate}" \
+        "${TRANSFER_RECOVERY_DIRECTORY}" || true
+    fi
+    error 16 <<MESSAGE
+The new target was validated, but the displaced target could not be retained
+durably. Inspect the transaction and recovery sibling before any cleanup:
+${transfer_transaction}
+${TRANSFER_RECOVERY_DIRECTORY:-recovery sibling was not created}
+MESSAGE
+  fi
+  transfer_publication_manifest_write "${transfer_transaction}" retained \
+    "${TRANSFER_RECOVERY_ENTRY}" "${TRANSFER_RECOVERY_DIRECTORY}" \
+    || error 16 <<MESSAGE
+The displaced target was retained at '${TRANSFER_RECOVERY_ENTRY}', but the
+transaction manifest could not be updated durably. Both locations were kept.
+MESSAGE
   transfer_preserve_transaction=0
+  printf >&2 'Previous host target retained for recovery: %s\n' \
+    "${TRANSFER_RECOVERY_ENTRY}"
 fi
 
 printf >&2 'Downloaded %s entries (%s logical bytes) from %s.\n' \
