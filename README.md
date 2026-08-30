@@ -328,7 +328,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-ssh <project> [--client-option=<option>]... [-- [command...]]` | SSH into a running VM; client options and remote argv are separate |
 | `virtdev-console <machine>` | Serial console (detach: Ctrl-]) |
 | `virtdev-wait <project>` | Poll until SSH is available |
-| `virtdev-transfer <project> <src> <dest>` | rsync files (prefix remote path with `:`) |
+| `virtdev-transfer <project> <src> <dest>` | Copy files; downloads are bounded and atomically published (prefix remote path with `:`) |
 | `virtdev-list` | List projects with port, runtime state, zone, and generation (colored) |
 
 ### Inspection
@@ -356,39 +356,52 @@ All commands are available as `virtdev <command>` (dispatcher) or
 
 Environment variables (defaults shown):
 
-| Variable | Default |
-|----------|---------|
-| `VIRTDEV_HOME` | `~/.local/share/virtdev` |
-| `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` |
-| `VIRTDEV_CACHE` | `~/.cache/virtdev` |
-| `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) |
-| `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) |
-| `VIRTDEV_KEYMAP` | host keymap (`us` fallback) |
-| `VIRTDEV_INSTALL_DNS` | `9.9.9.9` (install-time IPv4 or IPv6 literal; `VIRTDEV_DNS` is a legacy alias) |
-| `VIRTDEV_PACKAGES` | (none) |
-| `VIRTDEV_SCRIPT` | (none) |
-| `VIRTDEV_INVENTORY` | (none) |
-| `VIRTDEV_ISO_PROFILE` | auto-detected |
-| `VIRTDEV_ISO` | `${VIRTDEV_CACHE}/virtdev.iso` |
-| `VIRTDEV_SYSTEM_DISK_SIZE` | `24G` |
-| `VIRTDEV_HOME_DISK_SIZE` | `48G` |
-| `VIRTDEV_VM_MEMORY` | `4096` (MB) |
-| `VIRTDEV_VM_CPUS` | `4` |
-| `VIRTDEV_STOP_TIMEOUT` | `60` (seconds) |
-| `VIRTDEV_WAIT_TIMEOUT` | `120` (seconds) |
-| `VIRTDEV_TRIGGER_TIMEOUT` | `10` (seconds per trigger) |
-| `VIRTDEV_TRIGGER_KILL_AFTER` | `2` (seconds from TERM to KILL) |
-| `VIRTDEV_BACKUP_MAX_BYTES` | `8589934592` (8 GiB archive and regular logical data; range 1–1099511627776) |
-| `VIRTDEV_BACKUP_MAX_ENTRIES` | `200000` extracted paths, including implicit parents (range 1–10000000) |
-| `VIRTDEV_BACKUP_TIMEOUT` | `3600` seconds total (range 1–86400) |
-| `VIRTDEV_BACKUP_KILL_AFTER` | `5` seconds from TERM to KILL (range 1–60) |
-| `VIRTDEV_RESTORE_MAX_BYTES` | `8589934592` (8 GiB regular logical data; range 1–1099511627776) |
-| `VIRTDEV_RESTORE_MAX_ENTRIES` | `200000` snapshot-tree entries (range 1–10000000) |
-| `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total (range 1–86400) |
-| `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds from TERM to KILL (range 1–60) |
-| `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` (per trigger) |
-| `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
-| `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` |
+| Variable | Default | Accepted values or purpose |
+|----------|---------|----------------------------|
+| `VIRTDEV_HOME` | `~/.local/share/virtdev` | Data directory |
+| `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` | SSH private-key path |
+| `VIRTDEV_CACHE` | `~/.cache/virtdev` | Cache directory |
+| `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) | IANA timezone name |
+| `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) | Guest locale |
+| `VIRTDEV_KEYMAP` | host keymap (`us` fallback) | Guest console keymap |
+| `VIRTDEV_INSTALL_DNS` | `9.9.9.9` | Install-time IPv4 or IPv6 literal |
+| `VIRTDEV_DNS` | unset | Legacy fallback for `VIRTDEV_INSTALL_DNS` |
+| `VIRTDEV_PACKAGES` | unset | Readable extra-packages file |
+| `VIRTDEV_SCRIPT` | unset | Readable custom install script |
+| `VIRTDEV_INVENTORY` | unset | Readable inventory script |
+| `VIRTDEV_ISO_PROFILE` | auto-detected | ISO profile directory |
+| `VIRTDEV_ISO` | `${VIRTDEV_CACHE}/virtdev.iso` | Installer ISO path |
+| `VIRTDEV_SYSTEM_DISK_SIZE` | `24G` | `qemu-img` size syntax |
+| `VIRTDEV_HOME_DISK_SIZE` | `48G` | `qemu-img` size syntax |
+| `VIRTDEV_VM_MEMORY` | `4096` MB | Positive integer MB |
+| `VIRTDEV_VM_CPUS` | `4` | Positive integer CPU count |
+| `VIRTDEV_INSTALL_SOCKET_TIMEOUT` | `120` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_INSTALL_PROGRESS_TIMEOUT` | `1200` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT` | `120` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_STOP_TIMEOUT` | `60` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_WAIT_TIMEOUT` | `120` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_TRIGGER_TIMEOUT` | `10` seconds per trigger | Integer `1..3600` seconds |
+| `VIRTDEV_TRIGGER_KILL_AFTER` | `2` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` bytes | Integer `1..1048576` bytes per output stream |
+| `VIRTDEV_MAINTENANCE_HOOK_TIMEOUT` | `3600` seconds per hook | Integer `1..86400` seconds |
+| `VIRTDEV_MAINTENANCE_HOOK_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_MAINTENANCE_HOOK_OUTPUT_MAX_BYTES` | `1048576` bytes | Integer `1..67108864` bytes per output stream |
+| `VIRTDEV_BACKUP_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; archive and regular logical-data ceiling |
+| `VIRTDEV_BACKUP_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; extracted paths including implicit parents |
+| `VIRTDEV_BACKUP_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
+| `VIRTDEV_BACKUP_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_RESTORE_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; regular logical-data ceiling |
+| `VIRTDEV_RESTORE_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; snapshot-tree entries |
+| `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
+| `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_TRANSFER_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; download logical-data ceiling |
+| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; must cover logical data plus archive overhead |
+| `VIRTDEV_TRANSFER_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; download-tree entries |
+| `VIRTDEV_TRANSFER_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
+| `VIRTDEV_TRANSFER_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES` | `65536` bytes | Integer `1..1048576` bytes per guest command |
+| `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` | OVMF code-image path |
+| `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` | OVMF variables-template path |
 
 Restore staging accepts at most 128 path components and 4095 relative-path
 bytes, and caps its source-validation ledger at 512 MiB.

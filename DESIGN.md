@@ -931,7 +931,7 @@ during a maintenance session.
 | `virtdev-start`    | Start a project VM as a transient systemd user service; assigns SSH port |
 | `virtdev-stop`     | Clean ACPI shutdown; SIGTERM fallback                        |
 | `virtdev-ssh`      | SSH with strict project identity; separates bounded client options from remote argv |
-| `virtdev-transfer` | Copy files between host and VM via rsync over SSH            |
+| `virtdev-transfer` | Copy files; bounded downloads are atomically published on the host |
 | `virtdev-console`  | Attach to the serial console via socat                       |
 | `virtdev-wait`     | Poll until SSH is accepting connections post-start            |
 | `virtdev-list`     | List all projects with port, status, and generation          |
@@ -957,33 +957,54 @@ during a maintenance session.
 
 ## Environment Variables
 
-All scripts respect these variables:
+The public environment interface is:
 
-| Variable                  | Default                                         |
-|---------------------------|-------------------------------------------------|
-| `VIRTDEV_HOME`            | `${XDG_DATA_HOME:-~/.local/share}/virtdev`      |
-| `VIRTDEV_SSH_KEY`         | `${VIRTDEV_HOME}/ssh/id`                        |
-| `VIRTDEV_CACHE`           | `${XDG_CACHE_HOME:-~/.cache}/virtdev`           |
-| `VIRTDEV_TIMEZONE`        | host timezone (UTC fallback)                    |
-| `VIRTDEV_LOCALE`          | host locale (`en_US.UTF-8` fallback)            |
-| `VIRTDEV_KEYMAP`          | host keymap (`us` fallback)                     |
-| `VIRTDEV_INSTALL_DNS`     | `9.9.9.9` (install-time IP literal; legacy alias `VIRTDEV_DNS`) |
-| `VIRTDEV_PACKAGES`        | (none)                                          |
-| `VIRTDEV_SCRIPT`          | (none)                                          |
-| `VIRTDEV_INVENTORY`       | (none)                                          |
-| `VIRTDEV_ISO_PROFILE`     | Auto-detected from script location              |
-| `VIRTDEV_ISO`             | `${VIRTDEV_CACHE}/virtdev.iso`                  |
-| `VIRTDEV_SYSTEM_DISK_SIZE`| `24G`                                           |
-| `VIRTDEV_HOME_DISK_SIZE`  | `48G`                                           |
-| `VIRTDEV_VM_MEMORY`       | `4096`                                          |
-| `VIRTDEV_VM_CPUS`         | `4`                                             |
-| `VIRTDEV_STOP_TIMEOUT`    | `60`                                            |
-| `VIRTDEV_WAIT_TIMEOUT`    | `120`                                           |
-| `VIRTDEV_TRIGGER_TIMEOUT` | `10` (per trigger)                              |
-| `VIRTDEV_TRIGGER_KILL_AFTER` | `2` (TERM grace per trigger)                |
-| `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` (per trigger)                 |
-| `OVMF_CODE`               | `/usr/share/edk2/x64/OVMF_CODE.4m.fd`          |
-| `OVMF_VARS`               | `/usr/share/edk2/x64/OVMF_VARS.4m.fd`          |
+| Variable | Default | Accepted values or purpose |
+|----------|---------|----------------------------|
+| `VIRTDEV_HOME` | `${XDG_DATA_HOME:-~/.local/share}/virtdev` | Data directory |
+| `VIRTDEV_SSH_KEY` | `${VIRTDEV_HOME}/ssh/id` | SSH private-key path |
+| `VIRTDEV_CACHE` | `${XDG_CACHE_HOME:-~/.cache}/virtdev` | Cache directory |
+| `VIRTDEV_TIMEZONE` | host timezone (UTC fallback) | IANA timezone name |
+| `VIRTDEV_LOCALE` | host locale (`en_US.UTF-8` fallback) | Guest locale |
+| `VIRTDEV_KEYMAP` | host keymap (`us` fallback) | Guest console keymap |
+| `VIRTDEV_INSTALL_DNS` | `9.9.9.9` | Install-time IPv4 or IPv6 literal |
+| `VIRTDEV_DNS` | unset | Legacy fallback for `VIRTDEV_INSTALL_DNS` |
+| `VIRTDEV_PACKAGES` | unset | Readable extra-packages file |
+| `VIRTDEV_SCRIPT` | unset | Readable custom install script |
+| `VIRTDEV_INVENTORY` | unset | Readable inventory script |
+| `VIRTDEV_ISO_PROFILE` | auto-detected | ISO profile directory |
+| `VIRTDEV_ISO` | `${VIRTDEV_CACHE}/virtdev.iso` | Installer ISO path |
+| `VIRTDEV_SYSTEM_DISK_SIZE` | `24G` | `qemu-img` size syntax |
+| `VIRTDEV_HOME_DISK_SIZE` | `48G` | `qemu-img` size syntax |
+| `VIRTDEV_VM_MEMORY` | `4096` MB | Positive integer MB |
+| `VIRTDEV_VM_CPUS` | `4` | Positive integer CPU count |
+| `VIRTDEV_INSTALL_SOCKET_TIMEOUT` | `120` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_INSTALL_PROGRESS_TIMEOUT` | `1200` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_INSTALL_SHUTDOWN_TIMEOUT` | `120` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_STOP_TIMEOUT` | `60` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_WAIT_TIMEOUT` | `120` seconds | Integer `1..86400` seconds |
+| `VIRTDEV_TRIGGER_TIMEOUT` | `10` seconds per trigger | Integer `1..3600` seconds |
+| `VIRTDEV_TRIGGER_KILL_AFTER` | `2` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_TRIGGER_OUTPUT_MAX_BYTES` | `65536` bytes | Integer `1..1048576` bytes per output stream |
+| `VIRTDEV_MAINTENANCE_HOOK_TIMEOUT` | `3600` seconds per hook | Integer `1..86400` seconds |
+| `VIRTDEV_MAINTENANCE_HOOK_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_MAINTENANCE_HOOK_OUTPUT_MAX_BYTES` | `1048576` bytes | Integer `1..67108864` bytes per output stream |
+| `VIRTDEV_BACKUP_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; archive and regular logical-data ceiling |
+| `VIRTDEV_BACKUP_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; extracted paths including implicit parents |
+| `VIRTDEV_BACKUP_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
+| `VIRTDEV_BACKUP_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_RESTORE_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; regular logical-data ceiling |
+| `VIRTDEV_RESTORE_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; snapshot-tree entries |
+| `VIRTDEV_RESTORE_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
+| `VIRTDEV_RESTORE_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_TRANSFER_MAX_BYTES` | `8589934592` bytes (8 GiB) | Integer `1..1099511627776`; download logical-data ceiling |
+| `VIRTDEV_TRANSFER_MAX_ALLOCATED_BYTES` | `10737418240` bytes (10 GiB) | Integer `1..2199023255552`; must cover logical data plus archive overhead |
+| `VIRTDEV_TRANSFER_MAX_ENTRIES` | `200000` entries | Integer `1..10000000`; download-tree entries |
+| `VIRTDEV_TRANSFER_TIMEOUT` | `3600` seconds total | Integer `1..86400` seconds |
+| `VIRTDEV_TRANSFER_KILL_AFTER` | `5` seconds | Integer `1..60` seconds from TERM to KILL |
+| `VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES` | `65536` bytes | Integer `1..1048576` bytes per guest command |
+| `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` | OVMF code-image path |
+| `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` | OVMF variables-template path |
 
 ---
 

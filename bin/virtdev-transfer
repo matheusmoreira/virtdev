@@ -2,9 +2,10 @@
 #
 # virtdev-transfer <project> <src> <dest>
 #
-# Copies files between the host and a running project virtual machine
-# using rsync over SSH. Prefix the remote path with ':' to indicate
-# the virtual machine side.
+# Copies files between the host and a running project virtual machine.
+# Uploads use rsync over SSH. Downloads use a bounded tar stream, a
+# private host stage, and atomic publication. Prefix the remote path
+# with ':' to indicate the virtual machine side.
 #
 # Upload (host to virtual machine):
 #
@@ -20,7 +21,8 @@
 # Trailing slash semantics follow rsync convention:
 # 'dir/' copies contents, 'dir' copies the directory itself.
 #
-# Requires rsync on both host and guest:
+# Requires rsync on the host and, for uploads, the guest. Downloads
+# require tar on both sides.
 #
 #     pacman -S rsync
 #
