@@ -7,6 +7,14 @@ if [[ -n "${BACKUP_COMMAND_FILE:-}" ]]; then
   printf '%s\n' "$*" > "${BACKUP_COMMAND_FILE}"
 fi
 cat >/dev/null
+if [[ -n "${BACKUP_READY_FILE:-}" ]]; then
+  printf '%d\n' "$$" > "${BACKUP_READY_FILE}"
+fi
+if [[ -n "${BACKUP_TRIGGER_FILE:-}" ]]; then
+  while [[ ! -e "${BACKUP_TRIGGER_FILE}" ]]; do
+    sleep 0.01
+  done
+fi
 if [[ -n "${BACKUP_STREAM_DELAY:-}" ]]; then
   sleep "${BACKUP_STREAM_DELAY}"
 fi

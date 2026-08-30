@@ -403,37 +403,93 @@ if (( status != 20 )); then
 fi
 
 df_timeout_home="${test_tmp}/df-timeout-home"
+df_timeout_pid="${test_tmp}/df-timeout.pid"
+df_timeout_ready="${test_tmp}/df-timeout.ready"
 prepare_home "${df_timeout_home}"
 status=0
 run_backup "${df_timeout_home}" 1048576 100 10 \
   env PATH="${timeout_bin}:${fixture_bin}:${PATH}" \
-    RESTORE_TIMEOUT_COMMAND=df \
+    RESTORE_TIMEOUT_COMMAND=df BACKUP_PID_FILE="${df_timeout_pid}" \
+    BACKUP_READY_FILE="${df_timeout_ready}" \
   >"${test_tmp}/df-timeout.output" 2>&1 || status=$?
-if (( status != 20 )); then
+if (( status != 20 )) || [[ -e "${df_timeout_pid}" \
+      || -e "${df_timeout_ready}" ]]; then
   printf 'backup lost its capacity-probe deadline (status %d)\n' "${status}" >&2
   cat "${test_tmp}/df-timeout.output" >&2
   exit 1
 fi
 
-timeout_home="${test_tmp}/timeout-home"
-prepare_home "${timeout_home}"
-status=0
-run_backup "${timeout_home}" 1048576 100 1 \
-  env BACKUP_STREAM_DELAY=5 BACKUP_PID_FILE="${test_tmp}/backup.pid" \
-  >"${test_tmp}/output" 2>&1 || status=$?
-if (( status != 20 )) \
-    || find "${timeout_home}/backups" -name '*.partial' -print -quit \
-      | grep -q .; then
-  printf 'archive timeout was not rejected and cleaned (status %d)\n' \
-    "${status}" >&2
-  exit 1
-fi
+launched_timeout_home="${test_tmp}/launched-timeout-home"
+launched_timeout_pid_file="${test_tmp}/launched-timeout.pid"
+launched_timeout_ready="${test_tmp}/launched-timeout.ready"
+launched_timeout_trigger="${test_tmp}/launched-timeout.trigger"
+prepare_home "${launched_timeout_home}"
+(
+  backup_process=''
+  capture_process=''
+  # shellcheck disable=SC2329  # invoked by the EXIT trap
+  cleanup_launched_timeout() {
+    if [[ "${capture_process}" =~ ^[0-9]+$ ]] \
+        && kill -0 "${capture_process}" 2>/dev/null; then
+      kill "${capture_process}" 2>/dev/null || true
+    fi
+    if [[ "${backup_process}" =~ ^[0-9]+$ ]] \
+        && kill -0 "${backup_process}" 2>/dev/null; then
+      kill "${backup_process}" 2>/dev/null || true
+      wait "${backup_process}" 2>/dev/null || true
+    fi
+  }
+  trap cleanup_launched_timeout EXIT
 
-if [[ -s "${test_tmp}/backup.pid" ]] \
-    && kill -0 "$(< "${test_tmp}/backup.pid")" 2>/dev/null; then
-  printf 'backup timeout left its SSH capture process alive\n' >&2
-  exit 1
-fi
+  status=0
+  run_backup "${launched_timeout_home}" 1048576 100 5 \
+    env BACKUP_STREAM_DELAY=30 \
+      BACKUP_PID_FILE="${launched_timeout_pid_file}" \
+      BACKUP_READY_FILE="${launched_timeout_ready}" \
+      BACKUP_TRIGGER_FILE="${launched_timeout_trigger}" \
+    >"${test_tmp}/launched-timeout.output" 2>&1 &
+  backup_process=$!
+
+  while [[ ! -s "${launched_timeout_ready}" ]] \
+      && kill -0 "${backup_process}" 2>/dev/null; do
+    sleep 0.02
+  done
+  if [[ ! -s "${launched_timeout_pid_file}" \
+      || ! -s "${launched_timeout_ready}" ]]; then
+    wait "${backup_process}" 2>/dev/null || status=$?
+    backup_process=''
+    printf 'backup capture did not reach its ready handshake (status %d)\n' \
+      "${status}" >&2
+    cat "${test_tmp}/launched-timeout.output" >&2
+    exit 1
+  fi
+
+  capture_process="$(< "${launched_timeout_pid_file}")"
+  if [[ "$(< "${launched_timeout_ready}")" != "${capture_process}" \
+      || ! "${capture_process}" =~ ^[0-9]+$ ]] \
+      || ! kill -0 "${capture_process}" 2>/dev/null; then
+    printf 'backup capture ready/PID handshake was inconsistent\n' >&2
+    exit 1
+  fi
+
+  : > "${launched_timeout_trigger}"
+  wait "${backup_process}" || status=$?
+  backup_process=''
+  if (( status != 20 )) \
+      || find "${launched_timeout_home}/backups" \
+        -name '*.partial' -print -quit | grep -q .; then
+    printf 'launched archive timeout was not rejected and cleaned (status %d)\n' \
+      "${status}" >&2
+    cat "${test_tmp}/launched-timeout.output" >&2
+    exit 1
+  fi
+
+  if kill -0 "${capture_process}" 2>/dev/null; then
+    printf 'backup timeout left its launched SSH capture process alive\n' >&2
+    exit 1
+  fi
+  capture_process=''
+)
 
 diagnostic_home="${test_tmp}/diagnostic-home"
 prepare_home "${diagnostic_home}"
