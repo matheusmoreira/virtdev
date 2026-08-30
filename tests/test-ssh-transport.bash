@@ -18,9 +18,11 @@ trap cleanup EXIT
 export VIRTDEV_HOME="${test_tmp}/store with spaces"
 export VIRTDEV_SSH_KEY="${test_tmp}/client key"
 mkdir -p "${VIRTDEV_HOME}/projects/alpha" \
-  "${VIRTDEV_HOME}/projects/beta"
+  "${VIRTDEV_HOME}/projects/beta" \
+  "${VIRTDEV_HOME}/projects/-alpha"
 printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/alpha/guest-contract"
 printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/beta/guest-contract"
+printf 'ssh-host-identity=1\n' > "${VIRTDEV_HOME}/projects/-alpha/guest-contract"
 /usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' -f "${VIRTDEV_SSH_KEY}"
 certificate_authority="${test_tmp}/certificate-authority"
 /usr/bin/ssh-keygen -q -t ed25519 -N '' -C '' -f "${certificate_authority}"
@@ -33,6 +35,7 @@ source "${repository}/lib/virtdev/import"
 import ssh
 ssh_host_identity_ensure alpha
 ssh_host_identity_ensure beta
+ssh_host_identity_ensure -alpha
 
 assert_argv() {
   local -n actual_ref="${1}" expected_ref="${2}"
@@ -355,6 +358,29 @@ expected_cli+=(
   -L3000:localhost:3000 -N dev@127.0.0.1 --help -h --color=yes -dash 'two words' ''
 )
 assert_argv cli_argv expected_cli
+
+printf '2222\n' > "${VIRTDEV_HOME}/projects/-alpha/port"
+SSH_ARGV_FILE="${test_tmp}/leading-cli.argv"
+status=0
+PATH="${fixture_bin}:${repository}/tests/fixtures:${PATH}" \
+  XDG_CONFIG_HOME="${config_home}" \
+  "${repository}/bin/virtdev-ssh" -- -alpha -- printf '%s' ok \
+    >/dev/null 2>"${test_tmp}/leading-cli.stderr" || status=$?
+if (( status != 42 )); then
+  printf 'SSH rejected a leading-hyphen project (status %d)\n' "${status}" >&2
+  cat "${test_tmp}/leading-cli.stderr" >&2
+  exit 1
+fi
+mapfile -d '' -t leading_cli_argv < "${SSH_ARGV_FILE}"
+leading_count=${#leading_cli_argv[@]}
+if (( leading_count < 4 )) \
+    || [[ "${leading_cli_argv[leading_count - 4]}" != dev@127.0.0.1 \
+      || "${leading_cli_argv[leading_count - 3]}" != printf \
+      || "${leading_cli_argv[leading_count - 2]}" != %s \
+      || "${leading_cli_argv[leading_count - 1]}" != ok ]]; then
+  printf 'SSH changed the leading-hyphen project command\n' >&2
+  exit 1
+fi
 
 for invalid_cli in \
     'alpha uname' \

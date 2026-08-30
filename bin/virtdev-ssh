@@ -91,6 +91,9 @@ while (( $# > 0 )); do
 done
 set -- "${parsed_arguments[@]}"
 
+if [[ "${1:-}" == -- ]]; then
+  shift
+fi
 if [[ $# -lt 1 ]]; then
   error 64 <<<"${usage}"
 fi

@@ -13,7 +13,8 @@
 # Steps fail fast and emit a boundary-specific recovery command. Exit 26 is the
 # exception: rebuilding succeeded but provisioning failed. Other step exits are
 # 10 (base), 20 (backup), 21 (stop), 22 (destroy), 23 (create), 24 (start),
-# 25 (wait), 27 (restore), and 28 (resolved zone disappeared).
+# 25 (wait), 27 (restore), 28 (resolved zone disappeared), and 29 (restore
+# preflight).
 #
 
 set -euo pipefail
@@ -21,7 +22,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments snapshot manifest confirm terminal project firewall recreate-result lock ssh
+import error validate arguments snapshot manifest confirm terminal project firewall recreate-result lock ssh mount stop-result
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -236,7 +237,7 @@ fi
 # Plan print. Active steps are numbered contiguously; skipped steps
 # show -- instead of a number. The user reads this immediately before
 # being asked to type the project name to confirm.
-total_steps=$(( 4 + do_backup + do_stop + do_provision + do_restore ))
+total_steps=$(( 4 + do_backup + do_stop + do_provision + 2 * do_restore ))
 {
   printf '\n'
   printf 'Plan for recreate of %s:\n' "${project}"
@@ -250,6 +251,11 @@ total_steps=$(( 4 + do_backup + do_stop + do_provision + do_restore ))
     printf '  %d. stop\n' "$(( ++step ))"
   else
     printf '  -- stop          (skipped: virtual machine already stopped)\n'
+  fi
+  if (( do_restore )); then
+    printf '  %d. restore preflight\n' "$(( ++step ))"
+  else
+    printf '  -- restore preflight (skipped with restore)\n'
   fi
   printf '  %d. destroy --yes\n' "$(( ++step ))"
   printf '  %d. create\n'        "$(( ++step ))"
@@ -292,34 +298,34 @@ fi
 backup() {
   local opts=()
   (( flags[verbose] )) && opts+=(--verbose)
-  "${virtdev_bin_directory}/virtdev-backup" "${opts[@]}" "${project}"
+  "${virtdev_bin_directory}/virtdev-backup" "${opts[@]}" -- "${project}"
 }
 
 stop() {
-  "${virtdev_bin_directory}/virtdev-stop" "${project}"
+  "${virtdev_bin_directory}/virtdev-stop" -- "${project}"
 }
 
 destroy() {
-  "${virtdev_bin_directory}/virtdev-destroy" --yes "${project}"
+  "${virtdev_bin_directory}/virtdev-destroy" --yes -- "${project}"
 }
 
 create() {
-  "${virtdev_bin_directory}/virtdev-create" "${project}"
+  "${virtdev_bin_directory}/virtdev-create" -- "${project}"
 }
 
 start() {
   local opts=()
   [[ -n "${zone}" ]] && opts+=(--zone "${zone}")
   (( flags[unfiltered] )) && opts+=(--unfiltered)
-  "${virtdev_bin_directory}/virtdev-start" "${opts[@]}" "${project}"
+  "${virtdev_bin_directory}/virtdev-start" "${opts[@]}" -- "${project}"
 }
 
 wait_ssh() {
-  "${virtdev_bin_directory}/virtdev-wait" "${project}"
+  "${virtdev_bin_directory}/virtdev-wait" -- "${project}"
 }
 
 provision() {
-  "${virtdev_bin_directory}/virtdev-ssh" "${project}" -- bash -s < "${provision_path}"
+  "${virtdev_bin_directory}/virtdev-ssh" -- "${project}" -- bash -s < "${provision_path}"
 }
 
 restore() {
@@ -327,10 +333,17 @@ restore() {
   (( flags[verbose] )) && opts+=(--verbose)
   local snapshot="${backup_snapshot:-${pinned_snapshot}}"
   if [[ -n "${snapshot}" ]]; then
-    "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" "${project}" "${snapshot}"
+    "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" -- "${project}" "${snapshot}"
   else
-    "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" "${project}"
+    "${virtdev_bin_directory}/virtdev-restore" "${opts[@]}" -- "${project}"
   fi
+}
+
+restore_preflight() {
+  local -r snapshot="${backup_snapshot:-${pinned_snapshot}}"
+  [[ -n "${snapshot}" ]] || return 1
+  "${virtdev_bin_directory}/virtdev-restore" --preflight \
+    -- "${project}" "${snapshot}"
 }
 
 # Return the transaction's exact snapshot, resolving latest only when no
@@ -359,7 +372,7 @@ start_resume() {
   local -a command=(virtdev-start)
   [[ -n "${zone}" ]] && command+=(--zone "${zone}")
   (( flags[unfiltered] )) && command+=(--unfiltered)
-  command+=("${project}")
+  command+=(-- "${project}")
   command_render "${command[@]}"
 }
 
@@ -387,7 +400,7 @@ recreate_resume() {
   (( flags[verbose] )) && command+=(--verbose)
   [[ -n "${zone_arg}" ]] && command+=(--zone "${zone_arg}")
   (( flags[unfiltered] )) && command+=(--unfiltered)
-  command+=("${project}")
+  command+=(-- "${project}")
   command_render "${command[@]}"
 }
 
@@ -396,14 +409,14 @@ restore_resume() {
   local snapshot
 
   (( flags[verbose] )) && command+=(--verbose)
-  command+=("${project}")
+  command+=(-- "${project}")
   snapshot="$(selected_snapshot)"
   [[ -z "${snapshot}" ]] || command+=("${snapshot}")
   command_render "${command[@]}"
 }
 
 provision_resume() {
-  command_render virtdev-ssh "${project}" -- bash -s
+  command_render virtdev-ssh -- "${project}" -- bash -s
   printf ' < '
   printf '%q' "${provision_path}"
 }
@@ -449,18 +462,30 @@ fi
 if (( do_stop )); then
   (( ++step ))
   printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] stop" reset)" >&2
-  if ! stop; then
+  stop_status=0
+  stop || stop_status=$?
+  if (( stop_status != 0 )); then
     snap="$(selected_snapshot)"
     snap_hint=""
     [[ -n "${snap}" ]] && snap_hint="
 Snapshot from this run: ${backups_project_dir}/${snap}/"
+    if (( stop_status == stop_result_cleanup_incomplete )); then
+      error "${recreate_result_stop_failed}" <<MESSAGE
+The virtual machine stopped, but runtime cleanup is incomplete.
+The project has not been destroyed. Inspect remaining artifacts under:
+    ${project_directory}
+After correcting the unsafe artifact, retry cleanup and resume:
+    virtdev-stop -- ${project}
+    $(recreate_resume --no-backup)${snap_hint}
+MESSAGE
+    fi
     error "${recreate_result_stop_failed}" <<MESSAGE
 stop failed (virtdev-stop exited non-zero).
 The virtual machine may be in an indeterminate state. Inspect with:
     systemctl --user status ${unit}
 Stop it manually, then rerun with --no-backup (the snapshot is
 already on disk):
-    virtdev-stop ${project}
+    virtdev-stop -- ${project}
     $(recreate_resume --no-backup)${snap_hint}
 MESSAGE
   fi
@@ -482,6 +507,20 @@ Re-apply the zone (or pass --zone), then rerun:
 MESSAGE
 fi
 
+if (( do_restore )); then
+  (( ++step ))
+  printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] restore preflight" reset)" >&2
+  if ! restore_preflight; then
+    snap="$(selected_snapshot)"
+    error "${recreate_result_restore_preflight_failed}" <<MESSAGE
+restore preflight failed for ${backups_project_dir}/${snap}/.
+The original project still exists and has not been destroyed. Repair or replace
+the selected snapshot, then rerun without taking another backup:
+    $(recreate_resume --no-backup)
+MESSAGE
+  fi
+fi
+
 (( ++step ))
 printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] destroy" reset)" >&2
 if ! destroy; then
@@ -501,15 +540,25 @@ printf '\n%s\n' "$(terminal_write bold "[${step}/${total_steps}] create" reset)"
 if ! create; then
   snap="$(selected_snapshot)"
   snap_hint=""
+  partial_hint=""
   [[ -n "${snap}" ]] && snap_hint="
 Snapshot is preserved at: ${backups_project_dir}/${snap}/"
+  if [[ -e "${project_directory}" || -L "${project_directory}" ]]; then
+    partial_guidance="$(mount_cleanup_guidance "${project_directory}")"
+    partial_hint="
+Create preserved a partial project tree: ${project_directory}
+${partial_guidance}
+After the partial tree is safely gone, continue with:"
+  else
+    partial_hint="
+No project directory remains. Continue with:"
+  fi
   error "${recreate_result_create_failed}" <<MESSAGE
 create failed (virtdev-create exited non-zero).
-The project directory was destroyed and the new one was not built, so a
-recreate resume would dead-end at "Project not found". Rebuild by hand:
-    virtdev-create ${project}
+The original project was destroyed and the replacement was not built.${partial_hint}
+    virtdev-create -- ${project}
     $(start_resume)
-    virtdev-wait ${project}
+    virtdev-wait -- ${project}
 $(post_wait_resume)${snap_hint}
 MESSAGE
 fi
@@ -528,7 +577,7 @@ indeterminate. Submission or cleanup may have partially succeeded. Inspect it:
     systemctl --user status ${unit}
 If it exists, stop it and wait for inactive/failed state. Then resume:
     $(start_resume)
-    virtdev-wait ${project}
+    virtdev-wait -- ${project}
 $(post_wait_resume)${snap_hint}
 MESSAGE
 fi
@@ -582,11 +631,11 @@ Provisioning also failed. Retry it with:
     [[ -n "${snap}" ]] && snap_hint="
 Selected snapshot: ${backups_project_dir}/${snap}/
 Retry with explicit snapshot:
-    virtdev-restore ${project} ${snap}"
+    virtdev-restore -- ${project} ${snap}"
     error "${recreate_result_restore_failed}" <<MESSAGE
 restore failed (virtdev-restore exited non-zero).
-The fresh virtual machine is ${restore_project_state}, but the snapshot was not
-applied.${provision_hint}${snap_hint}
+The fresh virtual machine is ${restore_project_state}, but restore did not
+complete. The guest may be partially merged; inspect it before retrying.${provision_hint}${snap_hint}
 MESSAGE
   fi
 fi

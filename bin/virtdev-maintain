@@ -704,6 +704,7 @@ trap - EXIT
 # otherwise leave both runtime endpoints and images intact for recovery.
 maintenance_cleanup_phase=0
 maintenance_cleanup_signal_status=0
+maintenance_exchange_committed=0
 
 # shellcheck disable=SC2329  # invoked via signal traps
 maintenance_cleanup_signal() {
@@ -735,7 +736,12 @@ maintenance_exit_guard() {
   fi
   trap - HUP INT TERM
   if (( maintenance_cleanup_signal_status )); then
-    exit "${maintenance_cleanup_signal_status}"
+    exit_status="${maintenance_cleanup_signal_status}"
+  fi
+  if (( maintenance_exchange_committed && exit_status != 0 \
+        && exit_status != 27 )); then
+    printf >&2 'warning: failure occurred after the base namespace exchange; preserving both trees\n'
+    exit_status=27
   fi
   exit "${exit_status}"
 }
@@ -1197,6 +1203,7 @@ exchange_status=0
   "${system_directory}" "${maintenance_directory}" || exchange_status=$?
 case "${exchange_status}" in
   0)
+    maintenance_exchange_committed=1
     ;;
   1)
     error 19 <<MESSAGE

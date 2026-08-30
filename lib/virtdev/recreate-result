@@ -13,6 +13,7 @@ readonly recreate_result_wait_failed=25
 readonly recreate_result_unprovisioned=26
 readonly recreate_result_restore_failed=27
 readonly recreate_result_zone_removed=28
+readonly recreate_result_restore_preflight_failed=29
 
 recreate_result_phase() {
   case "${1}" in
@@ -25,6 +26,7 @@ recreate_result_phase() {
     "${recreate_result_unprovisioned}") printf '%s' unprovisioned ;;
     "${recreate_result_restore_failed}") printf '%s' restore ;;
     "${recreate_result_zone_removed}") printf '%s' 'zone removed' ;;
+    "${recreate_result_restore_preflight_failed}") printf '%s' 'restore preflight' ;;
     *) return 1 ;;
   esac
 }

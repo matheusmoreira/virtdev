@@ -21,7 +21,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate lock arguments terminal machine runtime lifecycle integer
+import error validate lock arguments terminal machine runtime lifecycle integer stop-result
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_STOP_TIMEOUT:=60}"
@@ -65,7 +65,7 @@ project_directory="${VIRTDEV_MACHINE_RUNTIME_DIR}"
 monitor_sock="$(runtime_monitor_sock "${project_directory}")"
 
 stop_finalize() {
-  local qemu_exit
+  local qemu_exit cleanup_status=0
   qemu_exit="$(systemctl --user show "${unit}" --property=ExecMainStatus --value 2>/dev/null || true)"
   qemu_exit="${qemu_exit:-?}"
   # Skipped for maintenance: virtdev-maintain owns the unit lifecycle
@@ -75,7 +75,14 @@ stop_finalize() {
     systemctl --user reset-failed "${unit}" 2>/dev/null || true
   fi
   # Full teardown: sockets + the port running-signal (lib/virtdev/runtime).
-  lifecycle_clean_unowned "${project_directory}"
+  lifecycle_clean_unowned "${project_directory}" || cleanup_status=$?
+  if (( cleanup_status != lifecycle_stop_clean )); then
+    error "${stop_result_cleanup_incomplete}" <<MESSAGE
+Virtual machine is stopped, but runtime cleanup is incomplete: ${project}
+Inspect remaining artifacts under: ${project_directory}
+After correcting the unsafe artifact, retry: virtdev-stop -- ${project}
+MESSAGE
+  fi
   printf >&2 '%s\n' "$(terminal_write fg=green "Virtual machine stopped: ${project}" reset " (QEMU exit ${qemu_exit})")"
 }
 
@@ -85,7 +92,8 @@ stop_finalize() {
 # below, which drives it to a terminal state — the old `! project_is_running` rejected
 # those transitional machines with a spurious "not running".
 if machine_is_stopped "${project}"; then
-  error 4 <<<"Virtual machine is not running: ${project}"
+  stop_finalize
+  exit 0
 fi
 
 # An UNREACHABLE user manager (empty ActiveState) is a different indeterminate than a

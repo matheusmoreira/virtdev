@@ -14,7 +14,8 @@
 #   6/7 audit failure; 8 aborted; 9 generation missing; 10 no projects;
 #   11 empty selection; 12 coupled project excluded; 13 excluded detached
 #   project not stopped; 14 bad base SSH contract; 20 backup failure;
-#   30 maintenance failure; 40 rebuild failure; 41 unprovisioned rebuild.
+#   30 pre-exchange maintenance failure; 31 indeterminate base exchange;
+#   40 rebuild failure; 41 unprovisioned rebuild.
 #
 
 set -euo pipefail
@@ -22,7 +23,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments manifest project snapshot confirm terminal firewall recreate-result lock ssh
+import error validate arguments manifest project snapshot confirm terminal firewall recreate-result lock ssh mount stop-result
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${XDG_CONFIG_HOME:="${HOME}/.config"}"
@@ -350,6 +351,7 @@ fi
 
 total_phases=4
 declare -a stopped_projects=()
+declare -a cleanup_incomplete_projects=()
 declare -a indeterminate_projects=()
 declare -A backup_snapshots=()
 
@@ -378,6 +380,13 @@ abort_backup() {
       done
       printf '\nInspect each with systemctl --user status virtdev-<project>, then run virtdev-stop <project>.\n'
     fi
+    if [[ ${#cleanup_incomplete_projects[@]} -gt 0 ]]; then
+      printf '\nStopped virtual machines with incomplete runtime cleanup:\n'
+      for s in "${cleanup_incomplete_projects[@]}"; do
+        printf '    %s (%s/projects/%s)\n' "${s}" "${VIRTDEV_HOME}" "${s}"
+      done
+      printf '\nCorrect unsafe runtime artifacts, then retry virtdev-stop -- <project>.\n'
+    fi
     printf 'Base is unchanged. Backups taken so far are preserved.\n'
   } >&2
   error 20 <<<"Aborting."
@@ -385,11 +394,15 @@ abort_backup() {
 
 cleanup_started_project() {
   local -r p="${1}"
-  if "${virtdev_bin_directory}/virtdev-stop" "${p}"; then
-    stopped_projects+=("${p}")
-  else
-    indeterminate_projects+=("${p}")
-  fi
+  local stop_status=0
+  "${virtdev_bin_directory}/virtdev-stop" -- "${p}" || stop_status=$?
+  case "${stop_status}" in
+    0) stopped_projects+=("${p}") ;;
+    "${stop_result_cleanup_incomplete}")
+      cleanup_incomplete_projects+=("${p}")
+      ;;
+    *) indeterminate_projects+=("${p}") ;;
+  esac
 }
 
 command_render() {
@@ -411,7 +424,7 @@ upgrade_start_resume() {
     [[ -z "${restore_zone}" ]] || command+=(--zone "${restore_zone}")
   fi
   (( flags[unfiltered] )) && command+=(--unfiltered)
-  command+=("${p}")
+  command+=(-- "${p}")
   command_render "${command[@]}"
 }
 
@@ -435,25 +448,32 @@ upgrade_resume() {
     [[ -z "${restore_zone}" ]] || command+=(--zone "${restore_zone}")
   fi
   (( flags[unfiltered] )) && command+=(--unfiltered)
-  command+=("${p}")
+  command+=(-- "${p}")
   command_render "${command[@]}"
 }
 
 upgrade_create_recovery() {
   local -r p="${1}"
   local -a restore_command=(virtdev-restore)
+  local -r project_path="${VIRTDEV_HOME}/projects/${p}"
 
-  command_render virtdev-create "${p}"
+  if [[ -e "${project_path}" || -L "${project_path}" ]]; then
+    printf 'Inspect the preserved partial project: %s\n' "${project_path}"
+    mount_cleanup_guidance "${project_path}"
+    printf '\nAfter safe cleanup:\n'
+  fi
+
+  command_render virtdev-create -- "${p}"
   printf '\n%s\n' "$(upgrade_start_resume "${p}")"
-  command_render virtdev-wait "${p}"
+  command_render virtdev-wait -- "${p}"
   printf '\n'
   if [[ -n "${provision_paths[${p}]:-}" ]]; then
-    command_render virtdev-ssh "${p}" -- bash -s
+    command_render virtdev-ssh -- "${p}" -- bash -s
     printf ' < '
     printf '%q\n' "${provision_paths[${p}]}"
   fi
   (( flags[verbose] )) && restore_command+=(--verbose)
-  restore_command+=("${p}" "${backup_snapshots[${p}]}")
+  restore_command+=(-- "${p}" "${backup_snapshots[${p}]}")
   command_render "${restore_command[@]}"
   printf '\n'
 }
@@ -480,10 +500,10 @@ for p in "${included[@]}"; do
 
   if (( ! was_running )); then
     printf '    Starting...\n' >&2
-    if ! "${virtdev_bin_directory}/virtdev-start" "${unfiltered_opt[@]}" "${p}"; then
+    if ! "${virtdev_bin_directory}/virtdev-start" "${unfiltered_opt[@]}" -- "${p}"; then
       abort_backup "Backup failed: could not start ${p}."
     fi
-    if ! "${virtdev_bin_directory}/virtdev-wait" "${p}"; then
+    if ! "${virtdev_bin_directory}/virtdev-wait" -- "${p}"; then
       cleanup_started_project "${p}"
       abort_backup "Backup failed: SSH did not come up for ${p}."
     fi
@@ -493,7 +513,7 @@ for p in "${included[@]}"; do
   (( flags[verbose] )) && backup_opts+=(--verbose)
   backup_path=""
   if ! backup_path="$("${virtdev_bin_directory}/virtdev-backup" \
-      "${backup_opts[@]}" "${p}")"; then
+      "${backup_opts[@]}" -- "${p}")"; then
     if (( ! was_running )); then
       cleanup_started_project "${p}"
     fi
@@ -508,8 +528,14 @@ for p in "${included[@]}"; do
   printf '    Snapshot: %s\n' "${backup_snapshots[${p}]}" >&2
 
   printf '    Stopping...\n' >&2
-  if ! "${virtdev_bin_directory}/virtdev-stop" "${p}"; then
-    indeterminate_projects+=("${p}")
+  stop_status=0
+  "${virtdev_bin_directory}/virtdev-stop" -- "${p}" || stop_status=$?
+  if (( stop_status != 0 )); then
+    if (( stop_status == stop_result_cleanup_incomplete )); then
+      cleanup_incomplete_projects+=("${p}")
+    else
+      indeterminate_projects+=("${p}")
+    fi
     abort_backup "Failed to stop ${p} after backup."
   fi
   stopped_projects+=("${p}")
@@ -521,14 +547,27 @@ printf '\n%s\n' "$(terminal_write bold "[Phase 2/${total_phases}] Maintaining ba
 printf 'This is the interactive phase. SSH into the maintenance virtual machine,\n' >&2
 printf 'perform updates, and power off when done.\n\n' >&2
 
-if ! "${virtdev_bin_directory}/virtdev-maintain" "${unfiltered_opt[@]}"; then
+maintain_status=0
+"${virtdev_bin_directory}/virtdev-maintain" "${unfiltered_opt[@]}" \
+  || maintain_status=$?
+if (( maintain_status != 0 )); then
+  if (( maintain_status == 27 )); then
+    error 31 <<MESSAGE
+Maintain failed after the base namespace exchange or could not prove its commit
+boundary. All project virtual machines remain stopped. Do not start them.
+Preserve and inspect both trees after restoring filesystem health:
+    system:      ${VIRTDEV_HOME}/system
+    maintenance: ${VIRTDEV_HOME}/maintenance
+Backups are preserved.
+MESSAGE
+  fi
   {
     printf '\nMaintain did not complete successfully.\n'
     printf 'Base is unchanged. All project virtual machines are stopped.\n'
     printf 'Backups are preserved. Restart virtual machines with:\n'
     printf '\n'
     for p in "${included[@]}"; do
-      printf '    virtdev-start %s\n' "${p}"
+      printf '    virtdev-start -- %s\n' "${p}"
     done
     printf '\n'
   } >&2
@@ -554,22 +593,17 @@ for p in "${included[@]}"; do
   else
     recreate_opts+=(--no-provision)
   fi
-  # Restore each machine's prior zone across the rebuild (it is already stopped,
-  # so recreate cannot recapture it). Precedence mirrors recreate/start: an
-  # explicit upgrade --zone wins; else a machine that WAS running is restored to
-  # its mapped zone (stray/legacy slice -> most restrictive 'none'); else pass
-  # no --zone so recreate -> virtdev-start reads the project's zone file.
+  # Restore a captured zone when the mapping is recognized; otherwise omit
+  # --zone so virtdev-start resolves the project's current zone file.
   if [[ -n "${zone_arg}" ]]; then
     recreate_opts+=(--zone "${zone_arg}")
   elif [[ -n "${prior_slices[${p}]:-}" ]]; then
-    # Shared restore mapping (identical to virtdev-recreate): an unrecognised slice
-    # maps to empty -> omit --zone so recreate -> virtdev-start reads the zone file.
     restore_zone="$(firewall_zone_to_restore "${prior_slices[${p}]}")"
     [[ -n "${restore_zone}" ]] && recreate_opts+=(--zone "${restore_zone}")
   fi
   (( flags[unfiltered] )) && recreate_opts+=(--unfiltered)
 
-  if "${virtdev_bin_directory}/virtdev-recreate" "${recreate_opts[@]}" "${p}"; then
+  if "${virtdev_bin_directory}/virtdev-recreate" "${recreate_opts[@]}" -- "${p}"; then
     succeeded+=("${p}")
   else
     exit_code=$?

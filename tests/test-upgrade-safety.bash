@@ -122,12 +122,12 @@ fi
 mapfile -t recovery_commands < <(sed -n \
   's/^        \(virtdev-.*\)$/\1/p' "${recovery_output}")
 if (( ${#recovery_commands[@]} != 5 )) \
-    || [[ "${recovery_commands[0]}" != 'virtdev-create probe' \
-      || "${recovery_commands[1]}" != 'virtdev-start --unfiltered probe' \
-      || "${recovery_commands[2]}" != 'virtdev-wait probe' \
-      || "${recovery_commands[3]}" != virtdev-ssh\ probe\ --\ bash\ -s\ \<* \
+    || [[ "${recovery_commands[0]}" != 'virtdev-create -- probe' \
+      || "${recovery_commands[1]}" != 'virtdev-start --unfiltered -- probe' \
+      || "${recovery_commands[2]}" != 'virtdev-wait -- probe' \
+      || "${recovery_commands[3]}" != virtdev-ssh\ --\ probe\ --\ bash\ -s\ \<* \
       || "${recovery_commands[4]}" != \
-        "virtdev-restore --verbose probe ${recovery_snapshot}" ]]; then
+        "virtdev-restore --verbose -- probe ${recovery_snapshot}" ]]; then
   printf 'upgrade create recovery was incomplete or out of order\n' >&2
   printf '    %s\n' "${recovery_commands[@]}" >&2
   exit 1
@@ -143,8 +143,8 @@ for recovery_command in "${recovery_commands[@]}"; do
 done
 mapfile -d '' -t restore_args < "${restore_args_file}"
 mapfile -d '' -t ssh_args < "${ssh_args_file}"
-[[ "${restore_args[*]}" == "--verbose probe ${recovery_snapshot}" ]]
-[[ "${ssh_args[*]}" == 'probe -- bash -s' ]]
+[[ "${restore_args[*]}" == "--verbose -- probe ${recovery_snapshot}" ]]
+[[ "${ssh_args[*]}" == '-- probe -- bash -s' ]]
 
 indeterminate_home="${test_tmp}/indeterminate-home"
 prepare_upgrade_home "${indeterminate_home}"
@@ -169,6 +169,60 @@ if (( status != 20 )) \
   printf 'upgrade mislabeled a failed cleanup stop (status %d)\n' \
     "${status}" >&2
   cat "${indeterminate_output}" >&2
+  exit 1
+fi
+
+maintain_home="${test_tmp}/maintain-home"
+prepare_upgrade_home "${maintain_home}"
+maintain_output="${test_tmp}/upgrade-maintain-indeterminate.output"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+RECREATE_MAINTAIN_STATUS=27 \
+RECREATE_SNAPSHOT_PATH="${maintain_home}/backups/probe/${recovery_snapshot}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${maintain_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/maintain-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes \
+    >"${maintain_output}" 2>&1 || status=$?
+if (( status != 31 )) \
+    || ! grep -Fq 'Do not start them.' "${maintain_output}" \
+    || ! grep -Fq "system:      ${maintain_home}/system" "${maintain_output}" \
+    || ! grep -Fq "maintenance: ${maintain_home}/maintenance" "${maintain_output}" \
+    || grep -Fq 'Base is unchanged' "${maintain_output}" \
+    || grep -Fq 'virtdev-start --' "${maintain_output}"; then
+  printf 'upgrade lost indeterminate maintain commit state (status %d)\n' \
+    "${status}" >&2
+  cat "${maintain_output}" >&2
+  exit 1
+fi
+
+cleanup_home="${test_tmp}/cleanup-home"
+prepare_upgrade_home "${cleanup_home}"
+cleanup_output="${test_tmp}/upgrade-cleanup.output"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+RECREATE_FAIL_STEPS=wait \
+RECREATE_STOP_STATUS=7 \
+RECREATE_SNAPSHOT_PATH="${cleanup_home}/backups/probe/${recovery_snapshot}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${cleanup_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/cleanup-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes \
+    >"${cleanup_output}" 2>&1 || status=$?
+if (( status != 20 )) \
+    || ! grep -Fq 'Stopped virtual machines with incomplete runtime cleanup:' \
+      "${cleanup_output}" \
+    || grep -Fq 'Virtual machines whose stop could not be proven:' \
+      "${cleanup_output}"; then
+  printf 'upgrade misclassified stopped-but-unclean state (status %d)\n' \
+    "${status}" >&2
+  cat "${cleanup_output}" >&2
   exit 1
 fi
 

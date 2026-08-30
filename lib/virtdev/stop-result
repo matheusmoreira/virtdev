@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Public virtdev-stop result used by orchestration commands.
+# shellcheck disable=SC2034  # imported status constant
+
+set -euo pipefail
+
+readonly stop_result_cleanup_incomplete=7

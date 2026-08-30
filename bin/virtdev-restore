@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# virtdev-restore [--verbose] <project> [snapshot]
+# virtdev-restore [--verbose] [--preflight] <project> [snapshot]
 #
 # Restores a backup snapshot into a running project virtual machine.
 # The snapshot layout is produced by virtdev-backup and lives under:
@@ -16,6 +16,7 @@
 # Flags:
 #
 #   --verbose    Show rsync per-file progress.
+#   --preflight  Validate and stage the selected snapshot without changing the guest.
 #
 # Destructive: overwrites guest files without prompting. Because
 # rsync operates on a live, running VM, partial failures may leave
@@ -97,7 +98,7 @@ integer_is_bounded_positive "${VIRTDEV_RESTORE_KILL_AFTER}" 60 \
 umask 077
 
 # shellcheck disable=SC2034  # spec/companions read via nameref
-declare -A spec=([verbose]=bool)
+declare -A spec=([verbose]=bool [preflight]=bool)
 # shellcheck disable=SC2034
 declare -A spec_short=([v]=verbose)
 # shellcheck disable=SC2034
@@ -127,23 +128,23 @@ project_directory="${VIRTDEV_HOME}/projects/${project}"
 
 project_require_ordinary "${project}"
 
-if ! project_is_running "${project}"; then
-  error 4 <<MESSAGE
+if (( ! flags[preflight] )); then
+  if ! project_is_running "${project}"; then
+    error 4 <<MESSAGE
 Virtual machine is not running: ${project}
 Start it with: virtdev-start ${project}
 MESSAGE
-fi
+  fi
 
-port=""
-port_require port "${project}"
-
-ssh_key_validate "${VIRTDEV_SSH_KEY}"
-
-if ! command -v rsync &>/dev/null; then
-  error 6 <<MESSAGE
+  port=""
+  port_require port "${project}"
+  ssh_key_validate "${VIRTDEV_SSH_KEY}"
+  if ! command -v rsync &>/dev/null; then
+    error 6 <<MESSAGE
 rsync not found
 Install it with: pacman -S rsync
 MESSAGE
+  fi
 fi
 
 # shellcheck disable=SC2154  # provided by lib/virtdev/import
@@ -236,8 +237,13 @@ MESSAGE
 esac
 
 # A generation mismatch is normal after recreate.
-printf >&2 'Restoring %s from %s/%s\n' \
+if (( flags[preflight] )); then
+  printf >&2 'Checking restore source for %s at %s/%s\n' \
     "${project}" "${resolved_date}" "${resolved_time}"
+else
+  printf >&2 'Restoring %s from %s/%s\n' \
+      "${project}" "${resolved_date}" "${resolved_time}"
+fi
 printf >&2 '  snapshot generation: %s\n' "${snapshot_generation}"
 printf >&2 '  current generation:  %s\n' "${project_generation}"
 
@@ -343,6 +349,10 @@ restore_df_value() {
     error 19 <<<"Could not parse host capacity during ${phase}"
   fi
   value="${df_lines[1]//[[:space:]]/}"
+  if [[ "${column}" == iavail && "${value}" == - ]]; then
+    _restore_df_result=''
+    return 0
+  fi
   if [[ ! "${value}" =~ ^[0-9]+$ || ${#value} -gt 18 ]]; then
     error 19 <<<"Could not parse host capacity during ${phase}"
   fi
@@ -660,6 +670,12 @@ read -r restore_entries restore_logical_bytes extra_summary \
     && "${restore_logical_bytes}" == "${copied_logical_bytes}" \
     && -z "${extra_summary}" ]] \
   || error 19 <<<'Could not validate stable snapshot summary'
+
+if (( flags[preflight] )); then
+  printf >&2 'Restore preflight passed for %s/%s\n' \
+    "${resolved_date}" "${resolved_time}"
+  exit 0
+fi
 
 ssh_command=""
 rsync_log="$(mktemp)"

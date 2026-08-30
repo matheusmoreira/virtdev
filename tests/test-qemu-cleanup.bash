@@ -133,8 +133,39 @@ for name in "${runtime_console_sock_name}" "${runtime_network_sock_name}" \
   fi
 done
 
+stop_home="${test_tmp}/stop-home"
+stop_runtime="${stop_home}/projects/probe"
+mkdir -p "${stop_home}/system" \
+  "${stop_runtime}/${runtime_monitor_sock_name}"
+printf 'sentinel\n' > \
+  "${stop_runtime}/${runtime_monitor_sock_name}/sentinel"
+stop_status=0
+VIRTDEV_HOME="${stop_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/stop-locks" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-stop" -- probe \
+    >"${test_tmp}/stop.output" 2>&1 || stop_status=$?
+if (( stop_status != 7 )) \
+    || ! grep -Fq 'stopped, but runtime cleanup is incomplete' \
+      "${test_tmp}/stop.output"; then
+  printf 'virtdev-stop lost the terminal cleanup result (status %d)\n' \
+    "${stop_status}" >&2
+  cat "${test_tmp}/stop.output" >&2
+  exit 1
+fi
+rm -f -- "${stop_runtime}/${runtime_monitor_sock_name}/sentinel"
+rmdir -- "${stop_runtime}/${runtime_monitor_sock_name}"
+VIRTDEV_HOME="${stop_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/stop-locks" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-stop" -- probe \
+    >"${test_tmp}/stop-retry.output" 2>&1
+
 printf 'ok - failed-start cleanup preserves controls until terminal proof\n'
 printf 'ok - runtime cleanup attempts every artifact after a local failure\n'
 printf 'ok - terminal proof remains distinct from cleanup failure\n'
 printf 'ok - start maps cleanup and terminal-proof failures separately\n'
 printf 'ok - lifecycle readiness publication is atomic and validated\n'
+printf 'ok - stop retries cleanup after terminal proof\n'

@@ -147,6 +147,32 @@ if (( status != 0 )) || [[ ! -f "${latest_guest}/real/sub/file" ]]; then
   exit 1
 fi
 
+preflight_guest="${test_tmp}/preflight-guest"
+mkdir -p "${preflight_guest}"
+status=0
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/config" \
+NO_COLOR=1 \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_SSH_KEY="${test_tmp}/missing-key" \
+VIRTDEV_RESTORE_MAX_BYTES="${logical_bytes}" \
+VIRTDEV_RESTORE_MAX_ENTRIES=100 \
+VIRTDEV_RESTORE_TIMEOUT=10 \
+VIRTDEV_RESTORE_KILL_AFTER=1 \
+RESTORE_GUEST_ROOT="${preflight_guest}" \
+  "${repository}/bin/virtdev-restore" --preflight \
+    probe 2026-08-28/12-00-00 \
+    >"${test_tmp}/preflight.output" 2>&1 || status=$?
+if (( status != 0 )) \
+    || find "${preflight_guest}" -mindepth 1 -print -quit | grep -q .; then
+  printf 'restore preflight required transport or modified the guest (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/preflight.output" >&2
+  exit 1
+fi
+
 budget_guest="${test_tmp}/budget-guest"
 status=0
 run_restore "${budget_guest}" 1048576 100 10 \
@@ -750,6 +776,21 @@ if (( status != 0 )) \
   printf 'restore reserved summary state from the configured ceiling (status %d)\n' \
     "${status}" >&2
   cat "${test_tmp}/bounded-summary.output" >&2
+  exit 1
+fi
+
+unavailable_inode_guest="${test_tmp}/unavailable-inode-guest"
+status=0
+PATH="${state_bin}:${PATH}" run_restore \
+  "${unavailable_inode_guest}" 1 1 10 env \
+  RESTORE_DF_AVAILABLE=550000000 \
+  RESTORE_DF_IAVAILABLE=- \
+  > "${test_tmp}/unavailable-inode.output" 2>&1 || status=$?
+if (( status != 0 )) \
+    || [[ "$(< "${unavailable_inode_guest}/file")" != x ]]; then
+  printf 'restore rejected an unavailable inode count (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/unavailable-inode.output" >&2
   exit 1
 fi
 

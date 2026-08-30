@@ -37,6 +37,7 @@ prepare_project() {
 run_recreate() {
   local -r active_state="${1}" failure="${2}" output="${3}"
   shift 3
+  local -r target="${RECREATE_PROJECT:-probe}"
   local -a options=(--unfiltered --yes)
   local status=0
 
@@ -46,14 +47,17 @@ run_recreate() {
   SYSTEMCTL_ACTIVE_STATE="${active_state}" \
   RECREATE_FAIL_STEP="${failure}" \
   RECREATE_FAIL_STEPS="${RECREATE_FAIL_STEPS:-}" \
-  RECREATE_SNAPSHOT_PATH="${virtdev_home}/backups/probe/${backup_snapshot}" \
+  RECREATE_FAIL_PREFLIGHT="${RECREATE_FAIL_PREFLIGHT:-0}" \
+  RECREATE_PRESERVE_CREATE_PARTIAL="${RECREATE_PRESERVE_CREATE_PARTIAL:-0}" \
+  RECREATE_STOP_STATUS="${RECREATE_STOP_STATUS:-}" \
+  RECREATE_SNAPSHOT_PATH="${virtdev_home}/backups/${target}/${backup_snapshot}" \
   PATH="${fixture_bin}:${PATH}" \
   HOME="${test_tmp}" \
   XDG_CONFIG_HOME="${test_tmp}/config" \
   VIRTDEV_HOME="${virtdev_home}" \
   VIRTDEV_LOCK_DIRECTORY="${test_tmp}/locks" \
   NO_COLOR=1 \
-    "${test_bin}/virtdev-recreate" "${options[@]}" "$@" probe \
+    "${test_bin}/virtdev-recreate" "${options[@]}" "$@" -- "${target}" \
       > "${output}" 2>&1 || status=$?
   printf '%d' "${status}"
 }
@@ -81,12 +85,56 @@ for failure in stop destroy create start wait; do
     stop|destroy)
       grep -Fq "virtdev-recreate --no-backup --snapshot ${old_snapshot}" \
         "${output}"
+      grep -Fq -- '-- probe' "${output}"
       ;;
     create|start|wait)
-      grep -Fq "virtdev-restore probe ${old_snapshot}" "${output}"
+      grep -Fq "virtdev-restore -- probe ${old_snapshot}" "${output}"
       ;;
   esac
 done
+
+leading_project='-probe'
+leading_directory="${virtdev_home}/projects/${leading_project}"
+mkdir -p "${leading_directory}"
+printf 'home/\n' > "${leading_directory}/manifest"
+leading_output="${test_tmp}/leading-project.output"
+status="$(RECREATE_PROJECT="${leading_project}" \
+  run_recreate inactive none "${leading_output}" \
+    --no-backup --no-restore --no-provision)"
+if (( status != 0 )) || [[ ! -d "${leading_directory}" ]]; then
+  printf 'recreate lost a leading-hyphen project (status %d)\n' \
+    "${status}" >&2
+  cat "${leading_output}" >&2
+  exit 1
+fi
+
+prepare_project
+cleanup_stop_output="${test_tmp}/cleanup-stop.output"
+status="$(RECREATE_STOP_STATUS=7 run_recreate active none \
+  "${cleanup_stop_output}" --no-backup --snapshot "${old_snapshot}")"
+if (( status != 21 )) \
+    || ! grep -Fq 'stopped, but runtime cleanup is incomplete' \
+      "${cleanup_stop_output}" \
+    || grep -Fq 'may be in an indeterminate state' "${cleanup_stop_output}"; then
+  printf 'recreate misclassified stopped-but-unclean state (status %d)\n' \
+    "${status}" >&2
+  cat "${cleanup_stop_output}" >&2
+  exit 1
+fi
+
+prepare_project
+preserved_create_output="${test_tmp}/preserved-create.output"
+status="$(RECREATE_PRESERVE_CREATE_PARTIAL=1 \
+  run_recreate inactive create "${preserved_create_output}" \
+    --no-backup --snapshot "${old_snapshot}")"
+if (( status != 23 )) || [[ ! -d "${project_directory}" ]]; then
+  printf 'recreate did not preserve/classify a partial create (status %d)\n' \
+    "${status}" >&2
+  cat "${preserved_create_output}" >&2
+  exit 1
+fi
+grep -Fq 'Create preserved a partial project tree' "${preserved_create_output}"
+grep -Fq 'After the partial tree is safely gone' "${preserved_create_output}"
 
 grep -Fq "systemctl --user status virtdev-probe" "${test_tmp}/start.output"
 grep -Fq "fixed unit's ownership is" "${test_tmp}/start.output"
@@ -103,7 +151,20 @@ if (( status != 21 )); then
 fi
 grep -Fq "virtdev-recreate --no-backup --snapshot ${backup_snapshot}" \
   "${backup_output}"
+grep -Fq -- '-- probe' "${backup_output}"
 rm -rf -- "${virtdev_home}/backups/probe/${backup_snapshot}"
+
+prepare_project
+preflight_output="${test_tmp}/restore-preflight.output"
+status="$(RECREATE_FAIL_PREFLIGHT=1 run_recreate inactive none \
+  "${preflight_output}" --no-backup --snapshot "${old_snapshot}")"
+if (( status != 29 )) || [[ ! -d "${project_directory}" ]]; then
+  printf 'recreate destroyed a project after failed restore preflight (status %d)\n' \
+    "${status}" >&2
+  cat "${preflight_output}" >&2
+  exit 1
+fi
+grep -Fq 'has not been destroyed' "${preflight_output}"
 
 prepare_project
 latest_output="${test_tmp}/latest-wait.output"
@@ -114,7 +175,7 @@ if (( status != 25 )); then
   cat "${latest_output}" >&2
   exit 1
 fi
-grep -Fq "virtdev-restore probe ${latest_snapshot}" "${latest_output}"
+grep -Fq "virtdev-restore -- probe ${latest_snapshot}" "${latest_output}"
 
 mkdir -p "${backups_directory}/15-00-00/tree"
 recovery_command="$(sed -n 's/^    \(virtdev-restore .*\)$/\1/p' \
@@ -124,7 +185,7 @@ PATH="${test_bin}:${PATH}" \
 RECREATE_RESTORE_ARGS_FILE="${restore_args_file}" \
   bash -c "${recovery_command}"
 mapfile -d '' -t restore_args < "${restore_args_file}"
-if [[ "${restore_args[*]}" != "probe ${latest_snapshot}" ]]; then
+if [[ "${restore_args[*]}" != "-- probe ${latest_snapshot}" ]]; then
   printf 'recovery command selected a newer snapshot: %q\n' \
     "${restore_args[@]}" >&2
   exit 1
@@ -145,7 +206,7 @@ if (( status != 25 )); then
 fi
 provision_line="$(grep -n -m1 '^    virtdev-ssh ' "${provision_output}" | cut -d: -f1)"
 restore_line="$(grep -n -m1 '^    virtdev-restore ' "${provision_output}" | cut -d: -f1)"
-grep -Fq "virtdev-restore --verbose probe ${old_snapshot}" \
+grep -Fq "virtdev-restore --verbose -- probe ${old_snapshot}" \
   "${provision_output}"
 if [[ -z "${provision_line}" || -z "${restore_line}" ]] \
   || (( provision_line >= restore_line )); then
@@ -160,7 +221,7 @@ PATH="${test_bin}:${PATH}" \
 RECREATE_SSH_ARGS_FILE="${ssh_args_file}" \
   bash -c "${provision_command}"
 mapfile -d '' -t ssh_args < "${ssh_args_file}"
-if [[ "${ssh_args[*]}" != 'probe -- bash -s' ]]; then
+if [[ "${ssh_args[*]}" != '-- probe -- bash -s' ]]; then
   printf 'provision recovery command changed arguments: %q\n' \
     "${ssh_args[@]}" >&2
   exit 1
@@ -184,7 +245,7 @@ PATH="${test_bin}:${PATH}" \
 RECREATE_SSH_ARGS_FILE="${ssh_args_file}" \
   bash -c "${provision_command}"
 mapfile -d '' -t ssh_args < "${ssh_args_file}"
-[[ "${ssh_args[*]}" == 'probe -- bash -s' ]]
+[[ "${ssh_args[*]}" == '-- probe -- bash -s' ]]
 
 prepare_project
 combined_failure_output="${test_tmp}/combined-failure.output"
@@ -207,7 +268,7 @@ PATH="${test_bin}:${PATH}" \
 RECREATE_SSH_ARGS_FILE="${ssh_args_file}" \
   bash -c "${combined_provision_command}"
 mapfile -d '' -t ssh_args < "${ssh_args_file}"
-[[ "${ssh_args[*]}" == 'probe -- bash -s' ]]
+[[ "${ssh_args[*]}" == '-- probe -- bash -s' ]]
 
 prepare_project
 no_restore_output="${test_tmp}/no-restore-wait.output"

@@ -16,15 +16,16 @@ expected=(
   '26 unprovisioned'
   '27 restore'
   '28 zone removed'
+  '29 restore preflight'
 )
 
 actual=()
-for status in {20..28}; do
+for status in {20..29}; do
   actual+=("${status} $(recreate_result_phase "${status}")")
 done
 [[ "${actual[*]}" == "${expected[*]}" ]]
 
-if recreate_result_phase 19 >/dev/null || recreate_result_phase 29 >/dev/null; then
+if recreate_result_phase 19 >/dev/null || recreate_result_phase 30 >/dev/null; then
   printf 'unknown recreate result was accepted\n' >&2
   exit 1
 fi
@@ -36,6 +37,8 @@ if recreate_restore_project_state 2 >/dev/null; then
   exit 1
 fi
 grep -Fq 'Provisioning also failed. Retry it with:' \
+  "${repo_root}/bin/virtdev-recreate"
+grep -Fq 'The guest may be partially merged' \
   "${repo_root}/bin/virtdev-recreate"
 
 if grep -En 'exit_code == 26|^[[:space:]]*(22|23|24|25|27|28)\)' \

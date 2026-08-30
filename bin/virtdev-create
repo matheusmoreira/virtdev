@@ -95,9 +95,8 @@ if [[ -d "${project_directory}" ]]; then
   error 6 <<<"Project already exists: '${project_directory}'"
 fi
 
-# Create project directory and disk images.
-# Any failure between here and the final success marker deletes the
-# partial directory so the user can retry without manual cleanup.
+# Create project directory and disk images. Failed cleanup preserves any tree
+# whose mount or identity state cannot be proved safe.
 
 mkdir -p "${project_directory}"
 chmod 0700 "${project_directory}"
