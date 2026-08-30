@@ -876,7 +876,23 @@ if (( status != 19 )) || [[ -e "${state_ssh_started}" ]] \
   exit 1
 fi
 
+diagnostic_guest="${test_tmp}/diagnostic-guest"
+status=0
+run_restore "${diagnostic_guest}" 1 1 10 env \
+  VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=64 RESTORE_STDERR_BYTES=65 \
+  > "${test_tmp}/diagnostic-restore.output" 2>&1 || status=$?
+if (( status != 19 )) \
+    || ! grep -Fq 'diagnostics exceeded the bounded output budget' \
+      "${test_tmp}/diagnostic-restore.output" \
+    || (( $(stat -c '%s' "${test_tmp}/diagnostic-restore.output") > 4096 )); then
+  printf 'restore did not bound guest-controlled stderr (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/diagnostic-restore.output" >&2
+  exit 1
+fi
+
 printf 'ok - restore uses a compatible manifest file and preserves inode fidelity\n'
 printf 'ok - restore bounds regular logical bytes, entry count, and total time\n'
 printf 'ok - restore stages and validates one independently bounded tree\n'
 printf 'ok - stable staging rejects deep and cross-epoch source trees\n'
+printf 'ok - restore bounds and sanitizes guest diagnostics\n'

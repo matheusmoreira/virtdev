@@ -26,6 +26,10 @@ if [[ -n "${RESTORE_SSH_DELAY:-}" ]]; then
   sleep "${RESTORE_SSH_DELAY}"
 fi
 
+if [[ -n "${RESTORE_STDERR_BYTES:-}" ]]; then
+  head -c "${RESTORE_STDERR_BYTES}" /dev/zero | tr '\0' x >&2
+fi
+
 remote_argv=("$@")
 last=$(( ${#remote_argv[@]} - 1 ))
 if [[ "${remote_argv[last]}" != /home/dev/ ]]; then

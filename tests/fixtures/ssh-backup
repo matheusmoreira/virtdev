@@ -7,5 +7,8 @@ cat >/dev/null
 if [[ -n "${BACKUP_STREAM_DELAY:-}" ]]; then
   sleep "${BACKUP_STREAM_DELAY}"
 fi
+if [[ -n "${BACKUP_STDERR_BYTES:-}" ]]; then
+  head -c "${BACKUP_STDERR_BYTES}" /dev/zero | tr '\0' x >&2
+fi
 cat -- "${BACKUP_TAR_STREAM:?}"
 exit "${BACKUP_SSH_STATUS:-0}"

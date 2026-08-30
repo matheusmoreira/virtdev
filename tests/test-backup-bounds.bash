@@ -302,9 +302,27 @@ if (( status != 20 )) \
     "${status}" >&2
   exit 1
 fi
+
 if [[ ! -s "${test_tmp}/backup.pid" ]] \
     || kill -0 "$(< "${test_tmp}/backup.pid")" 2>/dev/null; then
   printf 'backup timeout left its SSH capture process alive\n' >&2
+  exit 1
+fi
+
+diagnostic_home="${test_tmp}/diagnostic-home"
+prepare_home "${diagnostic_home}"
+status=0
+run_backup "${diagnostic_home}" 1048576 100 10 \
+  env VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES=64 BACKUP_STDERR_BYTES=65 \
+  >"${test_tmp}/diagnostic.output" 2>&1 || status=$?
+if (( status != 19 )) \
+    || ! grep -Fq 'diagnostics exceeded the bounded output budget' \
+      "${test_tmp}/diagnostic.output" \
+    || (( $(stat -c '%s' "${test_tmp}/diagnostic.output") > 4096 )) \
+    || find "${diagnostic_home}/backups" -name '*.partial' -print -quit \
+      | grep -q .; then
+  printf 'backup did not bound guest-controlled stderr (status %d)\n' \
+    "${status}" >&2
   exit 1
 fi
 
@@ -347,3 +365,4 @@ fi
 printf 'ok - backup capture enforces physical, logical, entry, and time budgets\n'
 printf 'ok - backup and restore agree at the logical-byte boundary\n'
 printf 'ok - backup publication is durable or preserves inspectable recovery state\n'
+printf 'ok - backup bounds and sanitizes guest diagnostics\n'

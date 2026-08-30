@@ -38,6 +38,7 @@
 #   VIRTDEV_RESTORE_MAX_ENTRIES Default: 200000
 #   VIRTDEV_RESTORE_TIMEOUT    Default: 3600 seconds total
 #   VIRTDEV_RESTORE_KILL_AFTER Default: 5 seconds from TERM to KILL
+#   VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES Default: 65536
 #
 # Exit codes:
 #
@@ -78,7 +79,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh snapshot manifest terminal port project integer mount
+import diagnostic error validate arguments ssh snapshot manifest terminal port project integer mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -86,6 +87,7 @@ import error validate arguments ssh snapshot manifest terminal port project inte
 : "${VIRTDEV_RESTORE_MAX_ENTRIES:=200000}"
 : "${VIRTDEV_RESTORE_TIMEOUT:=3600}"
 : "${VIRTDEV_RESTORE_KILL_AFTER:=5}"
+: "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES:=65536}"
 
 integer_is_bounded_positive "${VIRTDEV_RESTORE_MAX_BYTES}" 1099511627776 \
   || error 64 <<<'Invalid VIRTDEV_RESTORE_MAX_BYTES: expected 1..1099511627776'
@@ -95,6 +97,8 @@ integer_is_bounded_positive "${VIRTDEV_RESTORE_TIMEOUT}" 86400 \
   || error 64 <<<'Invalid VIRTDEV_RESTORE_TIMEOUT: expected 1..86400'
 integer_is_bounded_positive "${VIRTDEV_RESTORE_KILL_AFTER}" 60 \
   || error 64 <<<'Invalid VIRTDEV_RESTORE_KILL_AFTER: expected 1..60'
+integer_is_bounded_positive "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" 1048576 \
+  || error 64 <<<'Invalid VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES: expected 1..1048576'
 
 umask 077
 
@@ -728,6 +732,8 @@ fi
 
 ssh_command=""
 rsync_log="$(mktemp)"
+transfer_stderr="${restore_summary_directory}/transfer.stderr"
+transfer_stderr_fifo="${restore_summary_directory}/transfer.stderr.fifo"
 ssh_rsync_command ssh_command rsync_wrapper "${project}" \
   "${VIRTDEV_SSH_KEY}" "${port}"
 
@@ -742,9 +748,11 @@ remaining=$(( restore_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Restore deadline expired before transfer'
 restore_require_confined_tree "${restore_source_tree}"
 set +e
-LC_ALL=C timeout --signal=TERM \
-    --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
-    rsync "${rsync_opts[@]}" \
+LC_ALL=C bounded_stderr_run "${transfer_stderr}" "${transfer_stderr_fifo}" \
+    "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+    timeout --signal=TERM \
+      --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
+      rsync "${rsync_opts[@]}" \
     --files-from="${restore_files_from}" \
     -e "${ssh_command}" \
     "${restore_source_tree}/" \
@@ -752,6 +760,19 @@ LC_ALL=C timeout --signal=TERM \
     | tee "${rsync_log}"
 transfer_status=("${PIPESTATUS[@]}")
 set -e
+diagnostic_status=0
+bounded_stderr_emit "${transfer_stderr}" \
+  "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+case "${diagnostic_status}" in
+  0) ;;
+  2)
+    error 19 <<MESSAGE
+Guest restore diagnostics exceeded the bounded output budget.
+The guest filesystem may be partially modified; inspect it before retrying.
+MESSAGE
+    ;;
+  *) error 22 <<<'Could not capture bounded guest restore diagnostics' ;;
+esac
 rsync_exit="${transfer_status[0]}"
 tee_exit="${transfer_status[1]}"
 (( tee_exit == 0 )) || error 22 <<<'Could not record restore transfer output'

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Bound and sanitize stderr from guest-controlled transport processes.
+
+set -euo pipefail
+
+bounded_stderr_run() {
+  local -r capture="${1}" fifo="${2}" maximum_bytes="${3}"
+  shift 3
+  local command_status=0 drain_status=0 drain_pid
+
+  [[ "${maximum_bytes}" =~ ^[1-9][0-9]*$ ]] || return 125
+  [[ ! -e "${capture}" && ! -L "${capture}" \
+      && ! -e "${fifo}" && ! -L "${fifo}" ]] || return 125
+  ( set -o noclobber; umask 077; : > "${capture}" ) || return 125
+  mkfifo -m 0600 -- "${fifo}" || return 125
+  head -c "$(( maximum_bytes + 1 ))" < "${fifo}" > "${capture}" &
+  drain_pid=$!
+  "$@" 2> "${fifo}" || command_status=$?
+  wait "${drain_pid}" || drain_status=$?
+  rm -f -- "${fifo}"
+  (( drain_status == 0 )) || return 125
+  return "${command_status}"
+}
+
+# Returns 0 within budget, 2 on overflow, and 1 for invalid capture state.
+bounded_stderr_emit() {
+  local -r capture="${1}" maximum_bytes="${2}"
+  local size
+
+  [[ -f "${capture}" && ! -L "${capture}" \
+      && "${maximum_bytes}" =~ ^[1-9][0-9]*$ ]] || return 1
+  size="$(stat -c '%s' -- "${capture}" 2>/dev/null)" || return 1
+  [[ "${size}" =~ ^[0-9]+$ ]] || return 1
+  if (( size > 0 )); then
+    LC_ALL=C head -c "${maximum_bytes}" -- "${capture}" \
+      | LC_ALL=C tr -c '\11\12\40-\176' '?' >&2 || return 1
+    printf '\n' >&2
+  fi
+  (( size <= maximum_bytes )) || return 2
+  return 0
+}

@@ -58,6 +58,7 @@
 #   VIRTDEV_BACKUP_MAX_ENTRIES  Default: 200000 extracted paths
 #   VIRTDEV_BACKUP_TIMEOUT      Default: 3600 seconds total
 #   VIRTDEV_BACKUP_KILL_AFTER   Default: 5 seconds from TERM to KILL
+#   VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES Default: 65536
 #   XDG_CONFIG_HOME             Default: ~/.config
 #
 # Exit codes:
@@ -95,7 +96,7 @@ set -euo pipefail
 # shellcheck disable=SC1090,SC1091
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
 
-import error validate arguments ssh snapshot manifest terminal port project integer mount
+import diagnostic error validate arguments ssh snapshot manifest terminal port project integer mount
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 : "${VIRTDEV_SSH_KEY:="${VIRTDEV_HOME}/ssh/id"}"
@@ -104,6 +105,7 @@ import error validate arguments ssh snapshot manifest terminal port project inte
 : "${VIRTDEV_BACKUP_MAX_ENTRIES:=200000}"
 : "${VIRTDEV_BACKUP_TIMEOUT:=3600}"
 : "${VIRTDEV_BACKUP_KILL_AFTER:=5}"
+: "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES:=65536}"
 
 integer_is_bounded_positive "${VIRTDEV_BACKUP_MAX_BYTES}" 1099511627776 \
   || error 64 <<<'Invalid VIRTDEV_BACKUP_MAX_BYTES: expected 1..1099511627776'
@@ -113,6 +115,8 @@ integer_is_bounded_positive "${VIRTDEV_BACKUP_TIMEOUT}" 86400 \
   || error 64 <<<'Invalid VIRTDEV_BACKUP_TIMEOUT: expected 1..86400'
 integer_is_bounded_positive "${VIRTDEV_BACKUP_KILL_AFTER}" 60 \
   || error 64 <<<'Invalid VIRTDEV_BACKUP_KILL_AFTER: expected 1..60'
+integer_is_bounded_positive "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" 1048576 \
+  || error 64 <<<'Invalid VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES: expected 1..1048576'
 
 umask 077
 
@@ -425,6 +429,8 @@ ssh_rsync_command ssh_command ssh_wrapper "${project}" \
   "${VIRTDEV_SSH_KEY}" "${port}"
 
 archive="${partial}/capture.tar"
+capture_stderr="${partial}/capture.stderr"
+capture_stderr_fifo="${partial}/capture.stderr.fifo"
 
 available_bytes=''
 backup_df_value available_bytes avail "${partial}" \
@@ -447,13 +453,24 @@ printf >&2 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
 remaining=$(( backup_deadline - BASH_MONOSECONDS ))
 (( remaining > 0 )) || error 20 <<<'Backup deadline expired before capture'
 set +e
-LC_ALL=C timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
-  "${remaining}" \
-  "${ssh_command}" dev@127.0.0.1 /usr/bin/bash -c "${remote_tar_quoted}" \
-  < "${files_from}" \
+LC_ALL=C bounded_stderr_run "${capture_stderr}" "${capture_stderr_fifo}" \
+  "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" \
+  timeout --signal=TERM --kill-after="${VIRTDEV_BACKUP_KILL_AFTER}" \
+    "${remaining}" \
+    "${ssh_command}" dev@127.0.0.1 /usr/bin/bash -c "${remote_tar_quoted}" \
+    < "${files_from}" \
   | head -c "$(( archive_limit + 1 ))" > "${archive}"
 capture_status=("${PIPESTATUS[@]}")
 set -e
+
+diagnostic_status=0
+bounded_stderr_emit "${capture_stderr}" \
+  "${VIRTDEV_REMOTE_DIAGNOSTIC_MAX_BYTES}" || diagnostic_status=$?
+case "${diagnostic_status}" in
+  0) ;;
+  2) error 19 <<<'Guest backup diagnostics exceeded the bounded output budget' ;;
+  *) error 18 <<<'Could not capture bounded guest backup diagnostics' ;;
+esac
 
 archive_size="$(stat -c '%s' -- "${archive}" 2>/dev/null || true)"
 [[ "${archive_size}" =~ ^[0-9]+$ ]] \
