@@ -1,84 +1,18 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2154  # machine constants are provided by import
-# lib/virtdev/project
+# Project enumeration, unit state, and generation validation.
 #
-# Project enumeration and state queries.
+# Public API: project_list; project_state; project_load_state;
+# project_is_{running,stopped,unreachable,outdated,detached}; project_require;
+# generation_read_{base,project}; and their display-only lenient variants.
 #
-# Public functions:
+# Running and stopped are deliberately not complements: transitional or unknown
+# units satisfy neither. project_is_outdated returns 2 for corrupt project state
+# and 3 for corrupt shared-base state; callers must never rebuild either case.
+# Detached authority additionally requires two readable, backing-free images.
+# Numeric generations are canonical integers in 0..generation_max.
 #
-#   project_list
-#       Prints sorted valid project names, one per line.
-#       Excludes the reserved 'maintenance' name. Prints nothing
-#       and returns 0 if no projects exist.
-#
-#   project_is_running <project>
-#       Returns 0 iff the unit is PROVABLY active. Fail-SAFE partner for the
-#       query commands (ssh, monitor, backup, …): an unreachable user manager
-#       reads as "not running", so they refuse to touch a machine they cannot
-#       confirm is up rather than erroring on a live one.
-#
-#   project_is_stopped <project>
-#       Returns 0 iff the unit is PROVABLY inactive or failed. Fail-CLOSED
-#       partner for the destructive commands (destroy, detach, move, nuke, and
-#       stop's already-stopped guard): a transitional state OR an unreachable
-#       manager reads as "not stopped", so they refuse to mutate a machine that
-#       might still be running. NOT the boolean inverse of project_is_running —
-#       see their definitions for the indeterminate middle.
-#
-#   project_is_unreachable <project>
-#       Returns 0 iff the user manager could not be reached to determine the
-#       unit's state. The "indeterminate because we could not ask" case,
-#       distinct from a transitional state; lets a caller (virtdev-stop)
-#       fast-fail instead of waiting on a state it can never read.
-#
-#   project_state <project>
-#       Prints running, stopped, starting, stopping, or unknown from one
-#       ActiveState observation.
-#
-#   project_load_state <result-array> <project>...
-#       Populates a caller-owned associative array with project_state values.
-#       Returns 2 for a cyclic or unsupported result nameref.
-#
-#   project_is_outdated <project>
-#       Returns 0 if the project's generation does not match the
-#       sealed base generation. Returns 1 (not outdated) when either
-#       generation file is missing or the project is detached.
-#       Returns 2 if the PROJECT's generation file is corrupt, or 3 if
-#       the BASE generation file is corrupt. Callers iterating over
-#       projects must warn and skip on 2/3, never treat them as outdated
-#       (that would feed corruption into a destroy/recreate pipeline).
-#       Note 3 is identical for every project (the base is shared), so a
-#       caller seeing 3 should report the base once and stop, not blame
-#       each project in turn.
-#
-#   project_is_detached <project>
-#       Returns 0 only if the project's generation file contains the literal
-#       string 'detached' AND both qcow2 disks are readable standalone images
-#       with no backing filename. Metadata alone is not sufficient authority
-#       to bypass generation safety.
-#
-#   project_require <project>
-#       Errors with code 3 if the project directory does not exist.
-#
-#   generation_read_base <file>
-#       Reads a base/snapshot generation. Prints a canonical integer in
-#       0..2147483647. Base metadata can never be 'detached'.
-#
-#   generation_read_project <file>
-#       Reads a project generation. Prints a canonical bounded integer or the
-#       literal 'detached'. Callers that treat detached as authority must also
-#       prove standalone qcow2 topology with project_is_detached.
-#
-#   generation_read_{base,project}_lenient <file>
-#       Display-oriented variants that print '<corrupt>' instead of exiting.
-#
-#   generation_max
-#       Largest accepted numeric generation. The bound makes increment and
-#       every Bash arithmetic consumer safe.
-#
-# Exit codes:
-#   3   project not found (project_require)
-#   82  corrupt generation file (generation readers)
+# Exit 3 means project not found; exit 82 means corrupt generation state.
 #
 
 set -euo pipefail

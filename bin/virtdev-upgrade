@@ -4,53 +4,17 @@
 # virtdev-upgrade [--only=project,...] [--except=project,...]
 #                 [--yes] [--verbose]
 #
-# Orchestrates the full base-system-update-and-project-rebuild lifecycle:
-#
-#   Audit    — verify every included project has a manifest (pre-flight)
-#   Phase 1. Backup   — start, back up, and stop each project sequentially
-#   Phase 2. Maintain — reseal after confirmed guest shutdown and approval
-#   Phase 3. Rebuild  — recreate every included project on the new base
-#   Phase 4. Summary  — report results per project with resume commands
-#
-# The reseal prompt inside virtdev-maintain is always interactive.
-# It is the commit point of the entire operation. Everything before it
-# is non-destructive or reversible. Everything after it is destructive.
-#
-# Phase 3 (Rebuild) is best-effort: a failure in one project does not prevent
-# the others from being rebuilt. Failures are collected and reported
-# in the summary with per-project resume commands.
-#
-# Resealing replaces the one path every coupled qcow2 delta uses as its
-# backing file. Therefore --only and --except may exclude detached projects
-# only. Leaving a coupled project out would discard the
-# exact old base bytes its delta still requires, so the audit fails closed
-# before backup or maintenance begins.
-#
-# One inherited store lock covers audit, backup, maintenance, and rebuild.
+# Audits projects, backs up and stops them, interactively reseals the base,
+# rebuilds them, then prints recovery commands under one inherited store lock.
+# Reseal is the commit point. Coupled qcow2 projects cannot be filtered out;
+# detached projects may be. Rebuild is best-effort across the selected fleet.
 #
 # Exit codes:
-#
-#   0   all projects upgraded successfully
-#   3   sealed base system not found
-#   4   --only and --except both specified
-#   5   project named in --only or --except does not exist
-#   6   audit failure (missing or empty manifest)
-#   7   audit failure (a stopped project already mismatches the base)
-#   8   user aborted at confirmation prompt
-#   9   base system generation file missing
-#   10  no projects found
-#   11  no projects to upgrade after filtering
-#   12  a coupled project would be excluded from the reseal/rebuild set
-#   13  an excluded detached project is not provably stopped
-#   14  sealed-base SSH transport marker is missing or incompatible
-#   20  backup phase failure
-#   30  maintain phase failure
-#   40  one or more project rebuilds failed
-#   41  one or more projects rebuilt but unprovisioned
-#
-# Configuration via environment variables:
-#
-#   VIRTDEV_HOME    Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+#   3 base missing; 4 conflicting filters; 5 unknown filtered project;
+#   6/7 audit failure; 8 aborted; 9 generation missing; 10 no projects;
+#   11 empty selection; 12 coupled project excluded; 13 excluded detached
+#   project not stopped; 14 bad base SSH contract; 20 backup failure;
+#   30 maintenance failure; 40 rebuild failure; 41 unprovisioned rebuild.
 #
 
 set -euo pipefail

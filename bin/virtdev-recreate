@@ -5,51 +5,15 @@
 #                  [--no-backup] [--no-restore] [--no-provision]
 #                  [--yes] [--verbose] <project>
 #
-# Takes a project virtual machine through the destroy/rebuild cycle
-# without losing user-curated state. Composes the existing virtdev
-# primitives into a single operation gated by one type-the-name
-# confirmation prompt.
+# Runs backup, stop, destroy, create, start, wait, optional provisioning, and
+# exact-snapshot restore under one inherited store lock. --no-provision wins;
+# otherwise an explicit script precedes the per-project config hook. Provision
+# scripts run as `bash -s` in /home/dev.
 #
-# The chain (with all defaults):
-#
-#     1. virtdev-backup        snapshot home-disk state to backups/
-#     2. virtdev-stop          ACPI shutdown
-#     3. virtdev-destroy --yes wipe project disks
-#     4. virtdev-create        rebuild on the current sealed base
-#     5. virtdev-start         boot the fresh VM
-#     6. virtdev-wait          wait for SSH to come up
-#     7. provision             optional: bash -s the provision script
-#     8. virtdev-restore       overlay the exact snapshot produced by step 1
-#
-# Provision discovery (resolves a script path or skips):
-#
-#     1. --no-provision        kill switch wins
-#     2. --provision <path>    explicit path; precondition-checked
-#     3. ${XDG_CONFIG_HOME:-~/.config}/virtdev/projects/<name>/provision
-#     4. otherwise: no provision step
-#
-# Provision execution: virtdev-ssh <project> -- bash -s < <path>. The
-# script is interpreted as bash (the shebang is ignored). Working
-# directory is the dev user's /home/dev/. Wrap other interpreters
-# from a one-line bash launcher.
-#
-# One inherited store lock covers the complete transaction, including backup,
-# provision, and restore. Lock-aware child commands reuse its descriptors.
-#
-# Failure semantics: fail-fast at any non-zero subcommand exit. The
-# exit code identifies which step failed (10 incompatible base, 20 backup, 21 stop, 22
-# destroy, 23 create, 24 start, 25 wait, 27 restore; 28 = the resolved
-# zone was removed before the destroy step); the message names the
-# recovery command for that boundary.
-#
-# Provision is the exception: the VM is already up, so a failed
-# provision script is non-fatal — recreate finishes and exits 26
-# ("recreated but unprovisioned") instead of aborting. virtdev-upgrade
-# treats 26 as a distinct unprovisioned outcome, not a hard failure.
-#
-# Configuration via environment variables:
-#
-#   VIRTDEV_HOME    Default: ${XDG_DATA_HOME:-~/.local/share}/virtdev
+# Steps fail fast and emit a boundary-specific recovery command. Exit 26 is the
+# exception: rebuilding succeeded but provisioning failed. Other step exits are
+# 10 (base), 20 (backup), 21 (stop), 22 (destroy), 23 (create), 24 (start),
+# 25 (wait), 27 (restore), and 28 (resolved zone disappeared).
 #
 
 set -euo pipefail

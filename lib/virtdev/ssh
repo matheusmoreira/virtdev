@@ -1,63 +1,15 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034,SC2154  # public constants; import provides library path
 #
-# ssh library: host identity and client transport helpers.
+# Host identity and policy-bound SSH transport helpers.
 #
-# Public:
-#   ssh_host_identity_ensure <project>
-#       Create or validate the project's host-owned ed25519 identity.
-#   ssh_host_identity_require <project>
-#       Require valid existing identity state.
-#   ssh_host_identity_remove <project>
-#       Remove only the known identity files and their directory.
-#   ssh_host_identity_rebind <project> <previous-project>
-#       Rebind a moved project's known-host alias without changing its key.
-#   ssh_host_identity_key <project>
-#   ssh_host_identity_known_hosts <project>
-#   ssh_host_identity_alias <project>
-#       Print an identity path or lookup alias.
+# The public API manages per-project host identities and guest contract markers,
+# validates keys/config/options, builds interactive/batch/poll argv and rsync
+# wrappers, and polls readiness (0 ready, 1 timeout, 2 unit exited). Options that
+# take values must be self-contained tokens. Callers own returned wrapper paths.
 #
-#   ssh_guest_contract_valid <directory>
-#       Return success only for the exact current guest transport marker.
-#   ssh_guest_contract_require <project>
-#       Require the project marker, or the sealed-base marker for maintenance.
-#
-#   ssh_config_require_safe <path>
-#       Reject directives that can add client credentials or include files.
-#
-#   ssh_transport_argv <array> <mode> <project> <client-key> <port> \
-#                      <config> [connect-timeout]
-#       Build the common SSH argv. mode is interactive, batch, or poll;
-#       poll alone requires connect-timeout.
-#
-#   ssh_client_option_valid <option>
-#       Accept one self-contained SSH option token. Options that take an
-#       argument must carry it in the same token (for example -L8080:x:80).
-#
-#   ssh_rsync_command <cmd-varname> <wrapper-varname> <project> \
-#                     <client-key> <port>
-#       Create the shared-policy SSH wrapper used as rsync's -e command.
-#       Callers remove the returned wrapper path in their EXIT trap.
-#
-#   ssh_poll_until_ready <project> <key-path> <port> <unit> <timeout>
-#       Polls SSH on 127.0.0.1:<port> up to every 2s until a connection
-#       succeeds or <timeout> seconds elapse. Checks systemd unit
-#       state each iteration; returns immediately if the unit dies.
-#       Returns: 0 = SSH up, 1 = timeout, 2 = unit exited.
-#
-#   ssh_key_validate <key-path>
-#       Require a regular key with mode 600 or 400.
-#   ssh_client_public_from_private <key-path>
-#       Print the canonical ed25519 public key derived from a private key.
-#   ssh_client_public_read <public-key-path>
-#       Validate and print a canonical ed25519 public key.
-#
-# Exit codes:
-#   77  SSH key not found
-#   78  SSH key permissions too open
-#   103 guest host identity is missing, corrupt, or could not be created
-#   104 guest SSH transport marker is missing or incompatible
-#   105 SSH config contains a forbidden client-identity directive
+# Exits: 77 missing key; 78 unsafe key mode; 103 bad host identity;
+# 104 incompatible guest contract; 105 forbidden SSH config directive.
 #
 set -euo pipefail
 import error integer port
