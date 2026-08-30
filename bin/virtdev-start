@@ -145,6 +145,8 @@ filtered=$(( ! unfiltered ))
 # visible via 'systemctl is-active', or (b) this start to fail cleanly.
 lock_acquire
 
+project_require_ordinary "${project}"
+
 # Resolve the host-map decision UNDER the lock. open_host_map says whether passt opens
 # the guest->host loopback map; it reads the firewall manifest, which a concurrent
 # `virtdev firewall apply` reload rewrites. apply holds THIS SAME lock across its
@@ -160,33 +162,32 @@ if (( filtered )) && firewall_zone_needs_hostmap "${zone}"; then
   open_host_map=1
 fi
 
-if [[ ! -d "${project_directory}" ]]; then
-  error 3 <<MESSAGE
-Project not found: '${project_directory}'
-Create project virtual machine first: virtdev-create '${project}'
-MESSAGE
-fi
-
 ssh_guest_contract_require "${project}"
+
+for file in system.qcow2 home.qcow2 nvram; do
+  if [[ ! -f "${project_directory}/${file}" \
+      || -L "${project_directory}/${file}" ]]; then
+    error 4 <<<"Project file missing: '${project_directory}/${file}'"
+  fi
+done
 
 # Harden the per-project directory so that socket files (monitor, console,
 # passt) are not reachable by other local users. Pre-existing directories
 # (created before this hardening) are updated on every start.
 chmod 0700 "${project_directory}"
 
-for file in system.qcow2 home.qcow2 nvram; do
-  if [[ ! -f "${project_directory}/${file}" ]]; then
-    error 4 <<<"Project file missing: '${project_directory}/${file}'"
-  fi
-done
-
 if [[ ! -f "${OVMF_CODE}" ]]; then
   error 5 <<<"Firmware not found: '${OVMF_CODE}'"
 fi
 
-# Detached projects have standalone images with no backing file
-# dependency. The generation check does not apply to them.
-if ! project_is_detached "${project}"; then
+# Detached projects have standalone images with no backing dependency. A
+# detached marker whose topology cannot be inspected is never treated as a
+# coupled project.
+detached_status=0
+project_is_detached "${project}" || detached_status=$?
+case "${detached_status}" in
+  0) ;;
+  1)
 
 # Detect base system changes since this project was created.
 # After virtdev-maintain reseals the base, existing delta images
@@ -234,7 +235,16 @@ disks offline. After verifying a snapshot, rebuild with:
 MESSAGE
 fi
 
-fi # ! project_is_detached
+    ;;
+  *)
+    error 10 <<MESSAGE
+Project generation or detached disk topology cannot be proven: '${project_directory}'
+Do not destroy or recreate this project if its disks contain needed data.
+Restore qemu-img and readable ordinary image files, then inspect the project
+before retrying.
+MESSAGE
+    ;;
+esac
 
 unit=virtdev-"${project}"
 

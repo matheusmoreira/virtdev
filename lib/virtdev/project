@@ -7,9 +7,10 @@
 # generation_read_{base,project}; and their display-only lenient variants.
 #
 # Running and stopped are deliberately not complements: transitional or unknown
-# units satisfy neither. project_is_outdated returns 2 for corrupt project state
-# and 3 for corrupt shared-base state; callers must never rebuild either case.
-# Detached authority additionally requires two readable, backing-free images.
+# units satisfy neither. project_is_outdated returns 2 for corrupt or
+# indeterminate project state and 3 for corrupt shared-base state; callers must
+# never rebuild either case. project_is_detached returns 2 when a detached
+# marker cannot be reconciled with two readable, backing-free images.
 # Numeric generations are canonical integers in 0..generation_max.
 #
 # Exit 3 means project not found; exit 82 means corrupt generation state.
@@ -163,7 +164,13 @@ project_is_outdated() {
   local -r project_file="${VIRTDEV_HOME}/projects/${project}/generation"
   [[ -f "${base_file}" && ! -L "${base_file}" ]] || return 3
   [[ -f "${project_file}" && ! -L "${project_file}" ]] || return 2
-  project_is_detached "${project}" && return 1
+  local detached_status=0
+  project_is_detached "${project}" || detached_status=$?
+  case "${detached_status}" in
+    0) return 1 ;;
+    1) ;;
+    *) return 2 ;;
+  esac
   local base_gen project_gen
   # Generation readers panic (exit 82) on corruption, but here they run
   # inside a command substitution, so that exit would be swallowed and
@@ -182,19 +189,21 @@ project_is_detached() {
   local project="${1}"
   local -r project_directory="${VIRTDEV_HOME}/projects/${project}"
   local -r generation_file="${project_directory}/generation"
-  [[ -f "${generation_file}" ]] || return 1
+  [[ -f "${generation_file}" && ! -L "${generation_file}" ]] || return 2
   local generation
   generation="$(generation_read_project "${generation_file}" 2>/dev/null)" \
-    || return 1
+    || return 2
   [[ "${generation}" == detached ]] || return 1
 
   local disk info
   for disk in system.qcow2 home.qcow2; do
-    [[ -f "${project_directory}/${disk}" ]] || return 1
+    [[ -f "${project_directory}/${disk}" \
+        && ! -L "${project_directory}/${disk}" ]] || return 2
     info="$(qemu-img info --output=json "${project_directory}/${disk}" 2>/dev/null)" \
-      || return 1
-    [[ ! "${info}" =~ \"backing-filename\"[[:space:]]*: ]] || return 1
+      || return 2
+    [[ ! "${info}" =~ \"backing-filename\"[[:space:]]*: ]] || return 2
   done
+  return 0
 }
 
 project_require() {

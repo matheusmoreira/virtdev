@@ -97,6 +97,23 @@ home_disk="${project_directory}/home.qcow2"
 generation_file="${project_directory}/generation"
 base_generation_file="${VIRTDEV_HOME}/system/generation"
 
+detach_is_detached_or_error() {
+  local -r failure_status="${1}"
+  local detached_status=0
+
+  project_is_detached "${project}" || detached_status=$?
+  case "${detached_status}" in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) error "${failure_status}" <<MESSAGE
+Project generation or disk topology cannot be inspected safely: ${project}
+No detach mutation was attempted. Preserve existing recovery state and repair
+qemu-img or the project image paths before retrying.
+MESSAGE
+       ;;
+  esac
+}
+
 detach_generation_require_current() {
   if [[ ! -f "${base_generation_file}" ]]; then
     error 7 <<<"Base generation file missing: ${base_generation_file}"
@@ -360,7 +377,7 @@ MESSAGE
     exit 0
   fi
 
-  if project_is_detached "${project}"; then
+  if detach_is_detached_or_error 16; then
     [[ ! -e "${system_bak}" && ! -L "${system_bak}" ]] \
       || detach_transaction_require_identity \
            "${system_bak}" "${detach_txn_system_identity}" 'system backup'
@@ -428,7 +445,7 @@ MESSAGE
   exit 0
 fi
 
-if project_is_detached "${project}"; then
+if detach_is_detached_or_error 9; then
   error 5 <<<"Already detached: ${project}"
 fi
 
@@ -483,7 +500,7 @@ Stop it first: virtdev-stop ${project}
 MESSAGE
 fi
 
-if project_is_detached "${project}"; then
+if detach_is_detached_or_error 9; then
   error 5 <<<"Already detached: ${project}"
 fi
 

@@ -68,6 +68,22 @@ fi
 
 printf 'ok - upgrade preflights running excluded projects before Phase 1\n'
 
+status=0
+VIRTDEV_HOME="${virtdev_home}" XDG_CONFIG_HOME="${config_home}" \
+PATH="${repository}/tests/fixtures:${PATH}" QEMU_INFO_STATUS=42 \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+  "${repository}/bin/virtdev-upgrade" --unfiltered --only=keep --yes \
+  >"${output}" 2>&1 || status=$?
+if (( status != 9 )) \
+    || ! grep -Fq 'topology is corrupt or cannot be inspected' "${output}"; then
+  printf 'upgrade treated indeterminate detached topology as coupled (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+printf 'ok - upgrade fails closed on indeterminate detached topology\n'
+
 upgrade_root="${test_tmp}/upgrade-root"
 upgrade_bin="${upgrade_root}/bin"
 upgrade_fixtures="${test_tmp}/upgrade-fixtures"

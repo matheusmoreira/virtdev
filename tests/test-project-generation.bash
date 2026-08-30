@@ -15,6 +15,9 @@ printf 'detached\n' > "${project_directory}/generation"
 : > "${project_directory}/home.qcow2"
 
 qemu-img() {
+if [[ "${QEMU_INFO_FAIL:-0}" == 1 ]]; then
+  return 42
+fi
 if [[ "${QEMU_HAS_BACKING:-0}" == 1 ]]; then
   printf '{"backing-filename":"/base/system.qcow2"}\n'
 else
@@ -29,8 +32,11 @@ import project
 
 QEMU_HAS_BACKING=1
 export QEMU_HAS_BACKING
-if project_is_detached probe; then
-  printf 'text marker bypassed a real backing dependency\n' >&2
+status=0
+project_is_detached probe || status=$?
+if (( status != 2 )); then
+  printf 'backed disks with detached metadata were not indeterminate: %d\n' \
+    "${status}" >&2
   exit 1
 fi
 
@@ -43,6 +49,22 @@ fi
 
 mkdir -p "${virtdev_home}/system"
 printf '1\n' > "${virtdev_home}/system/generation"
+QEMU_INFO_FAIL=1
+export QEMU_INFO_FAIL
+status=0
+project_is_detached probe || status=$?
+if (( status != 2 )); then
+  printf 'failed detached topology inspection returned %d\n' "${status}" >&2
+  exit 1
+fi
+status=0
+project_is_outdated probe || status=$?
+if (( status != 2 )); then
+  printf 'indeterminate detached topology became stale: %d\n' "${status}" >&2
+  exit 1
+fi
+unset QEMU_INFO_FAIL
+
 printf '1\n' > "${project_directory}/generation"
 if project_is_outdated probe; then
   printf 'matching generation was classified outdated\n' >&2
@@ -110,6 +132,7 @@ if (( $(stat -c '%s' "${output}") > 1024 )); then
   exit 1
 fi
 
-printf 'ok - detached state requires standalone disk topology\n'
+printf 'ok - detached state requires provable standalone disk topology\n'
+printf 'ok - indeterminate detached topology never becomes stale\n'
 printf 'ok - generation schemas are type-separated, canonical, and bounded\n'
 printf 'ok - missing generation metadata is corrupt rather than current\n'

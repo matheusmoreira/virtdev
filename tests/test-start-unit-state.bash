@@ -46,6 +46,55 @@ printf '1\n' > "${system_directory}/generation"
 printf '1\n' > "${project_directory}/generation"
 printf 'ssh-host-identity=1\n' > "${project_directory}/guest-contract"
 
+project_target="${virtdev_home}/project-target"
+mv -T -- "${project_directory}" "${project_target}"
+chmod 0755 "${project_target}"
+: > "${project_target}/monitor.sock"
+ln -s ../project-target "${project_directory}"
+status=0
+SYSTEMD_RUN_MARKER="${marker}" \
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_LOCK_DIRECTORY="${lock_directory}" \
+OVMF_CODE="${firmware}" \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-start" --unfiltered probe \
+    >"${output}" 2>&1 || status=$?
+if (( status != 3 )) || [[ ! -L "${project_directory}" \
+      || ! -e "${project_target}/monitor.sock" \
+      || "$(stat -c '%a' "${project_target}")" != 755 ]]; then
+  printf 'start followed a symlinked project root (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+rm -f -- "${project_directory}"
+mv -T -- "${project_target}" "${project_directory}"
+
+image_target="${test_tmp}/external-system.qcow2"
+printf 'external image\n' > "${image_target}"
+rm -f -- "${project_directory}/system.qcow2"
+ln -s "${image_target}" "${project_directory}/system.qcow2"
+status=0
+SYSTEMD_RUN_MARKER="${marker}" \
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_LOCK_DIRECTORY="${lock_directory}" \
+OVMF_CODE="${firmware}" \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-start" --unfiltered probe \
+    >"${output}" 2>&1 || status=$?
+if (( status != 4 )) || [[ "$(< "${image_target}")" != 'external image' ]]; then
+  printf 'start accepted a symlinked writable image (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+rm -f -- "${project_directory}/system.qcow2"
+: > "${project_directory}/system.qcow2"
+
 rm -f -- "${project_directory}/generation"
 status=0
 SYSTEMCTL_ACTIVE_STATE=inactive \
@@ -224,6 +273,7 @@ if [[ ! " ${systemd_run_argv[*]} " == *" ${expected_monitor} "* \
 fi
 
 printf 'ok - start preserves controls unless unit state is terminal\n'
+printf 'ok - start rejects symlinked project roots and writable images\n'
 printf 'ok - start rechecks unit state at the submission boundary\n'
 printf 'ok - failed submission never claims or stops the fixed unit name\n'
 printf 'ok - ambiguous submission reports the required ownership inspection\n'

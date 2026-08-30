@@ -87,11 +87,13 @@ terminal_init "" 1
 
 printf '%s\n' "$(terminal_write bold "${project}" reset)"
 
-if project_is_detached "${project}"; then
-  printf '  mode: detached (standalone)\n'
-else
-  printf '  mode: delta\n'
-fi
+detached_status=0
+project_is_detached "${project}" || detached_status=$?
+case "${detached_status}" in
+  0) printf '  mode: detached (standalone)\n' ;;
+  1) printf '  mode: delta\n' ;;
+  *) error 6 <<<"Project generation or disk topology is indeterminate: ${project}" ;;
+esac
 
 printf '\n'
 disk_info "${system_disk}" "system"

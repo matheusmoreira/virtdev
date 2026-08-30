@@ -198,12 +198,16 @@ done
 # otherwise valid fleet upgrade.
 declare -a included_after_detach=()
 for p in "${included[@]}"; do
-  if project_is_detached "${p}"; then
-    excluded+=("${p}")
-    excluded_reasons["${p}"]="detached"
-  else
-    included_after_detach+=("${p}")
-  fi
+  detached_status=0
+  project_is_detached "${p}" || detached_status=$?
+  case "${detached_status}" in
+    0)
+      excluded+=("${p}")
+      excluded_reasons["${p}"]="detached"
+      ;;
+    1) included_after_detach+=("${p}") ;;
+    *) error 9 <<<"Detached topology is corrupt or cannot be inspected: ${p}" ;;
+  esac
 done
 included=("${included_after_detach[@]}")
 
@@ -301,9 +305,13 @@ included=("${included_after_skip[@]}")
 # any VM is stopped.
 declare -a excluded_coupled=()
 for p in "${excluded[@]}"; do
-  if ! project_is_detached "${p}"; then
-    excluded_coupled+=("${p}")
-  fi
+  detached_status=0
+  project_is_detached "${p}" || detached_status=$?
+  case "${detached_status}" in
+    0) ;;
+    1) excluded_coupled+=("${p}") ;;
+    *) error 9 <<<"Excluded project topology is corrupt or cannot be inspected: ${p}" ;;
+  esac
 done
 
 if [[ ${#excluded_coupled[@]} -gt 0 ]]; then
