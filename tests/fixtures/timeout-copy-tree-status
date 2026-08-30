@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+for argument in "$@"; do
+  if [[ "${argument}" == df && -n "${RESTORE_DF_AVAILABLE:-}" ]]; then
+    case " $* " in
+      *' --output=avail '*) printf 'Avail\n%s\n' "${RESTORE_DF_AVAILABLE}" ;;
+      *' --output=iavail '*) printf 'IFree\n%s\n' "${RESTORE_DF_IAVAILABLE:-1000000}" ;;
+      *) exit 64 ;;
+    esac
+    exit 0
+  fi
+done
+
+if [[ -n "${RESTORE_COPY_TREE_STATUS:-}" ]]; then
+  for argument in "$@"; do
+    case "${argument}" in
+      */virtdev-copy-tree) exit "${RESTORE_COPY_TREE_STATUS}" ;;
+    esac
+  done
+fi
+
+if [[ -n "${RESTORE_TIMEOUT_COMMAND:-}" ]]; then
+  for argument in "$@"; do
+    if [[ "${argument}" == "${RESTORE_TIMEOUT_COMMAND}" ]]; then
+      exit "${RESTORE_TIMEOUT_STATUS:-124}"
+    fi
+  done
+fi
+
+exec /usr/bin/timeout "$@"

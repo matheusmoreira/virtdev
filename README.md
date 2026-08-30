@@ -390,6 +390,9 @@ Environment variables (defaults shown):
 | `OVMF_CODE` | `/usr/share/edk2/x64/OVMF_CODE.4m.fd` |
 | `OVMF_VARS` | `/usr/share/edk2/x64/OVMF_VARS.4m.fd` |
 
+Restore staging accepts at most 128 path components and 4095 relative-path
+bytes, and caps its source-validation ledger at 512 MiB.
+
 `VIRTDEV_HOME` and `VIRTDEV_CACHE` follow XDG defaults
 (`${XDG_DATA_HOME}` and `${XDG_CACHE_HOME}` respectively).
 

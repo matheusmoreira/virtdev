@@ -53,7 +53,7 @@
 #   16  snapshot date not found
 #   17  no snapshots on requested date
 #   18  snapshot time not found
-#   19  snapshot byte/entry budget or accounting failure
+#   19  snapshot data, structure, staging-state, or accounting failure
 #   20  restore wall-clock deadline exceeded
 #   21  rsync transport failure (SSH connection lost)
 #   22  rsync failed with unexpected exit code
@@ -242,21 +242,37 @@ printf >&2 'Restoring %s from %s/%s\n' \
 printf >&2 '  snapshot generation: %s\n' "${snapshot_generation}"
 printf >&2 '  current generation:  %s\n' "${project_generation}"
 
-restore_tree_summary_file="$(mktemp)"
-restore_allocated_summary_file="$(mktemp)"
-restore_copy_summary_file="$(mktemp)"
+restore_summary_directory="$(mktemp -d --tmpdir="${VIRTDEV_HOME}" \
+  .restore-summary.XXXXXXXX)"
+restore_tree_summary_file="${restore_summary_directory}/tree"
+restore_allocated_summary_file="${restore_summary_directory}/allocated"
+restore_copy_summary_file="${restore_summary_directory}/copy"
 restore_files_from=''
 rsync_log=''
 rsync_wrapper=''
 restore_stage=''
 cleanup_restore() {
   local -r status=$?
-  rm -f -- "${restore_tree_summary_file}" \
-    "${restore_allocated_summary_file}" "${restore_copy_summary_file}" \
-    "${restore_files_from}" "${rsync_log}" "${rsync_wrapper}"
+  local mount_path='' remove_status=0
+
+  rm -f -- "${restore_files_from}" "${rsync_log}" "${rsync_wrapper}"
   if [[ -n "${restore_stage}" ]]; then
-    rm -rf --one-file-system -- "${restore_stage}"
+    mount_remove_tree "${restore_stage}" mount_path || remove_status=$?
+    case "${remove_status}" in
+      0) ;;
+      1) printf >&2 'warning: preserving restore stage with mounted subtree: %s\n' "${mount_path}" ;;
+      *) printf >&2 'warning: preserving restore stage because cleanup safety is indeterminate: %s\n' "${restore_stage}" ;;
+    esac
   fi
+  mount_path=''
+  remove_status=0
+  mount_remove_tree "${restore_summary_directory}" mount_path \
+    || remove_status=$?
+  case "${remove_status}" in
+    0) ;;
+    1) printf >&2 'warning: preserving restore summary state with mounted subtree: %s\n' "${mount_path}" ;;
+    *) printf >&2 'warning: preserving restore summary state because cleanup safety is indeterminate: %s\n' "${restore_summary_directory}" ;;
+  esac
   return "${status}"
 }
 trap cleanup_restore EXIT
@@ -289,24 +305,76 @@ MESSAGE
     || error 19 <<<'Snapshot manifest crosses a symlinked source path'
 }
 
+restore_df_value() {
+  local -n _restore_df_result="${1}"
+  local -r column="${2}" path="${3}" phase="${4}"
+  local -r df_output="${restore_summary_directory}/df-${column}"
+  local remaining df_status value
+  local -a df_lines=()
+
+  remaining=$(( restore_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) \
+    || error 20 <<<"Restore deadline expired before ${phase}"
+  case "${column}" in
+    avail|iavail) ;;
+    *) error 19 <<<"Could not inspect host capacity during ${phase}" ;;
+  esac
+  set +e
+  case "${column}" in
+    avail)
+      timeout --signal=TERM --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" \
+        "${remaining}" df -B1 --output=avail -- "${path}" \
+        > "${df_output}" 2>/dev/null
+      ;;
+    iavail)
+      timeout --signal=TERM --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" \
+        "${remaining}" df --output=iavail -- "${path}" \
+        > "${df_output}" 2>/dev/null
+      ;;
+  esac
+  df_status=$?
+  set -e
+  case "${df_status}" in
+    0) ;;
+    124|137) error 20 <<<"Restore ${phase} exceeded its wall-clock deadline" ;;
+    *) error 19 <<<"Could not inspect host capacity during ${phase}" ;;
+  esac
+  mapfile -t df_lines < "${df_output}"
+  if (( ${#df_lines[@]} != 2 )); then
+    error 19 <<<"Could not parse host capacity during ${phase}"
+  fi
+  value="${df_lines[1]//[[:space:]]/}"
+  if [[ ! "${value}" =~ ^[0-9]+$ || ${#value} -gt 18 ]]; then
+    error 19 <<<"Could not parse host capacity during ${phase}"
+  fi
+  _restore_df_result="${value}"
+}
+
 restore_summarize_tree() {
-  local -r tree="${1}" output="${2}" phase="${3}"
-  local remaining
+  local -r tree="${1}" output="${2}" phase="${3}" entry_limit="${4}"
+  local -r count_output="${restore_summary_directory}/tree-count"
+  local remaining sort_available entries regular_entries extra_count
+  local sort_state_budget
+  local -a count_status=()
   local -a summary_status=()
 
   remaining=$(( restore_deadline - BASH_MONOSECONDS ))
   (( remaining > 0 )) \
     || error 20 <<<"Restore deadline expired before ${phase} preflight"
   set +e
+  # shellcheck disable=SC2016  # awk programs are literal
   LC_ALL=C timeout --signal=TERM \
       --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
       find "${tree}" -xdev -printf '%D %i %y %s\n' 2>/dev/null \
-    | awk -v maximum_entries="${VIRTDEV_RESTORE_MAX_ENTRIES}" \
-      -v maximum_bytes="${VIRTDEV_RESTORE_MAX_BYTES}" '
+    | LC_ALL=C timeout --signal=TERM \
+      --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
+      awk -v maximum_entries="${entry_limit}" \
+        -v maximum_bytes="${VIRTDEV_RESTORE_MAX_BYTES}" '
       NR == 1 {
         if (NF != 4 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ \
             || $3 != "d" || $4 !~ /^[0-9]+$/) { invalid = 1; exit }
         root_device = $1
+        root_seen = 1
         next
       }
       {
@@ -327,28 +395,22 @@ restore_summarize_tree() {
             bytes_over = 1
             exit
           }
-          inode = $1 ":" $2
-          if (!(inode in regular_inode)) {
-            regular_inode[inode] = 1
-            logical_bytes += size + 0
-            if (logical_bytes > maximum_bytes) { bytes_over = 1; exit }
-          }
+          regular_entries++
         }
       }
       END {
         if (entries_over) exit 42
-        if (invalid) exit 43
+        if (invalid || !root_seen) exit 43
         if (bytes_over) exit 44
-        printf("%d %.0f\n", entries, logical_bytes)
+        printf("%d %d\n", entries, regular_entries)
       }
-      ' > "${output}"
-  summary_status=("${PIPESTATUS[@]}")
+      ' > "${count_output}"
+  count_status=("${PIPESTATUS[@]}")
   set -e
-  case "${summary_status[1]}" in
-    0) ;;
+  case "${count_status[1]}" in
     42)
       error 19 <<MESSAGE
-Snapshot exceeds the ${VIRTDEV_RESTORE_MAX_ENTRIES}-entry restore budget.
+Snapshot exceeds the ${entry_limit}-entry restore budget.
 No guest files were changed.
 MESSAGE
       ;;
@@ -358,18 +420,162 @@ Snapshot exceeds the ${VIRTDEV_RESTORE_MAX_BYTES}-byte restore budget.
 No guest files were changed.
 MESSAGE
       ;;
+  esac
+  if [[ "${count_status[0]}" =~ ^(124|137)$ \
+        || "${count_status[1]}" =~ ^(124|137)$ ]]; then
+    error 20 <<<"Restore ${phase} preflight exceeded its wall-clock deadline"
+  fi
+  (( count_status[1] == 0 )) \
+    || error 19 <<<"Could not count ${phase} snapshot entries"
+  (( count_status[0] == 0 )) \
+    || error 19 <<<"Could not inspect ${phase} snapshot entries"
+  read -r entries regular_entries extra_count < "${count_output}"
+  if [[ ! "${entries}" =~ ^[0-9]+$ \
+        || ! "${regular_entries}" =~ ^[0-9]+$ \
+        || -n "${extra_count}" ]]; then
+    error 19 <<<"Could not parse ${phase} snapshot entry count"
+  fi
+
+  sort_state_budget=$(( regular_entries * 128 ))
+  restore_df_value sort_available avail "${restore_summary_directory}" \
+    "${phase} preflight capacity check"
+  if (( sort_available < sort_state_budget + restore_free_space_reserve )); then
+    error 19 <<<'Not enough host free space for bounded restore preflight state'
+  fi
+  remaining=$(( restore_deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) \
+    || error 20 <<<"Restore deadline expired before ${phase} inode preflight"
+  set +e
+  # shellcheck disable=SC2016  # awk programs are literal
+  LC_ALL=C timeout --signal=TERM \
+      --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
+      find "${tree}" -xdev -printf '%D %i %y %s\n' 2>/dev/null \
+    | LC_ALL=C timeout --signal=TERM \
+      --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
+      awk -v expected_entries="${entries}" \
+        -v expected_regular="${regular_entries}" \
+        -v maximum_bytes="${VIRTDEV_RESTORE_MAX_BYTES}" '
+        NR == 1 {
+          if (NF != 4 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ \
+              || $3 != "d" || $4 !~ /^[0-9]+$/) { invalid = 1; exit }
+          root_device = $1
+          root_seen = 1
+          next
+        }
+        {
+          entries++
+          if (entries > expected_entries) { changed = 1; exit }
+          if (NF != 4 || $1 != root_device || $2 !~ /^[0-9]+$/ \
+              || $3 !~ /^[fdl]$/ || $4 !~ /^[0-9]+$/) {
+            invalid = 1
+            exit
+          }
+          if ($3 == "f") {
+            size = $4
+            sub(/^0+/, "", size)
+            if (size == "") size = "0"
+            if (length(size) > length(maximum_bytes) \
+                || (length(size) == length(maximum_bytes) \
+                    && ("x" size) > ("x" maximum_bytes))) {
+              bytes_over = 1
+              exit
+            }
+            regular_entries++
+            if (regular_entries > expected_regular) { changed = 1; exit }
+            printf("%s %s %s\n", $1, $2, size)
+          }
+        }
+        END {
+          if (invalid || !root_seen) exit 43
+          if (bytes_over) exit 44
+          if (changed || entries != expected_entries \
+              || regular_entries != expected_regular) exit 45
+        }
+      ' \
+    | LC_ALL=C timeout --signal=TERM \
+      --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
+      sort --unique --buffer-size=32M \
+        --temporary-directory="${restore_summary_directory}" \
+    | LC_ALL=C timeout --signal=TERM \
+      --kill-after="${VIRTDEV_RESTORE_KILL_AFTER}" "${remaining}" \
+      awk -v maximum_bytes="${VIRTDEV_RESTORE_MAX_BYTES}" \
+        -v expected_entries="${entries}" '
+        {
+          if (NF != 3 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ \
+              || $3 !~ /^[0-9]+$/) { invalid = 1; exit }
+          size = $3
+          sub(/^0+/, "", size)
+          if (size == "") size = "0"
+          key = $1 ":" $2
+          if (key == previous_key) {
+            if (size != previous_size) { invalid = 1; exit }
+            next
+          }
+          logical_bytes += size + 0
+          if (logical_bytes > maximum_bytes) { bytes_over = 1; exit }
+          previous_key = key
+          previous_size = size
+        }
+        END {
+          if (invalid) exit 43
+          if (bytes_over) exit 44
+          printf("%d %.0f\n", expected_entries, logical_bytes)
+        }
+      ' > "${output}"
+  summary_status=("${PIPESTATUS[@]}")
+  set -e
+  case "${summary_status[1]}" in
+    42)
+      error 19 <<MESSAGE
+Snapshot exceeds the ${entry_limit}-entry restore budget.
+No guest files were changed.
+MESSAGE
+      ;;
+    45)
+      error 19 <<<"Snapshot changed between ${phase} preflight scans"
+      ;;
+    44)
+      error 19 <<MESSAGE
+Snapshot exceeds the ${VIRTDEV_RESTORE_MAX_BYTES}-byte restore budget.
+No guest files were changed.
+MESSAGE
+      ;;
+  esac
+  case "${summary_status[3]}" in
+    44)
+      error 19 <<MESSAGE
+Snapshot exceeds the ${VIRTDEV_RESTORE_MAX_BYTES}-byte restore budget.
+No guest files were changed.
+MESSAGE
+      ;;
+  esac
+  if [[ "${summary_status[0]}" =~ ^(124|137)$ \
+        || "${summary_status[1]}" =~ ^(124|137)$ \
+        || "${summary_status[2]}" =~ ^(124|137)$ \
+        || "${summary_status[3]}" =~ ^(124|137)$ ]]; then
+    error 20 <<<"Restore ${phase} preflight exceeded its wall-clock deadline"
+  fi
+  case "${summary_status[3]}" in
+    0) ;;
+    *) error 19 <<<"Could not summarize ${phase} snapshot inode data" ;;
+  esac
+  case "${summary_status[2]}" in
+    0) ;;
+    *) error 19 <<<"Could not sort ${phase} snapshot inode data" ;;
+  esac
+  case "${summary_status[1]}" in
+    0) ;;
     *) error 19 <<<"Could not summarize ${phase} snapshot entries" ;;
   esac
   case "${summary_status[0]}" in
     0) ;;
-    124|137) error 20 <<<"Restore ${phase} preflight exceeded its wall-clock deadline" ;;
     *) error 19 <<<"Could not inspect ${phase} snapshot entries" ;;
   esac
 }
 
 restore_require_confined_tree "${snapshot}/tree"
 restore_summarize_tree "${snapshot}/tree" \
-  "${restore_tree_summary_file}" source
+  "${restore_tree_summary_file}" source "${VIRTDEV_RESTORE_MAX_ENTRIES}"
 read -r source_entries source_logical_bytes extra_summary \
   < "${restore_tree_summary_file}"
 [[ "${source_entries}" =~ ^[0-9]+$ \
@@ -399,18 +605,16 @@ source_allocated_bytes="$(< "${restore_allocated_summary_file}")"
     && ${#source_allocated_bytes} -le 18 ]] \
   || error 19 <<<'Could not parse allocated snapshot bytes'
 
-available_bytes="$(df -B1 --output=avail -- "${VIRTDEV_HOME}" 2>/dev/null \
-  | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
-  || available_bytes=''
-available_inodes="$(df --output=iavail -- "${VIRTDEV_HOME}" 2>/dev/null \
-  | awk 'NR == 2 { gsub(/[[:space:]]/, "", $0); print; exit }')" \
-  || available_inodes=''
+available_bytes=''
+available_inodes=''
+restore_df_value available_bytes avail "${VIRTDEV_HOME}" \
+  'restore capacity preflight'
+restore_df_value available_inodes iavail "${VIRTDEV_HOME}" \
+  'restore inode preflight'
 metadata_budget=$(( source_entries * 4096 ))
 staging_budget=$(( source_allocated_bytes + metadata_budget \
   + restore_free_space_reserve ))
-if [[ ! "${available_bytes}" =~ ^[0-9]+$ \
-      || ${#available_bytes} -gt 18 \
-      || available_bytes -lt staging_budget ]]; then
+if (( available_bytes < staging_budget )); then
   error 19 <<<'Not enough host free space to stage the bounded restore snapshot'
 fi
 if [[ "${available_inodes}" =~ ^[0-9]+$ ]] \
@@ -434,6 +638,9 @@ case "${stage_status}" in
   42) error 19 <<<'Snapshot entry set changed during bounded staging' ;;
   44) error 19 <<<'Snapshot byte set changed during bounded staging' ;;
   45) error 19 <<<'Host capacity reserve was reached during bounded staging' ;;
+  46) error 19 <<<'Snapshot nesting or path length exceeds the safe staging limit' ;;
+  47) error 19 <<<'Snapshot changed while constructing its stable stage' ;;
+  48) error 19 <<<'Snapshot metadata exceeds the bounded staging-state budget' ;;
   124|137) error 20 <<<'Restore snapshot staging exceeded its wall-clock deadline' ;;
   *) error 19 <<<'Could not create a stable restore snapshot' ;;
 esac
@@ -447,7 +654,7 @@ read -r copied_entries copied_logical_bytes extra_copy_summary \
 restore_source_tree="${restore_stage}/tree"
 restore_require_confined_tree "${restore_source_tree}"
 restore_summarize_tree "${restore_source_tree}" \
-  "${restore_tree_summary_file}" stable
+  "${restore_tree_summary_file}" stable "${copied_entries}"
 read -r restore_entries restore_logical_bytes extra_summary \
   < "${restore_tree_summary_file}"
 [[ "${restore_entries}" == "${copied_entries}" \
