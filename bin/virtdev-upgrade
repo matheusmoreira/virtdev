@@ -646,6 +646,18 @@ for p in "${included[@]}"; do
   stopped_projects+=("${p}")
 done
 
+# Prove every exact backup structurally and resource-valid before maintenance
+# can replace the shared base. The projects are stopped, but the old base is
+# still authoritative if any preflight fails.
+printf '\nPreflighting exact backup snapshots...\n' >&2
+for p in "${included[@]}"; do
+  printf '    %s/%s\n' "${p}" "${backup_snapshots[${p}]}" >&2
+  if ! "${virtdev_bin_directory}/virtdev-restore" --preflight -- \
+      "${p}" "${backup_snapshots[${p}]}"; then
+    abort_backup "Restore preflight failed for ${p}/${backup_snapshots[${p}]} before maintenance."
+  fi
+done
+
 # ── Phase 2: Maintain ───────────────────────────────────────────────
 
 printf '\n%s\n' "$(terminal_write bold "[Phase 2/${total_phases}] Maintaining base system..." reset)" >&2

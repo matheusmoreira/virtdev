@@ -310,7 +310,33 @@ if (( status != 9 )) || [[ -e "${missing_generation_log}" ]]; then
   exit 1
 fi
 
+preflight_home="${test_tmp}/preflight-home"
+prepare_upgrade_home "${preflight_home}"
+preflight_log="${test_tmp}/preflight.commands"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+RECREATE_COMMAND_LOG="${preflight_log}" \
+RECREATE_FAIL_PREFLIGHT=1 \
+RECREATE_SNAPSHOT_PATH="${preflight_home}/backups/probe/${recovery_snapshot}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${preflight_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/preflight-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes \
+    >"${test_tmp}/upgrade-preflight.output" 2>&1 || status=$?
+if (( status != 20 )) \
+    || ! grep -Fxq restore "${preflight_log}" \
+    || grep -Fxq maintain "${preflight_log}"; then
+  printf 'upgrade crossed maintenance after exact snapshot preflight failure (status %d)\n' \
+    "${status}" >&2
+  cat "${test_tmp}/upgrade-preflight.output" >&2
+  exit 1
+fi
+
 printf 'ok - upgrade emits executable phase-specific recovery\n'
 printf 'ok - upgrade distinguishes failed stops from stopped machines\n'
 printf 'ok - outdated projects fail closed without an impossible skip path\n'
 printf 'ok - upgrade rejects missing generation before external commands\n'
+printf 'ok - upgrade preflights exact snapshots before maintenance\n'
