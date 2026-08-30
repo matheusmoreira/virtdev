@@ -1,29 +1,20 @@
 #!/usr/bin/env bash
 #
-# import — bootstrap module for the virtdev library system.
+# Library bootstrap and idempotent importer.
 #
-# Source this file from any bin/virtdev-* script to get the library
-# infrastructure. Replaces the ~10-line bootstrap block that every
-# consumer used to duplicate inline.
-#
-# Consumer usage (2 lines, right after set -euo pipefail):
+# Usage after set -euo pipefail:
 #
 #     # shellcheck disable=SC1090
 #     source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/virtdev/import"
-#
 #     import error validate lock   # whatever the script needs
 #
-# Exports into the sourcing shell's scope:
+# Exposes:
 #
-#   virtdev_library_directory   lib/virtdev/ resolved path (used by import)
-#   virtdev_bin_directory       bin/ resolved path (for subprocess invocation)
-#   virtdev_libexec_directory   libexec/virtdev/ resolved private helpers
-#   virtdev_loaded_libraries    associative array tracking loaded libraries
-#   import()                    source libraries by name, idempotent
-#
-# The ../lib/virtdev path in the consumer's source line resolves
-# correctly for both the dev tree (bin → lib/virtdev) and the
-# pacman-installed package (/usr/bin → /usr/lib/virtdev).
+#   virtdev_library_directory   resolved lib/virtdev path
+#   virtdev_bin_directory       resolved command directory
+#   virtdev_libexec_directory   resolved private-helper directory
+#   virtdev_loaded_libraries    loaded-module set
+#   import()                    source named libraries once
 #
 
 set -euo pipefail
@@ -40,9 +31,7 @@ import() {
   local f
   for f in "$@"; do
     [[ -v virtdev_loaded_libraries[$f] ]] && continue
-    # Set the loaded flag BEFORE sourcing: a circular import then terminates
-    # at the second entry instead of recursing forever. Load-bearing — do not
-    # move this after the source.
+    # Mark before sourcing to terminate circular imports.
     virtdev_loaded_libraries[$f]=1
     # shellcheck disable=SC1090
     source -p "${virtdev_library_directory}" "${f}"

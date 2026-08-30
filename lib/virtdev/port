@@ -1,40 +1,19 @@
 #!/usr/bin/env bash
 #
-# port library: SSH forwarding port file reading and validation.
+# SSH forwarding-port file access.
 #
 # Public:
 #   port_require <varname> <project>
-#                                Read and validate the port file and
-#                                assign the port to the caller's
-#                                <varname>. Errors 87 if the file is
-#                                absent, or 81 if it is present but
-#                                corrupt. Runs in the caller's shell so
-#                                the exit code propagates — do NOT wrap
-#                                in $(). <varname> must not begin with
-#                                __port_require_ (reserved for the
-#                                function's own locals; a collision would
-#                                make printf -v write the local instead).
+#                                Assign a validated port. Exit 87 when absent
+#                                or 81 when corrupt. Do not wrap in $().
 #   port_read_lenient <project>  Print the validated port, or "?" when
-#                                the file is missing or corrupt. For
-#                                display-oriented commands (list).
+#                                the file is missing or corrupt.
 #   port_is_valid <port>         Return 0 only for canonical decimal ports in
 #                                1024..65535 (no sign or leading zero).
 #   port_in_use <port>           Returns 0 if the given port is bound.
 #
-# Exit codes:
-#   81  corrupt port file (not a valid integer)
-#   87  no port assigned (port file absent — virtual machine not running)
-#
-# The port file is written by virtdev-start with printf '%d\n' and
-# removed by virtdev-stop. Corruption requires filesystem-level issues
-# or external tampering.
-#
-# Why port_require uses a nameref instead of `port="$(port_read ...)"`:
-# a port_read that called error() on a corrupt file would only exit the
-# command-substitution subshell, and the caller's `if !` would then
-# report its own code with a contradictory message — never the reserved
-# 87 or 81. port_require runs in the caller's shell, so its error()
-# terminates the process with the correct code.
+# port_require must run in the caller so error() is not isolated in a command
+# substitution. Output names beginning `__port_require_` are reserved.
 #
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
@@ -58,17 +37,14 @@ _port_value_or_status() {
   [[ -e "${port_file}" || -L "${port_file}" ]] || return 1
   [[ -f "${port_file}" && ! -L "${port_file}" ]] \
     || return "${port_corrupt_exit_code}"
-  # LC_ALL=C so [0-9] is byte-wise ASCII: under a UTF-8 locale a non-ASCII digit would
-  # pass the regex and read as a valid port, defeating the corruption guard — the same
-  # locale pin the generation readers / project_list carry for integer files.
+  # Parse digits bytewise so non-ASCII numerals cannot pass validation.
   local LC_ALL=C raw='' file_size port
   file_size="$(stat -c '%s' -- "${port_file}" 2>/dev/null)" \
     || return "${port_corrupt_exit_code}"
   if [[ ! "${file_size}" =~ ^[0-9]+$ || ${file_size} -gt 6 ]]; then
     return "${port_corrupt_exit_code}"
   fi
-  # -N retains newlines and caps allocation; Bash cannot store NUL bytes, so
-  # the exact stat-size comparison below also rejects binary scalar contents.
+  # The length check also detects NUL bytes, which Bash cannot store.
   IFS= read -r -N 7 raw < "${port_file}" 2>/dev/null || true
   [[ ${#raw} -eq file_size ]] || return "${port_corrupt_exit_code}"
   port="${raw}"
@@ -81,10 +57,7 @@ _port_value_or_status() {
 }
 
 port_require() {
-  # Internal locals use the reserved __port_require_ prefix so the
-  # caller's output <varname> cannot collide with one: printf -v assigns
-  # in this function's scope, where a same-named local would shadow the
-  # caller's variable and silently swallow the result.
+  # Reserved local names cannot shadow the caller's printf -v destination.
   local -r __port_require_varname="${1}" __port_require_project="${2}"
   local __port_require_value __port_require_status=0
   __port_require_value="$(_port_value_or_status "${__port_require_project}")" || __port_require_status=$?
