@@ -52,4 +52,44 @@ if (( status != 81 )); then
   exit 1
 fi
 
+probe_bin="${test_tmp}/probe-bin"
+mkdir -- "${probe_bin}"
+
+expect_probe_status() {
+  local -r expected="${1}" description="${2}"
+  local probe_status=0
+  PATH="${probe_bin}" port_in_use 2222 || probe_status=$?
+  if (( probe_status != expected )); then
+    printf '%s returned status %d, expected %d\n' \
+      "${description}" "${probe_status}" "${expected}" >&2
+    exit 1
+  fi
+}
+
+expect_probe_status 3 'missing ss probe'
+
+printf '%s\n' '#!/usr/bin/bash' 'exit 42' > "${probe_bin}/ss"
+chmod 0755 -- "${probe_bin}/ss"
+expect_probe_status 3 'failed ss probe'
+
+printf '%s\n' '#!/usr/bin/bash' \
+  "printf '%s\\n' 'LISTEN malformed output'" > "${probe_bin}/ss"
+expect_probe_status 3 'malformed ss probe'
+
+printf '%s\n' '#!/usr/bin/bash' 'exit 0' > "${probe_bin}/ss"
+expect_probe_status 1 'empty ss probe'
+
+printf '%s\n' '#!/usr/bin/bash' \
+  "printf '%s\\n' 'LISTEN 0 128 127.0.0.1:2222 0.0.0.0:*'" \
+  > "${probe_bin}/ss"
+expect_probe_status 0 'bound ss probe'
+
+probe_status=0
+PATH="${probe_bin}" port_in_use 80 || probe_status=$?
+(( probe_status == 2 )) || {
+  printf 'invalid port probe returned status %d\n' "${probe_status}" >&2
+  exit 1
+}
+
 printf 'ok - ports are canonical, range-checked, and bounded on read\n'
+printf 'ok - port availability is proven or reported as indeterminate\n'

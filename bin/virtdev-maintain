@@ -97,6 +97,7 @@
 #   33  sealed-base SSH transport marker is missing or incompatible
 #   34  reseal tree contains a mount or its mount state is indeterminate
 #   35  configured maintenance hook could not be frozen safely
+#   36  maintenance port availability could not be determined
 #
 # Library-propagated codes (emitted by imported libraries, not by this
 # script directly; included here so callers have a complete picture):
@@ -833,9 +834,13 @@ Stop all project virtual machines before running virtdev-maintain:
 MESSAGE
 fi
 
-if port_in_use "${maintenance_port}"; then
-  error 9 <<<"Port ${maintenance_port} is already in use on this host"
-fi
+port_probe_status=0
+port_in_use "${maintenance_port}" || port_probe_status=$?
+case "${port_probe_status}" in
+  0) error 9 <<<"Port ${maintenance_port} is already in use on this host" ;;
+  1) ;;
+  *) error 36 <<<"Could not determine whether port ${maintenance_port} is available" ;;
+esac
 
 if [[ -n "${provision_source}" || -n "${inventory_source}" ]]; then
   transaction_root="${VIRTDEV_HOME}/transactions"

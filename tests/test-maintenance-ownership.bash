@@ -136,6 +136,22 @@ run_launch() {
       --unfiltered --no-provision --no-inventory >"${output}" 2>&1
 }
 
+port_probe_home="${test_tmp}/port-probe-home"
+prepare_launch_home "${port_probe_home}"
+printf '%s\n' '#!/usr/bin/bash' 'exit 42' > "${launch_bin}/ss"
+chmod 0755 -- "${launch_bin}/ss"
+status=0
+run_launch "${port_probe_home}" failure \
+  "${port_probe_home}/cache" || status=$?
+if (( status != 36 )) || [[ -e "${port_probe_home}/systemd-run.called" ]]; then
+  printf 'maintenance accepted an indeterminate port probe (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+cp "${repository}/tests/fixtures/ss-empty" "${launch_bin}/ss"
+chmod 0755 -- "${launch_bin}/ss"
+
 prerequisite_home="${test_tmp}/prerequisite-home"
 prepare_launch_home "${prerequisite_home}"
 : > "${prerequisite_home}/blocked-cache"
@@ -404,6 +420,7 @@ if [[ ! -d "${interrupt_home}/maintenance" ]]; then
 fi
 
 printf 'ok - maintenance preflight preserves staging owned by live or unknown units\n'
+printf 'ok - maintenance refuses indeterminate host-port probes\n'
 printf 'ok - maintenance prerequisites cannot fall through to submission\n'
 printf 'ok - failed submission preserves an unproven fixed-name unit\n'
 printf 'ok - submitted maintenance units clean only after terminal proof\n'

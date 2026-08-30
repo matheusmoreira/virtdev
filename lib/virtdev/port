@@ -10,7 +10,8 @@
 #                                the file is missing or corrupt.
 #   port_is_valid <port>         Return 0 only for canonical decimal ports in
 #                                1024..65535 (no sign or leading zero).
-#   port_in_use <port>           Returns 0 if the given port is bound.
+#   port_in_use <port>           Return 0 if bound, 1 if proven free, 2 for an
+#                                invalid port, or 3 when the probe is indeterminate.
 #
 # port_require must run in the caller so error() is not isolated in a command
 # substitution. Output names beginning `__port_require_` are reserved.
@@ -21,6 +22,8 @@ import error
 
 readonly port_corrupt_exit_code=81
 readonly port_missing_exit_code=87
+readonly port_probe_indeterminate_status=3
+readonly port_probe_timeout_seconds=5
 
 port_is_valid() {
   local LC_ALL=C
@@ -85,5 +88,27 @@ port_read_lenient() {
 
 port_in_use() {
   port_is_valid "${1}" || return 2
-  [[ -n "$(ss -tlnH "sport = :${1}" 2>/dev/null)" ]]
+  local output probe_status=0
+  output="$(
+    /usr/bin/timeout --foreground --kill-after=1 \
+      "${port_probe_timeout_seconds}" ss -tlnH "sport = :${1}" 2>/dev/null
+  )" || probe_status=$?
+  (( probe_status == 0 )) || return "${port_probe_indeterminate_status}"
+  [[ -n "${output}" ]] || return 1
+
+  local line state receive_queue send_queue local_address peer_address extra
+  while IFS= read -r line; do
+    state='' receive_queue='' send_queue=''
+    local_address='' peer_address='' extra=''
+    read -r state receive_queue send_queue local_address peer_address extra \
+      <<< "${line}"
+    if [[ "${state}" != LISTEN \
+        || ! "${receive_queue}" =~ ^[0-9]+$ \
+        || ! "${send_queue}" =~ ^[0-9]+$ \
+        || -z "${local_address}" || -z "${peer_address}" \
+        || -n "${extra}" || "${local_address##*:}" != "${1}" ]]; then
+      return "${port_probe_indeterminate_status}"
+    fi
+  done <<< "${output}"
+  return 0
 }

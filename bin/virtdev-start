@@ -12,7 +12,8 @@
 # QEMU/netexec exit, 13 for QMP unready, 14 for an unknown lifecycle result, 16
 # for activation timeout, 17 for cleanup/publication failure, 18/19 for a
 # missing/failed backend, 20 for missing QEMU, and 21 for lost filter proof.
-# Missing socat or jq exits 23. Guest boot remains asynchronous.
+# Missing socat or jq exits 23; an indeterminate host-port probe exits 24.
+# Guest boot remains asynchronous.
 # Shared SSH preflights propagate exit 103 for corrupt project host identity and
 # exit 104 for a missing or incompatible guest transport contract.
 #
@@ -292,17 +293,29 @@ if [[ $# -eq 2 ]]; then
   if ! port_is_valid "${port}"; then
     error 7 <<<"Invalid port: '${port}' (must be canonical decimal 1024-65535, without leading zeros)"
   fi
-  if port_in_use "${port}"; then
-    error 8 <<<"Port ${port} is already in use on this host"
-  fi
+  port_probe_status=0
+  port_in_use "${port}" || port_probe_status=$?
+  case "${port_probe_status}" in
+    0) error 8 <<<"Port ${port} is already in use on this host" ;;
+    1) ;;
+    *) error 24 <<<"Could not determine whether port ${port} is available" ;;
+  esac
 else
   # Auto-assign: lowest available port starting from 2222
   port=2222
-  while port_in_use "${port}"; do
-    (( port++ ))
-    if (( port > 65535 )); then
-      error 15 <<<"No available port found in range 2222-65535"
-    fi
+  while :; do
+    port_probe_status=0
+    port_in_use "${port}" || port_probe_status=$?
+    case "${port_probe_status}" in
+      0)
+        (( port++ ))
+        if (( port > 65535 )); then
+          error 15 <<<"No available port found in range 2222-65535"
+        fi
+        ;;
+      1) break ;;
+      *) error 24 <<<"Could not determine whether port ${port} is available" ;;
+    esac
   done
 fi
 

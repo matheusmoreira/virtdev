@@ -136,6 +136,48 @@ if (( status != 11 )) || grep -Fq 'virtdev-destroy' "${output}" \
 fi
 printf '1\n' > "${project_directory}/generation"
 
+printf '%s\n' '#!/usr/bin/bash' 'exit 42' > "${fixture_bin}/ss"
+chmod 0755 -- "${fixture_bin}/ss"
+rm -f -- "${marker}"
+status=0
+SYSTEMCTL_ACTIVE_STATE=inactive \
+SYSTEMD_RUN_MARKER="${marker}" \
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_LOCK_DIRECTORY="${lock_directory}" \
+OVMF_CODE="${firmware}" \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-start" --unfiltered probe 23456 \
+    >"${output}" 2>&1 || status=$?
+if (( status != 24 )) || [[ -e "${marker}" ]]; then
+  printf 'start accepted a failed explicit-port probe (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+
+printf '%s\n' '#!/usr/bin/bash' \
+  "printf '%s\\n' 'LISTEN malformed output'" > "${fixture_bin}/ss"
+status=0
+SYSTEMCTL_ACTIVE_STATE=inactive \
+SYSTEMD_RUN_MARKER="${marker}" \
+PATH="${fixture_bin}:${PATH}" \
+HOME="${test_tmp}" \
+VIRTDEV_HOME="${virtdev_home}" \
+VIRTDEV_LOCK_DIRECTORY="${lock_directory}" \
+OVMF_CODE="${firmware}" \
+NO_COLOR=1 \
+  "${repository}/bin/virtdev-start" --unfiltered probe \
+    >"${output}" 2>&1 || status=$?
+if (( status != 24 )) || [[ -e "${marker}" ]]; then
+  printf 'start accepted an indeterminate automatic-port probe (status %d)\n' \
+    "${status}" >&2
+  cat "${output}" >&2
+  exit 1
+fi
+rm -f -- "${fixture_bin}/ss"
+
 declare -a controls=(
   monitor.sock console.sock network.sock passt.sock qmp.sock
   port port.tmp launch.phase launch.phase.tmp
@@ -274,6 +316,7 @@ fi
 
 printf 'ok - start preserves controls unless unit state is terminal\n'
 printf 'ok - start rejects symlinked project roots and writable images\n'
+printf 'ok - start refuses indeterminate host-port probes\n'
 printf 'ok - start rechecks unit state at the submission boundary\n'
 printf 'ok - failed submission never claims or stops the fixed unit name\n'
 printf 'ok - ambiguous submission reports the required ownership inspection\n'
