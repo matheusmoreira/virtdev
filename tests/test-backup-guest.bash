@@ -17,7 +17,7 @@ ln -s "${outside}/secret" "${guest_root}/final-link"
 
 archive="${test_tmp}/capture.tar"
 printf '%s\n' real 'punctuation[&|]/sub/file' final-link missing \
-  | VIRTDEV_BACKUP_GUEST_ROOT="${guest_root}" \
+  | _VIRTDEV_BACKUP_GUEST_ROOT="${guest_root}" \
       bash "${repository}/lib/virtdev/backup-guest" > "${archive}"
 
 listing="$(tar -tf "${archive}")"
@@ -38,7 +38,7 @@ for link_target in "${outside}" "${guest_root}/real"; do
   ln -s "${link_target}" "${guest_root}/intermediate"
   status=0
   printf '%s\n' intermediate/secret \
-    | VIRTDEV_BACKUP_GUEST_ROOT="${guest_root}" \
+    | _VIRTDEV_BACKUP_GUEST_ROOT="${guest_root}" \
         bash "${repository}/lib/virtdev/backup-guest" \
         > "${test_tmp}/rejected.tar" || status=$?
   if (( status != 40 )); then

@@ -9,12 +9,12 @@
 set -euo pipefail
 set -o pipefail
 
-: "${VIRTDEV_BACKUP_GUEST_ROOT:=/home/dev}"
+: "${_VIRTDEV_BACKUP_GUEST_ROOT:=/home/dev}"
 readonly backup_guest_intermediate_symlink=40
 
-[[ -d "${VIRTDEV_BACKUP_GUEST_ROOT}" \
-    && ! -L "${VIRTDEV_BACKUP_GUEST_ROOT}" ]] || exit 1
-cd -- "${VIRTDEV_BACKUP_GUEST_ROOT}"
+[[ -d "${_VIRTDEV_BACKUP_GUEST_ROOT}" \
+    && ! -L "${_VIRTDEV_BACKUP_GUEST_ROOT}" ]] || exit 1
+cd -- "${_VIRTDEV_BACKUP_GUEST_ROOT}"
 
 backup_guest_roots() {
   local path component current index present
