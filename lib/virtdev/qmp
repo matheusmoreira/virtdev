@@ -53,7 +53,14 @@ _qmp_child_reaped() {
     wait "${child_pid}" 2>/dev/null || true
     return 0
   fi
-  IFS= read -r process_stat < "/proc/${child_pid}/stat" || return 1
+  if ! { IFS= read -r process_stat < "/proc/${child_pid}/stat"; } \
+      2>/dev/null; then
+    if [[ ! -e "/proc/${child_pid}" ]]; then
+      wait "${child_pid}" 2>/dev/null || true
+      return 0
+    fi
+    return 1
+  fi
   process_stat="${process_stat##*) }"
   state="${process_stat%% *}"
   if [[ "${state}" == Z ]]; then
@@ -87,19 +94,38 @@ _qmp_reap_until() {
   _qmp_child_reaped "${child_pid}"
 }
 
-# _qmp_response_for_id <raw-qmp-reply> <response-id>
-_qmp_response_for_id() {
-  local -r reply="${1}" response_id="${2}"
-  jq -Rcse --arg id "${response_id}" '
+# _qmp_response_for_id_impl <raw-qmp-reply> <response-id> <append-newline>
+_qmp_response_for_id_impl() {
+  local -r reply="${1}" response_id="${2}" append_newline="${3}"
+  {
+    if (( append_newline )); then
+      # Command substitution strips the newline whose presence the exchange
+      # already proved before returning success.
+      printf '%s\n' "${reply}"
+    else
+      printf '%s' "${reply}"
+    fi
+  } | jq -Rcse --arg id "${response_id}" '
+    . as $raw |
     first(
-      splits("\n") | sub("\r$"; "") | fromjson? |
+      ($raw | [splits("\n")] | .[0:-1][]) |
+      sub("\r$"; "") | fromjson? |
       select(
         type == "object" and .id == $id and
         ((has("return") and (has("error") | not)) or
          (has("error") and (has("return") | not)))
       )
     )
-  ' <<< "${reply}" 2>/dev/null
+  ' 2>/dev/null
+}
+
+# _qmp_response_for_id <successful-exchange-reply> <response-id>
+_qmp_response_for_id() {
+  _qmp_response_for_id_impl "${1}" "${2}" 1
+}
+
+_qmp_complete_response_for_id() {
+  _qmp_response_for_id_impl "${1}" "${2}" 0
 }
 
 # _qmp_exchange <sock> <timeout_seconds> <response-id> <json...>
@@ -130,8 +156,7 @@ _qmp_exchange() {
   { printf '%s\n' "${request}" >&"${wfd}"; } 2>/dev/null || true
 
   local LC_ALL=C
-  local reply="" pending="" chunk="" frames="" line="" rc=1 \
-    read_size read_rc chunk_bytes
+  local reply="" chunk="" rc=1 read_size read_rc chunk_bytes
   while true; do
     _qmp_monotonic_milliseconds now_ms || break
     (( now_ms < reply_deadline_ms )) || break
@@ -150,23 +175,20 @@ _qmp_exchange() {
     fi
     chunk_bytes=${#chunk}
     reply+="${chunk}"
-    pending+="${chunk}"
-
-    frames=""
-    while [[ "${pending}" == *$'\n'* ]]; do
-      line="${pending%%$'\n'*}"
-      pending="${pending#*$'\n'}"
-      frames+="${line}"$'\n'
-    done
-    if [[ "${frames}" == *"\"${response_id}\""* ]] \
-        && _qmp_response_for_id "${frames}" "${response_id}" >/dev/null; then
-      rc=0
-    fi
-    (( rc == 0 )) && break
 
     # With an empty delimiter, a short successful read consumed a raw NUL.
     # JSON forbids it; reject before Bash can silently normalize the frame.
     (( read_rc == 0 && chunk_bytes < read_size )) && break
+
+    # Only a chunk containing a newline can have completed a new QMP frame.
+    # Parse all accumulated complete lines in jq; Bash substring splitting is
+    # quadratic on a maximum-size single line and can consume the reap budget.
+    if [[ "${chunk}" == *$'\n'* ]] \
+        && _qmp_complete_response_for_id \
+          "${reply}" "${response_id}" >/dev/null; then
+      rc=0
+      break
+    fi
 
     (( ${#reply} >= _qmp_reply_max_bytes )) && break
     # >128 is a read timeout; retain partial input and retry. 1 is EOF.
@@ -175,7 +197,7 @@ _qmp_exchange() {
   done
 
   # QEMU keeps QMP connected; close and reap the client explicitly.
-  exec {wfd}>&- 2>/dev/null || true
+  { exec {wfd}>&-; } 2>/dev/null || true
   _qmp_reap_until "${sock_pid}" "${deadline_ms}" || rc=1
 
   printf '%s' "${reply}"

@@ -132,6 +132,19 @@ for complete_mode in crlf fragmented; do
   fi
 done
 
+stderr_capture="${test_tmp}/exchange.stderr"
+{
+  _qmp_exchange "${running_sock}" 1 virtdev-query-running \
+    '{"execute":"query-status","id":"virtdev-query-running"}' \
+    >/dev/null
+  printf 'stderr-still-open\n' >&2
+} 2> "${stderr_capture}"
+if ! grep -Fxq stderr-still-open "${stderr_capture}"; then
+  printf 'QMP exchange persistently redirected caller stderr\n' >&2
+  exit 1
+fi
+
 printf 'ok - QMP state comes only from a correlated top-level response\n'
 printf 'ok - raw NUL input is rejected before Bash can normalize it\n'
 printf 'ok - QMP framing handles byte ceilings, CRLF, fragmentation, and EOF\n'
+printf 'ok - QMP cleanup preserves the caller stderr descriptor\n'
