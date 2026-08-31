@@ -24,9 +24,26 @@ import deadline integer
 readonly _qmp_reply_read_timeout=0.1
 readonly _qmp_reply_chunk_bytes=4096
 readonly _qmp_reply_max_bytes=65536
+# Preserve part of each public exchange timeout for TERM/KILL/reap. The
+# millisecond monotonic clock avoids consuming an entire one-second timeout just
+# to obtain subsecond cleanup accounting.
+readonly _qmp_cleanup_reserve_ms=500
+readonly _qmp_kill_reserve_ms=250
 
 # Diagnostic only; `shutdown` is the sole positive result.
 VIRTDEV_QMP_WAIT_STATE=unknown
+
+_qmp_monotonic_milliseconds() {
+  local -n _qmp_monotonic_result="${1}"
+  local uptime seconds fraction ignored
+
+  IFS=' ' read -r uptime ignored < /proc/uptime || return 1
+  [[ "${uptime}" =~ ^([0-9]+)\.([0-9]{1,3})$ ]] || return 1
+  seconds="${BASH_REMATCH[1]}"
+  fraction="${BASH_REMATCH[2]}000"
+  fraction="${fraction:0:3}"
+  _qmp_monotonic_result=$(( 10#${seconds} * 1000 + 10#${fraction} ))
+}
 
 _qmp_child_reaped() {
   local -r child_pid="${1}"
@@ -47,21 +64,24 @@ _qmp_child_reaped() {
 }
 
 _qmp_reap_until() {
-  local -r child_pid="${1}" deadline="${2}"
-  local term_deadline=$(( deadline - 1 ))
+  local -r child_pid="${1}" deadline_ms="${2}"
+  local now_ms term_deadline_ms=$(( deadline_ms - _qmp_kill_reserve_ms ))
 
-  (( term_deadline >= BASH_MONOSECONDS )) \
-    || term_deadline=${BASH_MONOSECONDS}
+  _qmp_monotonic_milliseconds now_ms || return 1
+  (( term_deadline_ms >= now_ms )) || term_deadline_ms=${now_ms}
   kill -TERM "${child_pid}" 2>/dev/null || true
-  while (( BASH_MONOSECONDS < term_deadline )); do
+  while true; do
     _qmp_child_reaped "${child_pid}" && return 0
+    _qmp_monotonic_milliseconds now_ms || return 1
+    (( now_ms < term_deadline_ms )) || break
     sleep 0.02
   done
-  _qmp_child_reaped "${child_pid}" && return 0
 
   kill -KILL "${child_pid}" 2>/dev/null || true
-  while (( BASH_MONOSECONDS < deadline )); do
+  while true; do
     _qmp_child_reaped "${child_pid}" && return 0
+    _qmp_monotonic_milliseconds now_ms || return 1
+    (( now_ms < deadline_ms )) || break
     sleep 0.02
   done
   _qmp_child_reaped "${child_pid}"
@@ -97,7 +117,10 @@ _qmp_exchange() {
   request="$(printf '%s\n' \
     '{"execute":"qmp_capabilities","id":"virtdev-capabilities"}' "$@")"
 
-  local -r deadline=$(( BASH_MONOSECONDS + timeout_seconds ))
+  local now_ms
+  _qmp_monotonic_milliseconds now_ms || return 1
+  local -r deadline_ms=$(( now_ms + timeout_seconds * 1000 ))
+  local -r reply_deadline_ms=$(( deadline_ms - _qmp_cleanup_reserve_ms ))
   # `exec` makes QMPCO_PID the socat process, so cleanup reaps the right PID.
   coproc QMPCO { exec socat - UNIX-CONNECT:"${sock}" 2>/dev/null; }
   # Bash clears QMPCO metadata when the coprocess exits; save it immediately.
@@ -109,7 +132,9 @@ _qmp_exchange() {
   local LC_ALL=C
   local reply="" pending="" chunk="" frames="" line="" rc=1 \
     read_size read_rc chunk_bytes
-  while (( BASH_MONOSECONDS < deadline )); do
+  while true; do
+    _qmp_monotonic_milliseconds now_ms || break
+    (( now_ms < reply_deadline_ms )) || break
     read_size=$(( _qmp_reply_max_bytes - ${#reply} ))
     (( read_size > 0 )) || break
     (( read_size > _qmp_reply_chunk_bytes )) \
@@ -151,7 +176,7 @@ _qmp_exchange() {
 
   # QEMU keeps QMP connected; close and reap the client explicitly.
   exec {wfd}>&- 2>/dev/null || true
-  _qmp_reap_until "${sock_pid}" "${deadline}" || rc=1
+  _qmp_reap_until "${sock_pid}" "${deadline_ms}" || rc=1
 
   printf '%s' "${reply}"
   return "${rc}"
