@@ -351,8 +351,60 @@ if (( status != 20 )) \
   exit 1
 fi
 
+captured_zone_home="${test_tmp}/captured-zone-home"
+prepare_upgrade_home "${captured_zone_home}"
+captured_zone_output="${test_tmp}/upgrade-captured-zone.output"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=active \
+SYSTEMCTL_SLICE=virtdev-wan.slice \
+RECREATE_FAIL_PREFLIGHT=1 \
+RECREATE_SNAPSHOT_PATH="${captured_zone_home}/backups/probe/${recovery_snapshot}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${captured_zone_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/captured-zone-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --unfiltered --yes \
+    >"${captured_zone_output}" 2>&1 || status=$?
+if (( status != 20 )) \
+    || ! grep -Fq \
+      'virtdev-start --zone wan --unfiltered -- probe' \
+      "${captured_zone_output}"; then
+  printf 'phase-1 recovery discarded a captured transient zone (status %d)\n' \
+    "${status}" >&2
+  cat "${captured_zone_output}" >&2
+  exit 1
+fi
+
+explicit_zone_home="${test_tmp}/explicit-zone-home"
+prepare_upgrade_home "${explicit_zone_home}"
+explicit_zone_output="${test_tmp}/upgrade-explicit-zone.output"
+status=0
+PATH="${upgrade_bin}:${upgrade_fixtures}:${PATH}" \
+SYSTEMCTL_ACTIVE_STATE=inactive \
+RECREATE_MAINTAIN_STATUS=1 \
+RECREATE_SNAPSHOT_PATH="${explicit_zone_home}/backups/probe/${recovery_snapshot}" \
+HOME="${test_tmp}" \
+XDG_CONFIG_HOME="${test_tmp}/no-config" \
+VIRTDEV_HOME="${explicit_zone_home}" \
+VIRTDEV_LOCK_DIRECTORY="${test_tmp}/explicit-zone-locks" \
+NO_COLOR=1 \
+  "${upgrade_bin}/virtdev-upgrade" --zone full --unfiltered --yes \
+    >"${explicit_zone_output}" 2>&1 || status=$?
+if (( status != 30 )) \
+    || ! grep -Fq \
+      'virtdev-start --zone full --unfiltered -- probe' \
+      "${explicit_zone_output}"; then
+  printf 'maintenance recovery discarded the explicit upgrade zone (status %d)\n' \
+    "${status}" >&2
+  cat "${explicit_zone_output}" >&2
+  exit 1
+fi
+
 printf 'ok - upgrade emits executable phase-specific recovery\n'
 printf 'ok - upgrade distinguishes failed stops from stopped machines\n'
 printf 'ok - outdated projects fail closed without an impossible skip path\n'
 printf 'ok - upgrade rejects missing generation before external commands\n'
 printf 'ok - upgrade preflights exact snapshots before maintenance\n'
+printf 'ok - upgrade recovery preserves captured and explicit zones\n'

@@ -45,6 +45,7 @@ run_recreate() {
     options+=(--no-provision)
   fi
   SYSTEMCTL_ACTIVE_STATE="${active_state}" \
+  SYSTEMCTL_SLICE="${RECREATE_SYSTEMCTL_SLICE:-virtdev-none.slice}" \
   RECREATE_FAIL_STEP="${failure}" \
   RECREATE_FAIL_STEPS="${RECREATE_FAIL_STEPS:-}" \
   RECREATE_FAIL_PREFLIGHT="${RECREATE_FAIL_PREFLIGHT:-0}" \
@@ -94,6 +95,21 @@ for failure in stop destroy create start wait; do
       ;;
   esac
 done
+
+prepare_project
+captured_zone_output="${test_tmp}/captured-zone-destroy.output"
+status="$(RECREATE_SYSTEMCTL_SLICE=virtdev-wan.slice \
+  run_recreate active destroy "${captured_zone_output}" \
+    --no-backup --snapshot "${old_snapshot}")"
+if (( status != 22 )) \
+    || ! grep -Fq \
+      "virtdev-recreate --no-backup --snapshot ${old_snapshot} --no-provision --zone wan --unfiltered -- probe" \
+      "${captured_zone_output}"; then
+  printf 'recreate recovery discarded its captured transient zone (status %d)\n' \
+    "${status}" >&2
+  cat "${captured_zone_output}" >&2
+  exit 1
+fi
 
 leading_project='-probe'
 leading_directory="${virtdev_home}/projects/${leading_project}"
@@ -316,3 +332,4 @@ printf 'ok - recreate recovery commands retain the transaction snapshot\n'
 printf 'ok - recreate recovery preserves selected post-wait steps\n'
 printf 'ok - provision failure recovery preserves the selected script path\n'
 printf 'ok - failed starts report indeterminate fixed-unit ownership\n'
+printf 'ok - recreate recovery preserves a captured transient zone\n'

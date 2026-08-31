@@ -485,7 +485,10 @@ abort_backup() {
       for s in "${stopped_projects[@]}"; do
         printf '    %s\n' "${s}"
       done
-      printf '\nRestart them with: virtdev-start <project>\n'
+      printf '\nRestart them with:\n'
+      for s in "${stopped_projects[@]}"; do
+        printf '    %s\n' "$(upgrade_start_resume "${s}")"
+      done
     fi
     if [[ ${#indeterminate_projects[@]} -gt 0 ]]; then
       printf '\nVirtual machines whose stop could not be proven:\n'
@@ -694,7 +697,7 @@ MESSAGE
     printf 'Backups are preserved. Restart virtual machines with:\n'
     printf '\n'
     for p in "${included[@]}"; do
-      printf '    virtdev-start -- %s\n' "${p}"
+      printf '    %s\n' "$(upgrade_start_resume "${p}")"
     done
     printf '\n'
   } >&2

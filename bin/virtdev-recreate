@@ -471,7 +471,7 @@ recreate_resume() {
     command+=(--no-provision)
   fi
   (( flags[verbose] )) && command+=(--verbose)
-  [[ -n "${zone_arg}" ]] && command+=(--zone "${zone_arg}")
+  [[ -n "${zone}" ]] && command+=(--zone "${zone}")
   (( flags[unfiltered] )) && command+=(--unfiltered)
   command+=(-- "${project}")
   command_render "${command[@]}"
