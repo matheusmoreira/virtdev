@@ -2,7 +2,7 @@
 # shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
 # virtdev-upgrade [--only=project,...] [--except=project,...]
-#                 [--yes] [--verbose]
+#                 [--zone <zone>] [--unfiltered] [--yes] [--verbose]
 #
 # Audits projects, backs up and stops them, interactively reseals the base,
 # rebuilds them, then prints recovery commands under one inherited store lock.

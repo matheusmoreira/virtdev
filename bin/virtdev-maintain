@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2154  # virtdev_bin_directory and passt_* provided by imported libraries
 #
-# virtdev-maintain
+# virtdev-maintain [--yes] [--no-provision] [--no-inventory] [--unfiltered]
 #
 # Boots the sealed base system in a writable maintenance staging area
 # where it is possible to configure and update the system

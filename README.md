@@ -226,7 +226,9 @@ runs it automatically between start and restore.
 
 Flags: `--no-backup`, `--snapshot <YYYY-MM-DD/HH-MM-SS>` (pin an existing
 snapshot when resuming with `--no-backup`), `--no-restore`, `--no-provision`,
-`--provision <path>`, `--yes`/`-y`, `--verbose`/`-v`.
+`--provision <path>`, `--zone <zone>` (override the captured or project zone for
+the rebuilt launch), `--unfiltered` (skip the egress lockdown for the rebuilt
+launch), `--yes`/`-y`, `--verbose`/`-v`.
 
 ### Base system maintenance
 
@@ -247,7 +249,8 @@ Optional hooks in `~/.config/virtdev/maintenance/`:
 - **`provision`** — runs inside the guest after SSH is up (dotfiles, tools)
 - **`inventory`** — captures system state before and after; diff shown before reseal
 
-Flags: `--yes`/`-y`, `--no-provision`, `--no-inventory`.
+Flags: `--yes`/`-y`, `--no-provision`, `--no-inventory`, `--unfiltered`
+(skip the egress lockdown for both maintenance boots).
 
 Before standalone maintenance, back up every coupled project. After resealing,
 those projects refuse to boot against the changed base. Rebuild each from its
@@ -264,7 +267,9 @@ projects, maintain the base, and rebuild them all on the new base:
 virtdev upgrade
 ```
 
-Flags: `--only=a,b`, `--except=c,d`, `--yes`/`-y`, `--verbose`/`-v`.
+Flags: `--only=a,b`, `--except=c,d`, `--zone <zone>` (override every rebuilt
+project launch), `--unfiltered` (forwarded across start, maintenance, and
+recreate), `--yes`/`-y`, `--verbose`/`-v`.
 
 The host tools and guest control helpers are a matched contract. A base made by
 an older installer lacks the strict SSH host-identity marker, so current
@@ -344,7 +349,7 @@ All commands are available as `virtdev <command>` (dispatcher) or
 | `virtdev-status <machine>` | Print `running`, `stopped`, `starting`, `stopping`, or `unknown` |
 | `virtdev-port <machine>` | Print SSH port of a running virtual machine |
 | `virtdev-pid <machine>` | Print QEMU process ID |
-| `virtdev-path <machine> [resource]` | Print a machine data/runtime resource path |
+| `virtdev-path <machine> [resource]` | Print an existing machine data/runtime resource path |
 | `virtdev-disk <project>` | Show disk usage info |
 | `virtdev-log [-f] <machine>` | Show journal logs (shorthand for journalctl) |
 | `virtdev-monitor <machine>` | Attach to QEMU monitor |

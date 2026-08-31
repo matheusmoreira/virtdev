@@ -2,6 +2,7 @@
 # shellcheck disable=SC2154  # virtdev_bin_directory provided by lib/virtdev/import
 #
 # virtdev-recreate [--provision <path>] [--snapshot <id>]
+#                  [--zone <zone>] [--unfiltered]
 #                  [--no-backup] [--no-restore] [--no-provision]
 #                  [--yes] [--verbose] <project>
 #

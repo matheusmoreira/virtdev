@@ -3,7 +3,7 @@
 #
 # virtdev-path <machine> [resource]
 #
-# Prints the absolute path to a project resource.
+# Prints the absolute path to an existing project resource of the expected type.
 # Machine-readable: stdout contains only the path.
 #
 # Resources (default: data):
@@ -54,26 +54,38 @@ fi
 project="${1}"
 resource="${2:-data}"
 
+path_require_directory() {
+  local -r path="${1}"
+  [[ -d "${path}" && ! -L "${path}" ]] \
+    || error 4 <<<"Directory resource does not exist or is unsafe: '${path}'"
+}
+
+path_require_regular_file() {
+  local -r path="${1}"
+  [[ -f "${path}" && ! -L "${path}" ]] \
+    || error 4 <<<"File resource does not exist or is unsafe: '${path}'"
+}
+
 case "${project}" in
   base)
     dir=system
     case "${resource}" in
       data)
         path="${VIRTDEV_HOME}/${dir}"
+        path_require_directory "${path}"
         ;;
       system-image)
         path="${VIRTDEV_HOME}/${dir}/system.qcow2"
+        path_require_regular_file "${path}"
         ;;
       home-image)
         path="${VIRTDEV_HOME}/${dir}/home.qcow2"
+        path_require_regular_file "${path}"
         ;;
       *)
         error 5 <<<"Unknown resource for ${project}: '${resource}' (valid: data, system-image, home-image)"
         ;;
     esac
-    if [[ ! -e "${path}" ]]; then
-      error 4 <<<"Path does not exist: '${path}'"
-    fi
     printf '%s\n' "${path}"
     exit 0
     ;;
@@ -91,28 +103,43 @@ project_directory="${VIRTDEV_MACHINE_DATA_DIR}"
 
 if [[ "${VIRTDEV_MACHINE_KIND}" == "${machine_kind_maintenance}" ]]; then
   case "${resource}" in
-    data) path="${VIRTDEV_MACHINE_DATA_DIR}" ;;
-    runtime) path="${VIRTDEV_MACHINE_RUNTIME_DIR}" ;;
-    system-image) path="${VIRTDEV_MACHINE_DATA_DIR}/system.qcow2" ;;
-    home-image) path="${VIRTDEV_MACHINE_DATA_DIR}/home.qcow2" ;;
+    data)
+      path="${VIRTDEV_MACHINE_DATA_DIR}"
+      path_require_directory "${path}"
+      ;;
+    runtime)
+      path="${VIRTDEV_MACHINE_RUNTIME_DIR}"
+      path_require_directory "${path}"
+      ;;
+    system-image)
+      path="${VIRTDEV_MACHINE_DATA_DIR}/system.qcow2"
+      path_require_regular_file "${path}"
+      ;;
+    home-image)
+      path="${VIRTDEV_MACHINE_DATA_DIR}/home.qcow2"
+      path_require_regular_file "${path}"
+      ;;
     *)
       error 5 <<<"Unknown resource for maintenance: '${resource}' (valid: data, runtime, system-image, home-image)"
       ;;
   esac
-  [[ -e "${path}" ]] || error 4 <<<"Path does not exist: '${path}'"
   printf '%s\n' "${path}"
   exit 0
 fi
 
 case "${resource}" in
   data)
+    path_require_directory "${project_directory}"
     printf '%s\n' "${project_directory}"
     ;;
   runtime)
+    path_require_directory "${VIRTDEV_MACHINE_RUNTIME_DIR}"
     printf '%s\n' "${VIRTDEV_MACHINE_RUNTIME_DIR}"
     ;;
   backups)
-    printf '%s\n' "${VIRTDEV_HOME}/backups/${project}"
+    path="${VIRTDEV_HOME}/backups/${project}"
+    path_require_directory "${path}"
+    printf '%s\n' "${path}"
     ;;
   manifest)
     if ! path="$(manifest_resolve "${project}")"; then
@@ -125,10 +152,14 @@ MESSAGE
     printf '%s\n' "${path}"
     ;;
   system-image)
-    printf '%s\n' "${project_directory}/system.qcow2"
+    path="${project_directory}/system.qcow2"
+    path_require_regular_file "${path}"
+    printf '%s\n' "${path}"
     ;;
   home-image)
-    printf '%s\n' "${project_directory}/home.qcow2"
+    path="${project_directory}/home.qcow2"
+    path_require_regular_file "${path}"
+    printf '%s\n' "${path}"
     ;;
   *)
     error 5 <<<"Unknown resource: '${resource}' (valid: data, runtime, backups, manifest, system-image, home-image)"

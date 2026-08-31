@@ -25,6 +25,47 @@ if [[ "${VIRTDEV_MACHINE_KIND}" != project \
   exit 1
 fi
 
+expect_missing_path_resource() {
+  local -r target="${1}" resource="${2}"
+  local status=0
+  NO_COLOR=1 "${repository}/bin/virtdev-path" "${target}" "${resource}" \
+    > "${test_tmp}/path-output" 2>&1 || status=$?
+  if (( status != 4 )); then
+    printf 'path accepted missing/unsafe %s %s resource (status %d)\n' \
+      "${target}" "${resource}" "${status}" >&2
+    cat "${test_tmp}/path-output" >&2
+    exit 1
+  fi
+}
+
+for resource in system-image home-image backups; do
+  expect_missing_path_resource probe "${resource}"
+done
+printf 'system\n' > "${VIRTDEV_HOME}/projects/probe/system.qcow2"
+printf 'outside\n' > "${test_tmp}/outside-image"
+ln -s "${test_tmp}/outside-image" \
+  "${VIRTDEV_HOME}/projects/probe/home.qcow2"
+mkdir -p "${VIRTDEV_HOME}/backups" "${test_tmp}/outside-backups"
+ln -s "${test_tmp}/outside-backups" "${VIRTDEV_HOME}/backups/probe"
+expect_missing_path_resource probe home-image
+expect_missing_path_resource probe backups
+if [[ "$("${repository}/bin/virtdev-path" probe system-image)" \
+      != "${VIRTDEV_HOME}/projects/probe/system.qcow2" ]]; then
+  printf 'path rejected an existing ordinary project image\n' >&2
+  exit 1
+fi
+rm -f -- "${VIRTDEV_HOME}/projects/probe/home.qcow2" \
+  "${VIRTDEV_HOME}/backups/probe"
+printf 'home\n' > "${VIRTDEV_HOME}/projects/probe/home.qcow2"
+mkdir "${VIRTDEV_HOME}/backups/probe"
+if [[ "$("${repository}/bin/virtdev-path" probe home-image)" \
+        != "${VIRTDEV_HOME}/projects/probe/home.qcow2" \
+      || "$("${repository}/bin/virtdev-path" probe backups)" \
+        != "${VIRTDEV_HOME}/backups/probe" ]]; then
+  printf 'path rejected existing typed project resources\n' >&2
+  exit 1
+fi
+
 machine_target_require maintenance
 if [[ "${VIRTDEV_MACHINE_KIND}" != maintenance \
       || "${VIRTDEV_MACHINE_UNIT}" != virtdev-maintenance \
@@ -104,3 +145,4 @@ printf 'ok - machine descriptors separate maintenance data and runtime roots\n'
 printf 'ok - ordinary project validation rejects machine-only targets\n'
 printf 'ok - ordinary project validation rejects symlinked roots\n'
 printf 'ok - maintenance remains a stable stopped target between sessions\n'
+printf 'ok - path reports only existing resources of the expected type\n'

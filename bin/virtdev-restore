@@ -54,7 +54,7 @@
 #   12  snapshot belongs to a different project
 #   13  project generation file missing
 #   16  snapshot date not found
-#   17  no snapshots on requested date
+#   17  reserved (legacy date-only selection; no longer emitted)
 #   18  snapshot time not found
 #   19  snapshot data, structure, staging-state, or accounting failure
 #   20  restore wall-clock deadline exceeded

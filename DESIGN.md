@@ -952,7 +952,7 @@ during a maintenance session.
 | `virtdev-status`   | Print `running`, `stopped`, `starting`, `stopping`, or `unknown` |
 | `virtdev-port`     | Print the SSH port of a running project VM                   |
 | `virtdev-pid`      | Print the QEMU process ID of a running project VM            |
-| `virtdev-path`     | Print the path to a project resource                         |
+| `virtdev-path`     | Print the path to an existing, type-checked machine resource |
 | `virtdev-disk`     | Show disk usage information for a project VM                 |
 | `virtdev-log`      | Show journal logs for a project's systemd unit               |
 | `virtdev-monitor`  | Attach to the QEMU monitor of a running project VM           |

@@ -85,5 +85,39 @@ maintain_header="$(sed -n '1,/^set -euo pipefail$/p' \
 grep -Eq '^# +103 ' <<< "${maintain_header}" \
   || { printf 'virtdev-maintain does not document propagated exit 103\n' >&2; exit 1; }
 
+recreate_header="$(sed -n '1,/^set -euo pipefail$/p' \
+  "${repository}/bin/virtdev-recreate")"
+upgrade_header="$(sed -n '1,/^set -euo pipefail$/p' \
+  "${repository}/bin/virtdev-upgrade")"
+recreate_docs="$(sed -n '/^### Recreate$/,/^### Base system maintenance$/p' \
+  "${repository}/README.md")"
+maintain_docs="$(sed -n '/^### Base system maintenance$/,/^### Detaching a project$/p' \
+  "${repository}/README.md")"
+for flag in '--zone <zone>' --unfiltered; do
+  grep -Fq -- "${flag}" <<< "${recreate_header}" \
+    || { printf 'virtdev-recreate synopsis omits %s\n' "${flag}" >&2; exit 1; }
+  grep -Fq -- "${flag}" <<< "${upgrade_header}" \
+    || { printf 'virtdev-upgrade synopsis omits %s\n' "${flag}" >&2; exit 1; }
+  grep -Fq -- "${flag}" <<< "${recreate_docs}" \
+    || { printf 'recreate documentation omits %s\n' "${flag}" >&2; exit 1; }
+  grep -Fq -- "${flag}" <<< "${maintain_docs}" \
+    || { printf 'upgrade documentation omits %s\n' "${flag}" >&2; exit 1; }
+done
+grep -Fq -- '--unfiltered' <<< "${maintain_header}" \
+  || { printf 'virtdev-maintain synopsis omits --unfiltered\n' >&2; exit 1; }
+grep -Fq -- '--unfiltered' <<< "${maintain_docs}" \
+  || { printf 'maintain documentation omits --unfiltered\n' >&2; exit 1; }
+
+restore_header="$(sed -n '1,/^set -euo pipefail$/p' \
+  "${repository}/bin/virtdev-restore")"
+grep -Eq '^# +17 +reserved ' <<< "${restore_header}" \
+  || { printf 'virtdev-restore exit 17 is not explicitly reserved\n' >&2; exit 1; }
+if grep -Eq '(^|[[:space:]])error +17([[:space:]]|$)' \
+    "${repository}/bin/virtdev-restore"; then
+  printf 'virtdev-restore unexpectedly emits reserved exit 17\n' >&2
+  exit 1
+fi
+
 printf 'ok - public commands and private helpers have explicit boundaries\n'
 printf 'ok - shared SSH exit contracts are registered and documented\n'
+printf 'ok - orchestration network flags and reserved exits match documentation\n'
