@@ -1300,7 +1300,9 @@ there is no silent shadowing when both files exist.
   or implicit output path. `virtdev-restore` counts unique regular-file bytes
   and entries before transfer, rejects nested mounts and intermediate symlinks,
   and gives rsync the same filesystem boundary. Every snapshot owns its inodes
-  independently, so editing one restore point cannot rewrite another.
+  independently, so editing one restore point cannot rewrite another. Guest
+  capture likewise rejects an intermediate symlink beneath `/home/dev` while
+  preserving a final selected symlink as an object.
   Snapshot publication is atomic no-replace and preserves the completed partial or
   committed final when publication cannot be confirmed. Not planned:
   compression, encryption at rest, automated

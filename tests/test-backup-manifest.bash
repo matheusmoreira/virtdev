@@ -15,14 +15,14 @@ destination="${test_tmp}/destination"
 mkdir -p "${source_tree}/real/sub" "${destination}"
 printf 'payload\n' > "${source_tree}/real/sub/file"
 ln -s real "${source_tree}/link"
-printf 'real/\nlink/\n' > "${test_tmp}/manifest"
+printf 'real//./\n./link/.//\n' > "${test_tmp}/manifest"
 
 manifest_write_rsync_files_from \
   "${test_tmp}/manifest" "${test_tmp}/files-from"
 
 if [[ "$(sed -n '1p' "${test_tmp}/files-from")" != real ||
       "$(sed -n '2p' "${test_tmp}/files-from")" != link ]]; then
-  printf 'files-from roots retained unsafe trailing slashes\n' >&2
+  printf 'files-from roots retained noncanonical path components\n' >&2
   exit 1
 fi
 

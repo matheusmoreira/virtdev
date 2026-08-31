@@ -30,8 +30,9 @@
 #
 # Format: one path per line; blank lines and lines starting with
 # '#' are ignored. Paths are lexical roots under the guest's /home/dev/;
-# absolute paths and '..' components are rejected. Trailing slashes are
-# accepted but normalized so a symlink root is never dereferenced.
+# absolute paths and '..' components are rejected. Empty and '.' components
+# and trailing slashes are normalized. Intermediate guest symlinks are rejected
+# while a final symlink root is archived as a symlink object.
 #
 # The loaded manifest path is echoed to stderr on each run.
 # Create mode reserves stdout for the final absolute snapshot path; transfer
@@ -350,6 +351,10 @@ for helper in "${archive_gate}" "${publish_helper}"; do
   [[ -x "${helper}" ]] \
     || error 18 <<<"Required backup helper is unavailable: '${helper}'. Run 'make'."
 done
+backup_guest_helper="${virtdev_library_directory}/backup-guest"
+[[ -f "${backup_guest_helper}" && ! -L "${backup_guest_helper}" \
+    && -r "${backup_guest_helper}" ]] \
+  || error 18 <<<"Required guest backup helper is unavailable: '${backup_guest_helper}'."
 
 if ! manifest_path="$(manifest_resolve "${project}")"; then
   error 8 <<MESSAGE
@@ -403,8 +408,29 @@ day_dir="${backups_project_dir}/${day}"
 partial="${day_dir}/${time}.partial"
 final="${day_dir}/${time}"
 
-# shellcheck disable=SC2174  # umask 077 above ensures intermediates get 0700 too
-mkdir -p -m 0700 "${day_dir}"
+snapshot_prepare_status=0
+snapshot_prepare_day_directory "${project}" "${day}" \
+  || snapshot_prepare_status=$?
+case "${snapshot_prepare_status}" in
+  0) ;;
+  "${snapshot_state_unsafe}")
+    error 18 <<<"Backup hierarchy contains a symlink or non-directory: ${day_dir}"
+    ;;
+  *) error 18 <<<"Could not prepare the backup hierarchy: ${day_dir}" ;;
+esac
+
+snapshot_selection_status=0
+snapshot_hierarchy_state "${project}" "${day}" "${time}" \
+  || snapshot_selection_status=$?
+case "${snapshot_selection_status}" in
+  "${snapshot_state_missing}") ;;
+  0)
+    error 13 <<<"A snapshot already exists at this timestamp: ${final}"
+    ;;
+  *)
+    error 18 <<<"Snapshot path is a symlink or non-directory: ${final}"
+    ;;
+esac
 
 if ! mkdir -m 0700 "${partial}" 2>/dev/null; then
   partial_guidance="$(mount_cleanup_guidance "${partial}")"
@@ -487,9 +513,11 @@ archive_limit="${VIRTDEV_BACKUP_MAX_BYTES}"
 free_archive_limit=$(( available_bytes - backup_free_space_reserve ))
 (( archive_limit <= free_archive_limit )) || archive_limit=${free_archive_limit}
 
-# The guest receives only normalized relative roots. The loop drops roots that
-# are already absent; tar then fails on unreadable data or a later race.
-remote_tar=$'set -o pipefail\ncd /home/dev || exit 1\nwhile IFS= read -r path || [[ -n "${path}" ]]; do\n  if [[ -e "${path}" || -L "${path}" ]]; then\n    printf "%s\\n" "${path}"\n  fi\ndone | /usr/bin/tar --create --file=- --one-file-system --sparse --verbatim-files-from --files-from=-'
+# The guest receives only canonical relative roots. Keep the helper in the
+# installed library so its path semantics can be tested directly; quote the
+# complete program into bash -c because stdin remains the files-from stream.
+remote_tar="$(< "${backup_guest_helper}")" \
+  || error 18 <<<'Could not load the guest backup helper'
 printf -v remote_tar_quoted '%q' "${remote_tar}"
 
 printf >&2 'Backing up %s to %s...\n' "${project}" "${final#"${VIRTDEV_HOME}"/}"
@@ -530,6 +558,7 @@ if (( capture_status[1] != 0 )); then
 fi
 case "${capture_status[0]}" in
   0) ;;
+  40) error 16 <<<'Backup manifest crosses an intermediate guest symlink' ;;
   124|137) error 20 <<<'Backup capture exceeded its wall-clock deadline' ;;
   255) error 17 <<<'SSH transport failed while capturing the backup' ;;
   *) error 18 <<<"Guest archive creation failed (exit ${capture_status[0]})" ;;
@@ -812,12 +841,19 @@ Verify the manifest against the guest: virtdev-ssh ${project} -- ls -la
 MESSAGE
 fi
 
-if [[ -e "${final}" ]]; then
-  error 13 <<MESSAGE
+snapshot_selection_status=0
+snapshot_hierarchy_state "${project}" "${day}" "${time}" \
+  || snapshot_selection_status=$?
+case "${snapshot_selection_status}" in
+  0)
+    error 13 <<MESSAGE
 A snapshot already exists at this timestamp: ${final}
 Another backup of ${project} completed within the same second. Wait a moment and retry.
 MESSAGE
-fi
+    ;;
+  "${snapshot_state_missing}") ;;
+  *) error 18 <<<"Snapshot path became a symlink or non-directory: ${final}" ;;
+esac
 
 prepublication_sync_status=0
 backup_deadline_run sync -f -- "${partial}" \

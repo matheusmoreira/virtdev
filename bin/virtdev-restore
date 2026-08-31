@@ -233,17 +233,41 @@ MESSAGE
   resolved_date="${resolved_snapshot%%/*}"
   resolved_time="${resolved_snapshot##*/}"
 else
-  if [[ ! -d "${backups_project_dir}/${given_date}" ]]; then
-    error 16 <<<"Snapshot date not found: ${given_date}"
-  fi
+  selection_status=0
+  snapshot_hierarchy_state "${project}" "${given_date}" \
+    || selection_status=$?
+  case "${selection_status}" in
+    0) ;;
+    "${snapshot_state_missing}")
+      error 16 <<<"Snapshot date not found: ${given_date}"
+      ;;
+    *)
+      error 19 <<<"Snapshot date is a symlink or non-directory: ${given_date}"
+      ;;
+  esac
   resolved_date="${given_date}"
-  if [[ ! -d "${backups_project_dir}/${resolved_date}/${given_time}" ]]; then
-    error 18 <<<"Snapshot time not found: ${resolved_date}/${given_time}"
-  fi
+  selection_status=0
+  snapshot_hierarchy_state "${project}" "${resolved_date}" "${given_time}" \
+    || selection_status=$?
+  case "${selection_status}" in
+    0) ;;
+    "${snapshot_state_missing}")
+      error 18 <<<"Snapshot time not found: ${resolved_date}/${given_time}"
+      ;;
+    *)
+      error 19 \
+        <<<"Snapshot time is a symlink or non-directory: ${resolved_date}/${given_time}"
+      ;;
+  esac
   resolved_time="${given_time}"
 fi
 
 snapshot="${backups_project_dir}/${resolved_date}/${resolved_time}"
+selection_status=0
+snapshot_hierarchy_state "${project}" "${resolved_date}" "${resolved_time}" \
+  || selection_status=$?
+(( selection_status == 0 )) \
+  || error 19 <<<"Selected snapshot is no longer a real directory: ${snapshot}"
 
 if [[ ! -f "${snapshot}/manifest" || -L "${snapshot}/manifest" ]]; then
   error 10 <<<"Snapshot missing manifest: ${snapshot}"

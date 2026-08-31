@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154  # constants are provided by imported libraries
 
 set -euo pipefail
 
@@ -73,6 +74,95 @@ if (( ${#malformed_days[@]} != 0 )); then
   exit 1
 fi
 
+boundary_home="${test_tmp}/boundary-home"
+outside="${test_tmp}/outside"
+mkdir -p "${boundary_home}" "${outside}"
+for boundary in backups project day; do
+  case "${boundary}" in
+    backups)
+      candidate_home="${boundary_home}/backups-link"
+      mkdir "${candidate_home}"
+      ln -s "${outside}" "${candidate_home}/backups"
+      ;;
+    project)
+      candidate_home="${boundary_home}/project-link"
+      mkdir -p "${candidate_home}/backups"
+      ln -s "${outside}" "${candidate_home}/backups/probe"
+      ;;
+    day)
+      candidate_home="${boundary_home}/day-link"
+      mkdir -p "${candidate_home}/backups/probe"
+      ln -s "${outside}" \
+        "${candidate_home}/backups/probe/2026-08-28"
+      ;;
+  esac
+  status=0
+  VIRTDEV_HOME="${candidate_home}" \
+    snapshot_prepare_day_directory probe 2026-08-28 || status=$?
+  if (( status != snapshot_state_unsafe )); then
+    printf 'snapshot creation accepted a symlinked %s boundary (status %d)\n' \
+      "${boundary}" "${status}" >&2
+    exit 1
+  fi
+done
+
+safe_home="${boundary_home}/safe"
+mkdir "${safe_home}"
+VIRTDEV_HOME="${safe_home}" \
+  snapshot_prepare_day_directory probe 2026-08-28
+if [[ ! -d "${safe_home}/backups/probe/2026-08-28" \
+      || -L "${safe_home}/backups/probe/2026-08-28" ]]; then
+  printf 'snapshot creation did not build a real directory hierarchy\n' >&2
+  exit 1
+fi
+
+inventory_home="${boundary_home}/inventory"
+mkdir -p "${inventory_home}/backups/probe" \
+  "${inventory_home}/backups/probe/2026-08-28/12-00-00" \
+  "${inventory_home}/backups/time-boundary/2026-08-29/11-00-00"
+ln -s "${outside}" "${inventory_home}/backups/probe/2026-08-29"
+ln -s "${outside}" \
+  "${inventory_home}/backups/time-boundary/2026-08-29/12-00-00"
+declare -a unsafe_inventory=(stale)
+status=0
+VIRTDEV_HOME="${inventory_home}" \
+  snapshot_list_into unsafe_inventory probe || status=$?
+if (( status != 2 || ${#unsafe_inventory[@]} != 0 )); then
+  printf 'snapshot inventory ignored a date-shaped symlink (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+unsafe_inventory=(stale)
+status=0
+VIRTDEV_HOME="${inventory_home}" \
+  snapshot_list_into unsafe_inventory time-boundary || status=$?
+if (( status != 2 || ${#unsafe_inventory[@]} != 0 )); then
+  printf 'snapshot inventory ignored a time-shaped symlink (status %d)\n' \
+    "${status}" >&2
+  exit 1
+fi
+
+restore_project="restore-boundary"
+mkdir -p "${VIRTDEV_HOME}/projects/${restore_project}" \
+  "${VIRTDEV_HOME}/backups/${restore_project}/2026-08-30"
+ln -s "${outside}" \
+  "${VIRTDEV_HOME}/backups/${restore_project}/2026-08-29"
+ln -s "${outside}" \
+  "${VIRTDEV_HOME}/backups/${restore_project}/2026-08-30/12-00-00"
+for unsafe_snapshot in 2026-08-29/12-00-00 2026-08-30/12-00-00; do
+  status=0
+  HOME="${test_tmp}" NO_COLOR=1 \
+    "${repository}/bin/virtdev-restore" --preflight \
+      "${restore_project}" "${unsafe_snapshot}" \
+      > "${test_tmp}/restore-boundary.output" 2>&1 || status=$?
+  if (( status != 19 )); then
+    printf 'explicit restore accepted symlinked snapshot %s (status %d)\n' \
+      "${unsafe_snapshot}" "${status}" >&2
+    cat "${test_tmp}/restore-boundary.output" >&2
+    exit 1
+  fi
+done
+
 # shellcheck disable=SC2329  # shadows the command invoked by snapshot_list_into
 find() {
   printf '2026-08-26/12-00-00\0'
@@ -91,3 +181,4 @@ unset -f find
 printf 'ok - snapshot selection skips empty days and retains directories\n'
 printf 'ok - list and latest discover backups after project removal\n'
 printf 'ok - snapshot inventory distinguishes emptiness from failure\n'
+printf 'ok - snapshot creation, inventory, and restore reject symlinked boundaries\n'

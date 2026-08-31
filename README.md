@@ -189,7 +189,9 @@ project-a/.env.local
 ```
 
 Paths are lexical roots relative to `/home/dev/` in the guest. Absolute paths
-and `..` components are rejected; trailing slashes are normalized. Blank lines
+and `..` components are rejected; repeated separators, `.` components, and
+trailing slashes are normalized. An intermediate symlink is rejected, while a
+symlink selected as the final root is archived as a symlink object. Blank lines
 and lines beginning with `#` are ignored. Then:
 
 ```bash

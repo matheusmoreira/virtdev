@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Guest-side archive producer for virtdev-backup.
+#
+# Reads canonical, relative manifest roots from stdin and writes one tar stream
+# to stdout. Exit 40 means a present manifest root crosses an intermediate
+# symlink. The final component is deliberately not dereferenced, so a selected
+# symlink is archived as a symlink object.
+
+set -euo pipefail
+set -o pipefail
+
+: "${VIRTDEV_BACKUP_GUEST_ROOT:=/home/dev}"
+readonly backup_guest_intermediate_symlink=40
+
+[[ -d "${VIRTDEV_BACKUP_GUEST_ROOT}" \
+    && ! -L "${VIRTDEV_BACKUP_GUEST_ROOT}" ]] || exit 1
+cd -- "${VIRTDEV_BACKUP_GUEST_ROOT}"
+
+backup_guest_roots() {
+  local path component current index present
+  local -a components=()
+
+  while IFS= read -r path || [[ -n "${path}" ]]; do
+    [[ -n "${path}" && "${path}" != /* ]] || return 1
+    IFS=/ read -r -a components <<< "${path}"
+    if [[ "${path}" != . ]]; then
+      (( ${#components[@]} > 0 )) || return 1
+      for component in "${components[@]}"; do
+        [[ -n "${component}" && "${component}" != . \
+            && "${component}" != .. ]] || return 1
+      done
+    fi
+    current=.
+    present=1
+    for (( index = 0; index + 1 < ${#components[@]}; ++index )); do
+      component="${components[${index}]}"
+      current+="/${component}"
+      if [[ -L "${current}" ]]; then
+        return "${backup_guest_intermediate_symlink}"
+      elif [[ ! -e "${current}" || ! -d "${current}" ]]; then
+        present=0
+        break
+      fi
+    done
+    (( present )) || continue
+    if [[ -e "${path}" || -L "${path}" ]]; then
+      printf '%s\n' "${path}"
+    fi
+  done
+}
+
+backup_guest_roots \
+  | /usr/bin/tar --create --file=- --one-file-system --sparse \
+      --verbatim-files-from --files-from=-

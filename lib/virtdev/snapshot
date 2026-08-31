@@ -3,16 +3,20 @@
 # Snapshot paths are ${VIRTDEV_HOME}/backups/<project>/<date>/<time>.
 # Missing-tree list operations return an empty result.
 #
-# API: snapshot_directory, snapshot_validate_format, strict *_into inventory
-# functions and their printing wrappers, snapshot_any_strict,
-# snapshot_tree_has_entries_strict, and snapshot_id_from_path. Dates and times use YYYY-MM-DD/HH-MM-SS;
-# malformed input exits 79. An empty directory counts as a tree entry.
+# API: snapshot_directory, snapshot_validate_format, hierarchy state/preparation,
+# strict *_into inventory functions and their printing wrappers,
+# snapshot_any_strict, snapshot_tree_has_entries_strict, and
+# snapshot_id_from_path. Dates and times use YYYY-MM-DD/HH-MM-SS; malformed
+# input exits 79. An empty directory counts as a tree entry.
 set -euo pipefail
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 import error
 import enumerate
 
 readonly snapshot_invalid_format_exit_code=79
+readonly snapshot_state_missing=1
+readonly snapshot_state_unsafe=2
+readonly snapshot_prepare_failed=3
 readonly snapshot_date_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
 readonly snapshot_time_regex='^[0-9]{2}-[0-9]{2}-[0-9]{2}$'
 readonly snapshot_format_regex='^[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}$'
@@ -32,24 +36,90 @@ snapshot_validate_format() {
   fi
 }
 
+snapshot_real_directory() {
+  [[ -d "${1}" && ! -L "${1}" ]]
+}
+
+snapshot_path_exists() {
+  [[ -e "${1}" || -L "${1}" ]]
+}
+
+# Return 0 only when every requested hierarchy component is a real directory,
+# 1 when the first absent component makes the selection missing, and 2 when an
+# existing component is a symlink or another object type.
+snapshot_hierarchy_state() {
+  (( $# >= 1 && $# <= 3 )) || return "${snapshot_state_unsafe}"
+  local -r project="${1}" day="${2:-}" time="${3:-}"
+  local path="${VIRTDEV_HOME}" component
+  local -a components=(backups "${project}")
+
+  [[ -z "${day}" ]] || components+=("${day}")
+  [[ -z "${time}" ]] || components+=("${time}")
+  for component in "${components[@]}"; do
+    path+="/${component}"
+    if snapshot_real_directory "${path}"; then
+      continue
+    elif snapshot_path_exists "${path}"; then
+      return "${snapshot_state_unsafe}"
+    fi
+    return "${snapshot_state_missing}"
+  done
+  return 0
+}
+
+# Create backups/<project>/<day> one component at a time without following an
+# existing symlink. Concurrent replacement by another same-user host process
+# remains outside the host threat boundary, but every stable topology is
+# checked both before and after creation.
+snapshot_prepare_day_directory() {
+  (( $# == 2 )) || return "${snapshot_prepare_failed}"
+  local -r project="${1}" day="${2}"
+  local path="${VIRTDEV_HOME}" component
+  local -a components=(backups "${project}" "${day}")
+
+  [[ "${day}" =~ ${snapshot_date_regex} ]] \
+    || return "${snapshot_prepare_failed}"
+  for component in "${components[@]}"; do
+    path+="/${component}"
+    if snapshot_real_directory "${path}"; then
+      continue
+    elif snapshot_path_exists "${path}"; then
+      return "${snapshot_state_unsafe}"
+    fi
+    mkdir -m 0700 -- "${path}" 2>/dev/null \
+      || return "${snapshot_prepare_failed}"
+    snapshot_real_directory "${path}" \
+      || return "${snapshot_state_unsafe}"
+  done
+  snapshot_hierarchy_state "${project}" "${day}"
+}
+
 snapshot_list_days_into() {
   local -n _snapshot_days_result="${1}"
   local -r project="${2}"
   local -r dir="${VIRTDEV_HOME}/backups/${project}"
   local LC_ALL=C name
-  local -a discovered=()
+  local -a discovered=() validated=()
+  local state=0
 
   _snapshot_days_result=()
-  [[ -d "${dir}" ]] || return 0
+  snapshot_hierarchy_state "${project}" || state=$?
+  case "${state}" in
+    0) ;;
+    "${snapshot_state_missing}") return 0 ;;
+    *) return 2 ;;
+  esac
   # shellcheck disable=SC2154  # imported from enumerate
   enumerate_nul_sorted discovered "${enumerate_max_bytes}" \
     "${enumerate_max_records}" \
-    find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' \
+    find "${dir}" -maxdepth 1 -mindepth 1 -printf '%f\0' \
     || return $?
   for name in "${discovered[@]}"; do
-    [[ "${name}" =~ ${snapshot_date_regex} ]] \
-      && _snapshot_days_result+=("${name}")
+    [[ "${name}" =~ ${snapshot_date_regex} ]] || continue
+    snapshot_real_directory "${dir}/${name}" || return 2
+    validated+=("${name}")
   done
+  _snapshot_days_result=("${validated[@]}")
   return 0
 }
 
@@ -66,19 +136,27 @@ snapshot_list_times_into() {
   local -r day="${3}"
   local -r dir="${VIRTDEV_HOME}/backups/${project}/${day}"
   local LC_ALL=C name
-  local -a discovered=()
+  local -a discovered=() validated=()
+  local state=0
 
   _snapshot_times_result=()
-  [[ -d "${dir}" ]] || return 0
+  snapshot_hierarchy_state "${project}" "${day}" || state=$?
+  case "${state}" in
+    0) ;;
+    "${snapshot_state_missing}") return 0 ;;
+    *) return 2 ;;
+  esac
   # shellcheck disable=SC2154  # imported from enumerate
   enumerate_nul_sorted discovered "${enumerate_max_bytes}" \
     "${enumerate_max_records}" \
-    find "${dir}" -maxdepth 1 -mindepth 1 -type d -printf '%f\0' \
+    find "${dir}" -maxdepth 1 -mindepth 1 -printf '%f\0' \
     || return $?
   for name in "${discovered[@]}"; do
-    [[ "${name}" =~ ${snapshot_time_regex} ]] \
-      && _snapshot_times_result+=("${name}")
+    [[ "${name}" =~ ${snapshot_time_regex} ]] || continue
+    snapshot_real_directory "${dir}/${name}" || return 2
+    validated+=("${name}")
   done
+  _snapshot_times_result=("${validated[@]}")
   return 0
 }
 
@@ -92,19 +170,24 @@ snapshot_list_times() {
 snapshot_list_into() {
   local -n _snapshot_list_result="${1}"
   local -r project="${2}"
-  local -r dir="${VIRTDEV_HOME}/backups/${project}"
-  local -a discovered=()
+  local day time identifier
+  local total_bytes=0
+  local -a days=() times=() complete=()
 
   _snapshot_list_result=()
-  [[ -d "${dir}" ]] || return 0
-  # shellcheck disable=SC2154  # imported from enumerate
-  enumerate_nul_sorted discovered "${enumerate_max_bytes}" \
-    "${enumerate_max_records}" \
-    find "${dir}" -mindepth 2 -maxdepth 2 -type d \
-      -regextype posix-extended \
-      -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{2}-[0-9]{2}-[0-9]{2}' \
-      -printf '%P\0' || return $?
-  _snapshot_list_result=("${discovered[@]}")
+  snapshot_list_days_into days "${project}" || return $?
+  for day in "${days[@]}"; do
+    times=()
+    snapshot_list_times_into times "${project}" "${day}" || return $?
+    for time in "${times[@]}"; do
+      identifier="${day}/${time}"
+      (( ${#complete[@]} < enumerate_max_records )) || return 4
+      total_bytes=$(( total_bytes + ${#identifier} + 1 ))
+      (( total_bytes <= enumerate_max_bytes )) || return 3
+      complete+=("${identifier}")
+    done
+  done
+  _snapshot_list_result=("${complete[@]}")
   return 0
 }
 
@@ -157,7 +240,7 @@ snapshot_latest() {
 snapshot_tree_has_entries_strict() {
   local -r tree="${1}"
   local -a entries=()
-  [[ -d "${tree}" ]] || return 1
+  snapshot_real_directory "${tree}" || return 1
   # shellcheck disable=SC2154  # imported from enumerate
   enumerate_nul_sorted entries "${enumerate_max_bytes}" \
     "${enumerate_max_records}" \
