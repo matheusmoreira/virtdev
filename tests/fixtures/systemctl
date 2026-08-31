@@ -6,6 +6,7 @@ systemctl_wants_active_state=0
 systemctl_wants_exec_main_status=0
 systemctl_wants_main_pid=0
 systemctl_wants_id=0
+systemctl_wants_control_group=0
 systemctl_next_property=0
 for systemctl_arg in "$@"; do
   systemctl_property=''
@@ -23,6 +24,7 @@ for systemctl_arg in "$@"; do
     ExecMainStatus) systemctl_wants_exec_main_status=1 ;;
     MainPID)        systemctl_wants_main_pid=1 ;;
     Id)             systemctl_wants_id=1 ;;
+    ControlGroup)   systemctl_wants_control_group=1 ;;
   esac
 done
 
@@ -75,6 +77,8 @@ if [[ " $* " == *" show "* ]]; then
     printf '%s\n' "${SYSTEMCTL_EXEC_MAIN_STATUS:-0}"
   elif (( systemctl_wants_main_pid )); then
     printf '%s\n' "${SYSTEMCTL_MAIN_PID:-0}"
+  elif (( systemctl_wants_control_group )); then
+    printf '%s\n' "${SYSTEMCTL_CONTROL_GROUP:-/user.slice/virtdev.slice/virtdev-probe.service}"
   elif (( systemctl_wants_id && systemctl_wants_active_state )); then
     for systemctl_arg in "$@"; do
       [[ "${systemctl_arg}" == virtdev-* ]] || continue
@@ -101,6 +105,8 @@ if [[ " $* " == *" show "* ]]; then
 fi
 
 if [[ " $* " == *" is-active "* ]]; then
+  [[ -z "${SYSTEMCTL_IS_ACTIVE_DELAY:-}" ]] \
+    || sleep "${SYSTEMCTL_IS_ACTIVE_DELAY}"
   printf '%s\n' "${state}"
   case "${state}" in
     active|activating|reloading) exit 0 ;;

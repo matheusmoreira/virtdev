@@ -13,7 +13,7 @@
 # 104 incompatible guest contract; 105 forbidden SSH config directive.
 #
 set -euo pipefail
-import error integer port
+import deadline error integer port
 
 readonly ssh_key_not_found_exit_code=77
 readonly ssh_key_permissions_exit_code=78
@@ -29,6 +29,10 @@ readonly ssh_known_hosts_temporary_name=known_hosts.tmp
 readonly ssh_guest_contract_name=guest-contract
 readonly ssh_guest_contract_value='ssh-host-identity=1'
 readonly ssh_guest_contract_progress="capability:${ssh_guest_contract_value}"
+
+# Explains the last ssh_poll_until_ready result without overloading its stable
+# return values: ready, timeout, terminal, manager-unreachable, or nonterminal.
+VIRTDEV_SSH_POLL_STATE=unknown
 
 : "${VIRTDEV_HOME:="${XDG_DATA_HOME:-${HOME}/.local/share}/virtdev"}"
 
@@ -481,12 +485,44 @@ ssh_poll_until_ready() {
   integer_is_bounded_positive "${timeout}" 86400 || return 1
   local -r attempt_timeout=10
   local deadline unit_state remaining probe_timeout connect_timeout sleep_timeout
+  local unit_query_status
   deadline=$(( BASH_MONOSECONDS + timeout ))
+  VIRTDEV_SSH_POLL_STATE=unknown
   while (( BASH_MONOSECONDS < deadline )); do
-    unit_state="$(systemctl --user is-active "${unit}" 2>/dev/null || true)"
+    unit_query_status=0
+    deadline_capture unit_state "${deadline}" 1 \
+      systemctl --user is-active "${unit}" 2>/dev/null \
+      || unit_query_status=$?
+    case "${unit_query_status}" in
+      0|3) ;;
+      124|137)
+        VIRTDEV_SSH_POLL_STATE=timeout
+        return 1
+        ;;
+      *)
+        VIRTDEV_SSH_POLL_STATE=manager-unreachable
+        return 3
+        ;;
+    esac
     case "${unit_state}" in
-      active|activating) ;;
-      *) return 2 ;;
+      active|activating)
+        if (( unit_query_status != 0 )); then
+          VIRTDEV_SSH_POLL_STATE=manager-unreachable
+          return 3
+        fi
+        ;;
+      inactive|failed)
+        VIRTDEV_SSH_POLL_STATE=terminal
+        return 2
+        ;;
+      '')
+        VIRTDEV_SSH_POLL_STATE=manager-unreachable
+        return 3
+        ;;
+      *)
+        VIRTDEV_SSH_POLL_STATE=nonterminal
+        return 2
+        ;;
     esac
 
     remaining=$(( deadline - BASH_MONOSECONDS ))
@@ -503,6 +539,7 @@ ssh_poll_until_ready() {
     if timeout "${probe_timeout}" "${ssh_argv[@]}" dev@127.0.0.1 \
         true 2>/dev/null
     then
+      VIRTDEV_SSH_POLL_STATE=ready
       return 0
     fi
 
@@ -512,6 +549,7 @@ ssh_poll_until_ready() {
     (( remaining < sleep_timeout )) && sleep_timeout=${remaining}
     sleep "${sleep_timeout}"
   done
+  VIRTDEV_SSH_POLL_STATE=timeout
   return 1
 }
 

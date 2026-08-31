@@ -18,7 +18,7 @@
 # coprocess write end stays open so SHUT_WR cannot truncate a delayed response.
 #
 set -euo pipefail
-import integer
+import deadline integer
 
 # Per-read stall, chunk, and total captured-reply bounds.
 readonly _qmp_reply_read_timeout=0.1
@@ -27,6 +27,45 @@ readonly _qmp_reply_max_bytes=65536
 
 # Diagnostic only; `shutdown` is the sole positive result.
 VIRTDEV_QMP_WAIT_STATE=unknown
+
+_qmp_child_reaped() {
+  local -r child_pid="${1}"
+  local process_stat state
+
+  if [[ ! -r "/proc/${child_pid}/stat" ]]; then
+    wait "${child_pid}" 2>/dev/null || true
+    return 0
+  fi
+  IFS= read -r process_stat < "/proc/${child_pid}/stat" || return 1
+  process_stat="${process_stat##*) }"
+  state="${process_stat%% *}"
+  if [[ "${state}" == Z ]]; then
+    wait "${child_pid}" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
+_qmp_reap_until() {
+  local -r child_pid="${1}" deadline="${2}"
+  local term_deadline=$(( deadline - 1 ))
+
+  (( term_deadline >= BASH_MONOSECONDS )) \
+    || term_deadline=${BASH_MONOSECONDS}
+  kill -TERM "${child_pid}" 2>/dev/null || true
+  while (( BASH_MONOSECONDS < term_deadline )); do
+    _qmp_child_reaped "${child_pid}" && return 0
+    sleep 0.02
+  done
+  _qmp_child_reaped "${child_pid}" && return 0
+
+  kill -KILL "${child_pid}" 2>/dev/null || true
+  while (( BASH_MONOSECONDS < deadline )); do
+    _qmp_child_reaped "${child_pid}" && return 0
+    sleep 0.02
+  done
+  _qmp_child_reaped "${child_pid}"
+}
 
 # _qmp_response_for_id <raw-qmp-reply> <response-id>
 _qmp_response_for_id() {
@@ -112,8 +151,7 @@ _qmp_exchange() {
 
   # QEMU keeps QMP connected; close and reap the client explicitly.
   exec {wfd}>&- 2>/dev/null || true
-  kill "${sock_pid}" 2>/dev/null || true
-  wait "${sock_pid}" 2>/dev/null || true
+  _qmp_reap_until "${sock_pid}" "${deadline}" || rc=1
 
   printf '%s' "${reply}"
   return "${rc}"
@@ -185,7 +223,7 @@ qmp_wait_shutdown() {
   if [[ "${deadline_seconds}" != 0 ]]; then
     integer_is_bounded_positive "${deadline_seconds}" 86400 || return 1
   fi
-  local deadline=0 unit_state exchange_timeout remaining
+  local deadline=0 unit_state exchange_timeout remaining unit_query_status
   if (( deadline_seconds > 0 )); then
     deadline=$(( BASH_MONOSECONDS + deadline_seconds ))
   fi
@@ -196,8 +234,28 @@ qmp_wait_shutdown() {
       VIRTDEV_QMP_WAIT_STATE=timeout
       return 1
     fi
-    unit_state="$(systemctl --user show "${unit}" \
-      --property=ActiveState --value 2>/dev/null || true)"
+    unit_query_status=0
+    if (( deadline_seconds > 0 )); then
+      deadline_capture unit_state "${deadline}" 1 \
+        systemctl --user show "${unit}" \
+          --property=ActiveState --value 2>/dev/null \
+        || unit_query_status=$?
+    else
+      unit_state="$(systemctl --user show "${unit}" \
+        --property=ActiveState --value 2>/dev/null)" \
+        || unit_query_status=$?
+    fi
+    case "${unit_query_status}" in
+      0) ;;
+      124|137)
+        VIRTDEV_QMP_WAIT_STATE=timeout
+        return 1
+        ;;
+      *)
+        VIRTDEV_QMP_WAIT_STATE=manager-unreachable
+        return 1
+        ;;
+    esac
     case "${unit_state}" in
       active|activating)
         ;;

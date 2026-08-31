@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Shared absolute-monotonic-deadline subprocess supervision.
+#
+# deadline_run <absolute-BASH_MONOSECONDS> <kill-after-seconds> <command...>
+# deadline_capture <result-name> <absolute> <kill-after> <command...>
+
+set -euo pipefail
+
+deadline_run() {
+  local -r deadline="${1:-}" kill_after="${2:-}"
+  shift 2 || return 125
+  local remaining
+
+  [[ "${deadline}" =~ ^[0-9]+$ && "${kill_after}" =~ ^[0-9]+$ \
+      && "${kill_after}" != 0 && $# -gt 0 ]] || return 125
+  remaining=$(( deadline - BASH_MONOSECONDS ))
+  (( remaining > 0 )) || return 124
+  timeout --signal=TERM --kill-after="${kill_after}" "${remaining}" "$@"
+}
+
+deadline_capture() {
+  local -n _deadline_capture_ref="${1}"
+  local -r deadline="${2:-}" kill_after="${3:-}"
+  shift 3 || return 125
+  local status=0
+
+  _deadline_capture_ref="$(
+    deadline_run "${deadline}" "${kill_after}" "$@"
+  )" || status=$?
+  return "${status}"
+}

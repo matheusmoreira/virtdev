@@ -8,7 +8,7 @@
 
 set -euo pipefail
 
-import integer passt port qmp runtime
+import deadline integer passt port qmp runtime
 
 readonly lifecycle_ready=0
 readonly lifecycle_backend_missing=10
@@ -36,27 +36,25 @@ VIRTDEV_LIFECYCLE_LAUNCH_PHASE=unknown
 VIRTDEV_LIFECYCLE_STOP_STATE=unknown
 
 lifecycle_deadline_run() {
-  local -r deadline="${1:-}" kill_after="${2:-}"
-  shift 2
-  local remaining
-
-  [[ "${deadline}" =~ ^[0-9]+$ && "${kill_after}" =~ ^[0-9]+$ \
-      && "${kill_after}" != 0 && $# -gt 0 ]] || return 125
-  remaining=$(( deadline - BASH_MONOSECONDS ))
-  (( remaining > 0 )) || return 124
-  timeout --signal=TERM --kill-after="${kill_after}" "${remaining}" "$@"
+  deadline_run "$@"
 }
 
 lifecycle_deadline_capture() {
-  local -n _lifecycle_capture_ref="${1}"
-  local -r deadline="${2}" kill_after="${3}"
-  shift 3
+  deadline_capture "$@"
+}
+
+lifecycle_control_group_until() {
+  local -n _lifecycle_control_group_ref="${1}"
+  local -r unit="${2:-}" deadline="${3:-}"
   local status=0
 
-  _lifecycle_capture_ref="$(
-    lifecycle_deadline_run "${deadline}" "${kill_after}" "$@"
-  )" || status=$?
-  return "${status}"
+  _lifecycle_control_group_ref=''
+  [[ -n "${unit}" && "${deadline}" =~ ^[0-9]+$ ]] || return 125
+  deadline_capture _lifecycle_control_group_ref "${deadline}" 1 \
+    systemctl --user show "${unit}" --property=ControlGroup --value \
+    2>/dev/null || status=$?
+  (( status == 0 )) || return "${status}"
+  [[ -n "${_lifecycle_control_group_ref}" ]]
 }
 
 _lifecycle_active_state_until() {

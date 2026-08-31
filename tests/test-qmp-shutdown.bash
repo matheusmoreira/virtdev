@@ -3,6 +3,14 @@
 set -euo pipefail
 
 repository="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
+test_tmp="$(mktemp -d)"
+trap 'rm -rf -- "${test_tmp}"' EXIT
+fixture_bin="${test_tmp}/bin"
+unit_state_file="${test_tmp}/unit.state"
+mkdir "${fixture_bin}"
+ln -s "${repository}/tests/fixtures/systemctl" "${fixture_bin}/systemctl"
+export PATH="${fixture_bin}:${PATH}"
+export SYSTEMCTL_STATE_FILE="${unit_state_file}"
 
 # shellcheck disable=SC1090,SC1091
 source "${repository}/lib/virtdev/import"
@@ -22,14 +30,10 @@ if _qmp_reply_is_shutdown "${running_reply}" \
   exit 1
 fi
 
-fake_unit_state=active
 fake_shutdown=1
 query_calls=0
 query_timeout=0
-
-systemctl() {
-  printf '%s\n' "${fake_unit_state}"
-}
+printf 'active\n' > "${unit_state_file}"
 
 _qmp_query_shutdown_once() {
   (( ++query_calls ))
@@ -44,7 +48,7 @@ if [[ "${VIRTDEV_QMP_WAIT_STATE}" != shutdown || query_calls -ne 1 \
   exit 1
 fi
 
-fake_unit_state=inactive
+printf 'inactive\n' > "${unit_state_file}"
 query_calls=0
 status=0
 qmp_wait_shutdown /unused 1 virtdev-maintenance || status=$?
@@ -57,6 +61,7 @@ fi
 for uncertain_case in 'manager-unreachable:' 'nonterminal:deactivating'; do
   expected_state="${uncertain_case%%:*}"
   fake_unit_state="${uncertain_case#*:}"
+  printf '%s\n' "${fake_unit_state}" > "${unit_state_file}"
   query_calls=0
   status=0
   qmp_wait_shutdown /unused 1 virtdev-maintenance || status=$?
@@ -68,7 +73,7 @@ for uncertain_case in 'manager-unreachable:' 'nonterminal:deactivating'; do
   fi
 done
 
-fake_unit_state=active
+printf 'active\n' > "${unit_state_file}"
 fake_shutdown=0
 status=0
 qmp_wait_shutdown /unused 1 virtdev-maintenance || status=$?

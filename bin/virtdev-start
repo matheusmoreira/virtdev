@@ -523,7 +523,10 @@ esac
 # --unfiltered opted out of the lockdown entirely, so it skips this.
 if (( filtered )); then
   # Read after lifecycle readiness, when systemd has populated ControlGroup.
-  control_group="$(systemctl --user show "${unit}" -p ControlGroup --value 2>/dev/null || true)"
+  filter_query_deadline=$(( BASH_MONOSECONDS + 5 ))
+  control_group=''
+  lifecycle_control_group_until control_group "${unit}" \
+    "${filter_query_deadline}" || true
   if ! firewall_assert_unit_filtered "${control_group}"; then
     error 21 <<MESSAGE
 host egress lockdown baseline changed during launch: ${project} is not filtered.

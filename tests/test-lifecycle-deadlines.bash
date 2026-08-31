@@ -39,6 +39,20 @@ if (( status != lifecycle_activation_timeout || elapsed > 3 )) \
   exit 1
 fi
 
+control_group=''
+status=0
+started="${BASH_MONOSECONDS}"
+SYSTEMCTL_SHOW_DELAY=5 \
+  lifecycle_control_group_until control_group virtdev-probe \
+    "$(( BASH_MONOSECONDS + 1 ))" || status=$?
+elapsed=$(( BASH_MONOSECONDS - started ))
+if (( (status != 124 && status != 137) || elapsed > 3 )) \
+    || [[ -n "${control_group}" ]]; then
+  printf 'hanging ControlGroup probe escaped its deadline (status %d, %ds)\n' \
+    "${status}" "${elapsed}" >&2
+  exit 1
+fi
+
 status=0
 started="${BASH_MONOSECONDS}"
 SYSTEMCTL_ACTIVE_STATE=active SYSTEMCTL_STOP_DELAY=5 \
@@ -93,4 +107,4 @@ if (( status != 0 || elapsed > 5 )) || [[ ! -e "${socat_marker}" \
   exit 1
 fi
 
-printf 'ok - lifecycle probes, stop submission, and ACPI send are deadline-bounded\n'
+printf 'ok - lifecycle probes, filtering proof, stop submission, and ACPI send are deadline-bounded\n'

@@ -23,6 +23,7 @@
 #   3   project not found
 #   6   virtual machine exited before SSH became available
 #   7   timed out waiting for SSH
+#   8   user systemd manager unreachable while waiting
 #   64  usage error
 #   77  SSH key not found
 #   78  SSH key permissions too open
@@ -89,6 +90,12 @@ case "${rc}" in
     error 6 <<MESSAGE
 Virtual machine exited before SSH became available: ${project}
 Inspect with: journalctl --user -u ${unit}
+MESSAGE
+    ;;
+  3)
+    error 8 <<MESSAGE
+Cannot inspect virtual machine state while waiting for SSH: ${project}
+Restore the user systemd manager, then inspect: systemctl --user status ${unit}
 MESSAGE
     ;;
   *)

@@ -450,10 +450,17 @@ MESSAGE
 # Boot 2 aborts before the reseal). --unfiltered opted out, so skips.
 maintenance_assert_filtered() {
   [[ "${maintenance_unfiltered}" != "0" ]] && return 0
-  local control_group="" i
-  for (( i = 0; i < 25; i++ )); do
-    control_group="$(systemctl --user show "${unit}" -p ControlGroup --value 2>/dev/null || true)"
+  local control_group="" query_status=0
+  local -r proof_deadline=$(( BASH_MONOSECONDS + 5 ))
+  while (( BASH_MONOSECONDS < proof_deadline )); do
+    query_status=0
+    lifecycle_control_group_until control_group "${unit}" "${proof_deadline}" \
+      || query_status=$?
     [[ -n "${control_group}" ]] && break
+    case "${query_status}" in
+      1) ;;
+      *) break ;;
+    esac
     sleep 0.2
   done
   firewall_assert_unit_filtered "${control_group}" && return 0
