@@ -846,6 +846,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `validate` | input validation (`validate_project_name`) | 2 |
 | `arguments` | declarative flag parsing and usage generation (`arguments_parse`, `arguments_usage`); universal `--help` and `--color` handling | 64 |
 | `integer` | canonical bounded-positive-decimal predicate (`integer_is_bounded_positive`) | none (predicate status) |
+| `deadline` | shared absolute-monotonic-deadline subprocess execution and capture with TERM/KILL supervision | 124, 125 (returned; otherwise child status) |
 | `ip` | IPv4/IPv6 literal predicate (`ip_literal_is_valid`) | none (predicate status) |
 | `lock` | canonical store, cache, and transfer-target `flock(2)` domains, including `lock_acquire_transfer_target`, inherited composition, and bounded diagnostics | 75, 76 |
 | `ssh` | Guest-contract checks, project host identities, strict shared transport argv, rsync wrapper, and bounded polling | 77, 78, 103, 104, 105 |
@@ -856,6 +857,7 @@ actual location. PKGBUILD installs `lib/virtdev/*` as a sibling of
 | `trigger-runner` | internal bounded trigger pipeline and status reporting to its supervisor | none |
 | `port` | SSH forwarding port file reading and validation (`port_require`, `port_read_lenient`, `port_in_use`) | 81, 87 |
 | `manifest` | resolve and normalize backup manifests; reject parent escapes and intermediate restore symlinks | none (caller-supplied) |
+| `backup-guest` | guest-side backup archive producer; rejects intermediate symlinks while preserving a final symlink object | 40 (returned) |
 | `frozen-input` | bounded durable copies and digest revalidation for inputs crossing irreversible phases | 40, 41, 42, 43, 44 (returned) |
 | `mount` | locate containing and nested mounts before recursive operations | none (caller-supplied) |
 | `machine` | resolve project and maintenance machine targets into explicit kind, unit, data-root, and runtime-root descriptors; owns authoritative single-machine state mapping and fail-closed predicates | 2, 3 (returned) |
